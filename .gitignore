@@ -15,9 +15,11 @@
 /public/build
 /public/hot
 /public/storage
+/public/farmville/assets
 /storage/*.key
 /storage/pail
 /vendor
+.cache/
 Homestead.json
 Homestead.yaml
 Thumbs.db
