@@ -1,0 +1,9 @@
+.git
+.idea
+.vscode
+.cache
+.env
+node_modules
+vendor
+storage/logs
+public/farmville/assets
