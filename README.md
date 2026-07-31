@@ -18,6 +18,32 @@ Run the installer script:
 ./installer.sh
 ```
 
+## Docker
+
+Docker Desktop can run the full local stack (Apache/PHP, MariaDB, and Reverb):
+
+```bash
+make init
+```
+
+The game is then served at `http://localhost:8000`; MariaDB is exposed on
+port `33061`, and Reverb on port `8080`. Use `make stop` to stop the stack,
+`make logs` to follow its logs, and `make test` to run the Laravel test suite.
+
+The application migrations extend the original FarmVille database, so import
+its item dump before migrating:
+
+```bash
+make items ITEMS_SQL=/path/to/farmvilledb_trimmed.sql
+make migrate
+```
+
+Game assets are intentionally bind-mounted from `public/farmville/assets` so
+they are not copied into the Docker image. Download and extract them with
+`make assets` before starting the game client. The four Internet Archive WARC
+files are about 20 GB in total; downloads resume from `.cache/fv-assets` if
+interrupted.
+
 **Important:** Change the admin password in `app/Http/Controllers/AdminController.php` (line 21).
 
 ## Apache2 Configuration
