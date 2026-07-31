@@ -36,11 +36,17 @@ fetch() {
   local url="$1" dest="$2"
   if [[ -f "$dest" ]]; then
     echo "Resuming $dest..."
-    curl -fL --retry 3 --retry-delay 2 --continue-at - -o "$dest" "$url" || {
-      local rc=$?
-      [[ $rc -eq 33 ]] && return 0
+    # Archive.org returns HTTP 416 when the local file is already complete.
+    # curl maps that to exit code 22, so preserve its status code separately.
+    local http_status rc
+    set +e
+    http_status="$(curl -fL --retry 3 --retry-delay 2 --continue-at - -o "$dest" -w '%{http_code}' "$url")"
+    rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+      [[ $rc -eq 33 || "$http_status" == "416" ]] && return 0
       return "$rc"
-    }
+    fi
   else
     echo "Downloading $dest..."
     curl -fL --retry 3 --retry-delay 2 -o "$dest" "$url"
