@@ -10,6 +10,7 @@
   - `db:backup` - Backup database to Backblaze B2
   - `discord:status` - Update Discord server status message
   - `world:cleanup-deleted` - Hard delete soft-deleted world objects
+  - `user:admin email@example.com` - Grant a registered account administrator access
 
 ## Installation
 
@@ -47,7 +48,18 @@ For an internet-facing deployment, edit the untracked `.env` file before
 starting the stack and set at least `APP_ENV=production`, `APP_DEBUG=false`,
 and unique database credentials.
 
-**Important:** Change the admin password in `app/Http/Controllers/AdminController.php` (line 21).
+### Administrator access
+
+Administrator access is assigned to individual registered accounts; there is no
+shared admin password. After registering your owner account and running the
+migrations, grant it access with:
+
+```bash
+docker compose exec fv-replowed-slipstream php artisan user:admin owner@example.com
+```
+
+To revoke access later, run the same command with `--revoke`. Only accounts
+with this role can open `/admin` or call its currency-management endpoints.
 
 ## Apache2 Configuration
 

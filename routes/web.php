@@ -87,12 +87,13 @@ Route::get('/download-progress', [AssetsController::class, 'getProgress'])->name
 Route::post('/extract-file', [AssetsController::class, 'extractAssets'])->name('extract.file');
 Route::get('/extract-progress', [AssetsController::class, 'extractProgress'])->name('extract.progress');
 
-Route::get('/admin', [AdminController::class, 'index'])->middleware(['auth', 'verified'])->name('admin');
-
-Route::middleware('auth')->group(function () {
-    Route::post('/admin/authenticate', [AdminController::class, 'authenticate'])->name('admin.authenticate');
+Route::middleware(['auth', 'verified', 'admin'])->group(function () {
+    Route::get('/admin', [AdminController::class, 'index'])->name('admin');
     Route::post('/admin/lookup', [AdminController::class, 'lookupUser'])->name('admin.lookup');
     Route::post('/admin/update-currency', [AdminController::class, 'updateCurrency'])->name('admin.update-currency');
+});
+
+Route::middleware('auth')->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');

@@ -9,21 +9,7 @@ class AdminController extends Controller
 {
     public function index()
     {
-        return view('admin', [
-            'authenticated' => session('admin_authenticated', false),
-        ]);
-    }
-
-    public function authenticate(Request $request)
-    {
-        $request->validate(['password' => 'required']);
-
-        if ($request->password === 'your-password-here') {
-            session(['admin_authenticated' => true]);
-            return redirect()->route('admin');
-        }
-
-        return back()->withErrors(['password' => 'Invalid admin password.']);
+        return view('admin');
     }
 
     public function lookupUser(Request $request)
