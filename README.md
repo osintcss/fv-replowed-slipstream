@@ -40,9 +40,11 @@ make migrate
 
 Game assets are intentionally bind-mounted from `public/farmville/assets` so
 they are not copied into the Docker image. Download and extract them with
-`make assets` before starting the game client. The four Internet Archive WARC
-files are about 20 GB in total; downloads resume from `.cache/fv-assets` if
-interrupted.
+`make assets` before starting the game client. On Ubuntu, first install its
+MEGA downloader dependency with `make tools`. The command also downloads the
+trimmed FarmVille item database from the configured public MEGA folder. The
+four Internet Archive WARC files are about 20 GB in total; downloads resume
+from `.cache/fv-assets` if interrupted.
 
 **Important:** Change the admin password in `app/Http/Controllers/AdminController.php` (line 21).
 

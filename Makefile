@@ -1,4 +1,4 @@
-.PHONY: build run stop logs db-wait assets items migrate init shell test
+.PHONY: build run stop logs db-wait tools assets items migrate init shell test
 
 build:
 	docker compose build
@@ -22,6 +22,13 @@ UNAME_S := $(shell uname -s)
 WIN_CURDIR := $(shell pwd -W 2>/dev/null || pwd)
 WSL_CURDIR := $(shell wsl -d Ubuntu -- wslpath -a "$(WIN_CURDIR)" 2>/dev/null | tr -d '\r')
 
+tools:
+ifeq ($(findstring MINGW,$(UNAME_S)),MINGW)
+	wsl -d Ubuntu -- sudo apt-get update && wsl -d Ubuntu -- sudo apt-get install -y megatools
+else
+	sudo apt-get update && sudo apt-get install -y megatools
+endif
+
 assets:
 ifeq ($(findstring MINGW,$(UNAME_S)),MINGW)
 	wsl -d Ubuntu -- bash -lc "cd \"$(WSL_CURDIR)\" && bash ./scripts/fetch-assets.sh"
@@ -32,7 +39,7 @@ endif
 migrate: db-wait
 	docker compose exec -T fv-replowed-slipstream php artisan migrate --seed --force
 
-ITEMS_SQL ?= farmvilledb_trimmed.sql
+ITEMS_SQL ?= .cache/fv-assets/farmvilledb_trimmed.sql
 
 items: db-wait
 	@test -f "$(ITEMS_SQL)" || { echo "Missing $(ITEMS_SQL). Set ITEMS_SQL to the FarmVille items SQL dump."; exit 1; }
