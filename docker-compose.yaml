@@ -3,6 +3,8 @@ services:
     build:
       context: .
     image: fv-replowed-slipstream:local
+    env_file:
+      - .env
     ports:
       - "8000:80"
     volumes:
@@ -75,6 +77,8 @@ services:
   reverb:
     image: fv-replowed-slipstream:local
     command: php artisan reverb:start --host=0.0.0.0 --port=8080
+    env_file:
+      - .env
     depends_on:
       database:
         condition: service_healthy

@@ -24,6 +24,7 @@ Docker can run the full local stack (Apache/PHP, MariaDB, and Reverb). On
 Ubuntu, run the complete setup in this order:
 
 ```bash
+cp .env.example .env
 make tools
 make assets
 make init
@@ -41,6 +42,10 @@ extraction.
 The game is then served at `http://localhost:8000`; MariaDB is exposed on
 port `33061`, and Reverb on port `8080`. Use `make stop` to stop the stack,
 `make logs` to follow its logs, and `make test` to run the Laravel test suite.
+
+For an internet-facing deployment, edit the untracked `.env` file before
+starting the stack and set at least `APP_ENV=production`, `APP_DEBUG=false`,
+and unique database credentials.
 
 **Important:** Change the admin password in `app/Http/Controllers/AdminController.php` (line 21).
 
