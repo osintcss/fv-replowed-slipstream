@@ -18,6 +18,8 @@ ASSET_LINK_BASE="https://archive.org/download/original-farmville"
 DEHASHER_LINK_BASE="https://github.com/PuccamiteTech/FVDehasher/releases/download/1.02-SNAPSHOT"
 DEHASHER_LINK_FILE="ubuntu-build.zip"
 DEHASHER_FILE="FVDehasher-1.02-SNAPSHOT"
+SUPPLEMENTS_MEGA_URL="https://mega.nz/folder/ivxTwYAb#mCj7BzOzQ0vws3fDAAFXqw"
+ITEMS_SQL_FILE="farmvilledb_trimmed.sql"
 
 ASSET_FILES=(
   "urls-bluepload.unstable.life-farmvilleassets.txt-shallow-20201225-045045-5762m-00000.warc.gz"
@@ -26,7 +28,7 @@ ASSET_FILES=(
   "urls-bluepload.unstable.life-farmvilleassets.txt-shallow-20201225-045045-5762m-00003.warc.gz"
 )
 
-for command in curl unzip; do
+for command in curl unzip megadl; do
   command -v "$command" >/dev/null 2>&1 || { echo "$command is required." >&2; exit 1; }
 done
 
@@ -84,4 +86,20 @@ if [[ -f "$TOOLBAR_ICON_CACHE" ]]; then
   mv -f "$TOOLBAR_ICON_CACHE" "$TOOLBAR_ICON_PATH"
 fi
 
+ITEMS_SQL_PATH="$CACHE_DIR/$ITEMS_SQL_FILE"
+if [[ ! -f "$ITEMS_SQL_PATH" ]]; then
+  SUPPLEMENTS_DIR="$CACHE_DIR/supplements"
+  mkdir -p "$SUPPLEMENTS_DIR"
+  echo "Downloading FarmVille database supplements from MEGA..."
+  megadl --path "$SUPPLEMENTS_DIR" "$SUPPLEMENTS_MEGA_URL"
+
+  downloaded_sql="$(find "$SUPPLEMENTS_DIR" -type f -name "$ITEMS_SQL_FILE" -print -quit)"
+  [[ -n "$downloaded_sql" ]] || {
+    echo "MEGA download completed but $ITEMS_SQL_FILE was not found." >&2
+    exit 1
+  }
+  cp -f "$downloaded_sql" "$ITEMS_SQL_PATH"
+fi
+
 echo "Assets ready at $ASSETS_DIR"
+echo "Items database ready at $ITEMS_SQL_PATH"
