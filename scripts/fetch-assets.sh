@@ -55,35 +55,39 @@ fetch() {
   fi
 }
 
-DEHASHER_ZIP="$CACHE_DIR/$DEHASHER_LINK_FILE"
-fetch "$DEHASHER_LINK_BASE/$DEHASHER_LINK_FILE" "$DEHASHER_ZIP"
-if [[ ! -f "$CACHE_DIR/$DEHASHER_FILE" ]]; then
-  unzip -oq "$DEHASHER_ZIP" -d "$CACHE_DIR"
-fi
-chmod +x "$CACHE_DIR/$DEHASHER_FILE"
+if [[ -d "$ASSETS_DIR/hashed/assets" ]]; then
+  echo "Game assets already present at $ASSETS_DIR; skipping archive extraction."
+else
+  DEHASHER_ZIP="$CACHE_DIR/$DEHASHER_LINK_FILE"
+  fetch "$DEHASHER_LINK_BASE/$DEHASHER_LINK_FILE" "$DEHASHER_ZIP"
+  if [[ ! -f "$CACHE_DIR/$DEHASHER_FILE" ]]; then
+    unzip -oq "$DEHASHER_ZIP" -d "$CACHE_DIR"
+  fi
+  chmod +x "$CACHE_DIR/$DEHASHER_FILE"
 
-for file in "${ASSET_FILES[@]}"; do
-  fetch "$ASSET_LINK_BASE/$file" "$CACHE_DIR/$file"
-done
+  for file in "${ASSET_FILES[@]}"; do
+    fetch "$ASSET_LINK_BASE/$file" "$CACHE_DIR/$file"
+  done
 
-pushd "$CACHE_DIR" >/dev/null
-"./$DEHASHER_FILE"
-popd >/dev/null
+  pushd "$CACHE_DIR" >/dev/null
+  "./$DEHASHER_FILE"
+  popd >/dev/null
 
-[[ -d "$CACHE_DIR/farmville/assets" ]] || {
-  echo "Expected extracted assets not found at $CACHE_DIR/farmville/assets" >&2
-  exit 1
-}
+  [[ -d "$CACHE_DIR/farmville/assets" ]] || {
+    echo "Expected extracted assets not found at $CACHE_DIR/farmville/assets" >&2
+    exit 1
+  }
 
-[[ -f "$TOOLBAR_ICON_PATH" ]] && cp -f "$TOOLBAR_ICON_PATH" "$TOOLBAR_ICON_CACHE"
-rm -rf "$ASSETS_DIR"
-mkdir -p "$PUBLIC_DIR/farmville"
-mv -f "$CACHE_DIR/farmville/assets" "$PUBLIC_DIR/farmville"
-rm -rf "$CACHE_DIR/farmville"
+  [[ -f "$TOOLBAR_ICON_PATH" ]] && cp -f "$TOOLBAR_ICON_PATH" "$TOOLBAR_ICON_CACHE"
+  rm -rf "$ASSETS_DIR"
+  mkdir -p "$PUBLIC_DIR/farmville"
+  mv -f "$CACHE_DIR/farmville/assets" "$PUBLIC_DIR/farmville"
+  rm -rf "$CACHE_DIR/farmville"
 
-if [[ -f "$TOOLBAR_ICON_CACHE" ]]; then
-  mkdir -p "$(dirname "$TOOLBAR_ICON_PATH")"
-  mv -f "$TOOLBAR_ICON_CACHE" "$TOOLBAR_ICON_PATH"
+  if [[ -f "$TOOLBAR_ICON_CACHE" ]]; then
+    mkdir -p "$(dirname "$TOOLBAR_ICON_PATH")"
+    mv -f "$TOOLBAR_ICON_CACHE" "$TOOLBAR_ICON_PATH"
+  fi
 fi
 
 ITEMS_SQL_PATH="$CACHE_DIR/$ITEMS_SQL_FILE"
