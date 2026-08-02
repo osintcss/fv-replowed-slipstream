@@ -5,6 +5,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/quest_helper.php";
 function trackQuestProgress($uid, $action, $type, $amount = 1, $extraData = []) {
     $activeQuests = getActiveQuests($uid);
     $updatedQuests = [];
+    $candidateTasks = [];
 
     foreach ($activeQuests as $questName => $questState) {
         $quest = getQuestByName($questName);
@@ -15,6 +16,14 @@ function trackQuestProgress($uid, $action, $type, $amount = 1, $extraData = []) 
         foreach ($quest['tasks'] as $taskIndex => $task) {
             $taskAction = $task['action'] ?? '';
             $taskType = $task['type'] ?? '';
+
+            $candidateTasks[] = [
+                'quest' => $questName,
+                'task' => $taskIndex,
+                'action' => $taskAction,
+                'type' => $taskType,
+                'total' => $task['total'] ?? 1,
+            ];
 
             if (!matchesTaskAction($taskAction, $action, $taskType, $type, $extraData)) {
                 continue;
@@ -27,6 +36,26 @@ function trackQuestProgress($uid, $action, $type, $amount = 1, $extraData = []) 
                 checkAndCompleteQuest($uid, $questName);
             }
         }
+    }
+
+    if (!empty($updatedQuests)) {
+        Logger::debug('QuestProgress', sprintf(
+            'Saved uid=%s event=%s type=%s amount=%d updates=%s',
+            $uid,
+            $action,
+            $type,
+            $amount,
+            json_encode(array_keys($updatedQuests))
+        ));
+    } else {
+        Logger::debug('QuestProgress', sprintf(
+            'No matching task uid=%s event=%s type=%s amount=%d candidates=%s',
+            $uid,
+            $action,
+            $type,
+            $amount,
+            json_encode($candidateTasks)
+        ));
     }
 
     return $updatedQuests;
@@ -84,29 +113,69 @@ function matchesTaskType($taskAction, $taskType, $playerType, $extraData = []) {
     return false;
 }
 
-function trackHarvestProgress($uid, $obj, $itemName, $itemData = []) {
+/**
+ * Return the quest categories represented by an item. Imported item data does
+ * not consistently preserve the client-side crop category names, so retain
+ * aliases for names that differ from the internal item key.
+ */
+function getQuestItemCategories($itemName, $itemData = []) {
+    $categories = [];
+
+    // `subtype` is the normal category source in the imported FarmVille item
+    // definitions (for example `fruit`, `grain`, `vegetable`, or `flowers`).
+    foreach (['categories', 'category', 'subtype'] as $field) {
+        if (!isset($itemData[$field])) {
+            continue;
+        }
+
+        $value = $itemData[$field];
+        if (is_string($value)) {
+            $categories[] = $value;
+        } elseif (is_array($value)) {
+            foreach ($value as $category) {
+                if (is_string($category)) {
+                    $categories[] = $category;
+                }
+            }
+        }
+    }
+
+    // `aloe` is the item key, while FarmQuest settings use the client-facing
+    // harvest category `AloeVera` (for example `allAloeVera`).
+    $itemCategoryAliases = [
+        'aloe' => ['AloeVera'],
+    ];
+
+    foreach ($itemCategoryAliases[$itemName] ?? [] as $category) {
+        $categories[] = $category;
+    }
+
+    return array_values(array_unique($categories));
+}
+
+function trackHarvestProgress($uid, $obj, $itemName, $itemData = [], $amount = 1) {
     $extraData = [
         'itemCode' => $itemName,
-        'categories' => $itemData['categories'] ?? [],
+        'categories' => getQuestItemCategories($itemName, $itemData),
         'objState' => $obj['state'] ?? null,
     ];
 
-    $updates1 = trackQuestProgress($uid, 'harvestByCode', $itemName, 1, $extraData);
+    $updates1 = trackQuestProgress($uid, 'harvestByCode', $itemName, $amount, $extraData);
 
-    $updates2 = trackQuestProgress($uid, 'harvestByCategory', $itemName, 1, $extraData);
+    $updates2 = trackQuestProgress($uid, 'harvestByCategory', $itemName, $amount, $extraData);
 
     return array_merge($updates1, $updates2);
 }
 
-function trackPlantProgress($uid, $itemName, $itemData = []) {
+function trackPlantProgress($uid, $itemName, $itemData = [], $amount = 1) {
     $extraData = [
         'itemCode' => $itemName,
-        'categories' => $itemData['categories'] ?? [],
+        'categories' => getQuestItemCategories($itemName, $itemData),
     ];
 
-    $updates1 = trackQuestProgress($uid, 'plantCropByCode', $itemName, 1, $extraData);
+    $updates1 = trackQuestProgress($uid, 'plantCropByCode', $itemName, $amount, $extraData);
 
-    $updates2 = trackQuestProgress($uid, 'plantCropByCategory', $itemName, 1, $extraData);
+    $updates2 = trackQuestProgress($uid, 'plantCropByCategory', $itemName, $amount, $extraData);
 
     return array_merge($updates1, $updates2);
 }
