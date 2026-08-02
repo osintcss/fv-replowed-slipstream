@@ -9,34 +9,65 @@ class FarmService
     
     public static function expandFarm($playerObj, $request, $market)
     {
-        $data = array();
-
         $itemName = $request->params[0] ?? null;
         $currency = $request->params[1] ?? null;
+        $uid = $playerObj->getUid();
 
-        if (!$itemName || !$currency) return $data;
+        if (!$itemName || !$currency) {
+            return self::expandFarmError($uid, $itemName, $currency, 'Missing expansion item or currency.');
+        }
 
         $item = getItemByName($itemName, "db");
-        if (!$item || !isset($item["squares"])) return $data;
+        if (!$item || !isset($item["squares"])) {
+            return self::expandFarmError($uid, $itemName, $currency, 'Expansion item is unavailable.');
+        }
 
         $newSize = (int) $item["squares"];
-        $uid = $playerObj->getUid();
+        if ($newSize <= 0) {
+            return self::expandFarmError($uid, $itemName, $currency, 'Expansion item has an invalid farm size.');
+        }
 
         if ($currency === "cash") {
             $cost = (int) ($item["cash"] ?? 0);
-            if ($cost <= 0) return $data;
-            if (!UserResources::removeCash($uid, $cost)) return $data;
+            if ($cost <= 0) {
+                return self::expandFarmError($uid, $itemName, $currency, 'Expansion item has no cash price.');
+            }
+            if (!UserResources::removeCash($uid, $cost)) {
+                return self::expandFarmError($uid, $itemName, $currency, 'Not enough cash to expand the farm.');
+            }
         } else {
             $cost = (int) ($item["cost"] ?? 0);
-            if ($cost <= 0) return $data;
-            if (!UserResources::removeGold($uid, $cost)) return $data;
+            if ($cost <= 0) {
+                return self::expandFarmError($uid, $itemName, $currency, 'Expansion item has no coin price.');
+            }
+            if (!UserResources::removeGold($uid, $cost)) {
+                return self::expandFarmError($uid, $itemName, $currency, 'Not enough coins to expand the farm.');
+            }
         }
 
-        $world = $playerObj->expandWorld($newSize, $newSize);
+        try {
+            $world = $playerObj->expandWorld($newSize, $newSize);
+        } catch (\Throwable $e) {
+            if ($currency === "cash") {
+                UserResources::addCash($uid, $cost);
+            } else {
+                UserResources::addGold($uid, $cost);
+            }
 
-        $data["data"] = $world;
+            return self::expandFarmError($uid, $itemName, $currency, 'Failed to save the farm expansion.');
+        }
 
-        return $data;
+        return ["data" => $world];
+    }
+
+    private static function expandFarmError($uid, $itemName, $currency, string $reason): array
+    {
+        Logger::error('FarmService', "expandFarm rejected: uid={$uid}, item={$itemName}, currency={$currency}, reason={$reason}");
+
+        return [
+            'errorType' => 1,
+            'errorData' => $reason,
+        ];
     }
 
     
