@@ -12,6 +12,7 @@
                             loading: false,
                             cashAmount: '',
                             goldAmount: '',
+                            xpAmount: '',
                             lookup() {
                                 this.error = '';
                                 this.success = '';
@@ -34,8 +35,8 @@
                             update(currency, action) {
                                 this.error = '';
                                 this.success = '';
-                                let amount = currency === 'cash' ? this.cashAmount : this.goldAmount;
-                                if (!amount || amount < 1) { this.error = 'Enter a valid amount.'; return; }
+                                let amount = currency === 'cash' ? this.cashAmount : (currency === 'gold' ? this.goldAmount : this.xpAmount);
+                                if (amount === '' || amount < 0 || (action !== 'set' && amount < 1)) { this.error = 'Enter a valid amount.'; return; }
                                 this.loading = true;
                                 fetch('{{ route('admin.update-currency') }}', {
                                     method: 'POST',
@@ -49,6 +50,7 @@
                                     this.success = data.message;
                                     this.user.cash = data.cash;
                                     this.user.gold = data.gold;
+                                    this.user.xp = data.xp;
                                 })
                                 .catch(() => { this.loading = false; this.error = 'Request failed.'; });
                             }
@@ -96,7 +98,7 @@
                                     </div>
 
                                     {{-- Gold --}}
-                                    <div>
+                                    <div class="mb-4">
                                         <label class="block text-sm font-medium mb-1">Gold: <span class="text-yellow-400 font-bold" x-text="user.gold"></span></label>
                                         <div class="flex gap-2">
                                             <input type="number" x-model="goldAmount" min="1" placeholder="Amount"
@@ -104,6 +106,21 @@
                                             <button @click="update('gold', 'increase')" :disabled="loading"
                                                 class="px-3 py-1 bg-green-600 text-white rounded-md text-xs font-semibold hover:bg-green-700 transition">+ Add</button>
                                             <button @click="update('gold', 'decrease')" :disabled="loading"
+                                                class="px-3 py-1 bg-red-600 text-white rounded-md text-xs font-semibold hover:bg-red-700 transition">- Remove</button>
+                                        </div>
+                                    </div>
+
+                                    {{-- Experience --}}
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">XP: <span class="text-blue-400 font-bold" x-text="user.xp"></span></label>
+                                        <div class="flex gap-2">
+                                            <input type="number" x-model="xpAmount" min="0" placeholder="XP amount"
+                                                class="border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 focus:border-indigo-500 dark:focus:border-indigo-600 focus:ring-indigo-500 dark:focus:ring-indigo-600 rounded-md shadow-sm w-28">
+                                            <button @click="update('xp', 'set')" :disabled="loading"
+                                                class="px-3 py-1 bg-blue-600 text-white rounded-md text-xs font-semibold hover:bg-blue-700 transition">Set XP</button>
+                                            <button @click="update('xp', 'increase')" :disabled="loading"
+                                                class="px-3 py-1 bg-green-600 text-white rounded-md text-xs font-semibold hover:bg-green-700 transition">+ Add</button>
+                                            <button @click="update('xp', 'decrease')" :disabled="loading"
                                                 class="px-3 py-1 bg-red-600 text-white rounded-md text-xs font-semibold hover:bg-red-700 transition">- Remove</button>
                                         </div>
                                     </div>
