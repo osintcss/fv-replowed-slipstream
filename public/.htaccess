@@ -40,6 +40,8 @@
 
     RewriteEngine On
 
+    RewriteRule ^farmville/xml/gz/v855038-locale-v3/en_US\.swf$ farmville/locale-contract.php [L]
+
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]

@@ -1,9 +1,8 @@
 <?php
-$scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ||
-          ($_SERVER['SERVER_PORT'] ?? 80) == 443 ||
-          (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https')
-          ? 'https' : 'http';
-$baseUrl = $scheme . '://' . $_SERVER['HTTP_HOST'];
+// Cloudflare terminates TLS before reaching the HTTP Docker origin. Use the
+// configured public URL so the Flash movie and every asset it loads share the
+// HTTPS origin seen by the player.
+$baseUrl = rtrim((string) config('app.url'), '/');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1577,11 +1576,11 @@ $baseUrl = $scheme . '://' . $_SERVER['HTTP_HOST'];
                             "flashRevision": "855037.855026",
                             "phpRevision": "855038",
                             "configRevision": "",
-                            "xml_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/",
+                            "xml_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v3/",
                             "master_assethash_url": "<?= $baseUrl ?>/farmville/assethash/v9/",
                             "masterysigns_amf_url": "<?= $baseUrl ?>/farmville/masterysigns/v1/",
                             "ITEMS_AMF_BUILD_TIME_REDUCTION": false,
-                            "swfLocation": "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FarmGame-10.swf",
+                            "swfLocation": "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FarmGame-10.swf?restore_original=1",
                             "parts_count": 3,
                             "NO_FUEL_DAY_START_TIME": "1606723200",
                             "NO_FUEL_DAY_END_TIME": "1607328000",
@@ -1717,7 +1716,7 @@ $baseUrl = $scheme . '://' . $_SERVER['HTTP_HOST'];
                             id: "flashapp",
                             name: "flashapp"
                         };
-                        swfobject.embedSWF("<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FV_Preloader.swf", "flashContent",
+                        swfobject.embedSWF("<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FV_Preloader.swf?restore_original=1", "flashContent",
                             "100%", "100%", "10.0.0", "playerProductInstall.swf",
                             flashVars, params, attrs, swfCallback);
 
