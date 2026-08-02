@@ -5,6 +5,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/general_functions.php";
 require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
 require_once AMFPHP_ROOTPATH . "Helpers/user_resources.php";
 require_once AMFPHP_ROOTPATH . "Helpers/market_transactions.php";
+require_once AMFPHP_ROOTPATH . "Helpers/quest_progress.php";
 
 class EquipmentWorldService
 {
@@ -292,20 +293,55 @@ class EquipmentWorldService
 
         global $db;
 
+        $worldPersisted = true;
+
         if (!empty($modifiedObjects)) {
             if (!updateWorldObjectsByPosition($worldId, $modifiedObjects)) {
                 Logger::error('EquipmentWorldService', "Failed to update world objects for uid=$uid");
+                $worldPersisted = false;
             }
         }
 
         if (!empty($newObjects)) {
             if (!insertWorldObjects($worldId, $newObjects)) {
                 Logger::error('EquipmentWorldService', "Failed to insert new world objects for uid=$uid");
+                $worldPersisted = false;
             }
         }
 
         if (!empty($modifiedObjects) || !empty($newObjects)) {
             invalidateWorldCache($uid, $currentWorldType);
+        }
+
+        // Bulk equipment actions take a different server route than individual
+        // WorldService actions. Persist quest progress here only after the
+        // affected plots have been saved, so a reload receives the same state.
+        if ($worldPersisted) {
+            $questUpdates = [];
+
+            if ($plowCount > 0) {
+                $questUpdates = array_merge($questUpdates, trackPlowProgress($uid, $plowCount));
+            }
+
+            if ($plantCount > 0 && $itemName) {
+                $itemData = getItemByName($itemName, "db");
+                $questUpdates = array_merge(
+                    $questUpdates,
+                    trackPlantProgress($uid, $itemName, $itemData ?: [], $plantCount)
+                );
+            }
+
+            foreach (array_count_values($harvestedItems) as $harvestedItemName => $harvestCount) {
+                $itemData = getItemByName($harvestedItemName, "db");
+                $questUpdates = array_merge(
+                    $questUpdates,
+                    trackHarvestProgress($uid, [], $harvestedItemName, $itemData ?: [], $harvestCount)
+                );
+            }
+
+            if (!empty($questUpdates)) {
+                Logger::debug('EquipmentWorldService', 'Quest progress saved: ' . json_encode($questUpdates));
+            }
         }
 
         $db->destroy();
