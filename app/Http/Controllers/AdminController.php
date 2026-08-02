@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use App\Models\UserMeta;
 use Illuminate\Http\Request;
 
 class AdminController extends Controller
@@ -33,6 +34,7 @@ class AdminController extends Controller
             'email' => $user->email,
             'cash' => $meta->cash,
             'gold' => $meta->gold,
+            'xp' => $meta->xp,
         ]);
     }
 
@@ -40,9 +42,9 @@ class AdminController extends Controller
     {
         $request->validate([
             'email' => 'required|email',
-            'currency' => 'required|in:cash,gold',
-            'action' => 'required|in:increase,decrease',
-            'amount' => 'required|numeric|min:1',
+            'currency' => 'required|in:cash,gold,xp',
+            'action' => 'required|in:increase,decrease,set',
+            'amount' => 'required|integer|min:0',
         ]);
 
         $user = User::where('email', $request->email)->first();
@@ -60,9 +62,17 @@ class AdminController extends Controller
         $field = $request->currency;
         $amount = (int) $request->amount;
 
-        $max = $field === 'cash' ? 99_999 : 999_999_999;
+        $max = match ($field) {
+            'cash' => UserMeta::CASH_MAX,
+            'gold' => UserMeta::GOLD_MAX,
+            'xp' => UserMeta::XP_MAX,
+        };
 
-        if ($request->action === 'increase') {
+        if ($request->action === 'set') {
+            $meta->$field = min($amount, $max);
+        } elseif ($amount < 1) {
+            return response()->json(['error' => 'Amount must be at least 1.'], 422);
+        } elseif ($request->action === 'increase') {
             $meta->$field = min($meta->$field + $amount, $max);
         } else {
             if ($meta->$field < $amount) {
@@ -77,6 +87,7 @@ class AdminController extends Controller
             'message' => ucfirst($field) . ' updated successfully.',
             'cash' => $meta->cash,
             'gold' => $meta->gold,
+            'xp' => $meta->xp,
         ]);
     }
 }
