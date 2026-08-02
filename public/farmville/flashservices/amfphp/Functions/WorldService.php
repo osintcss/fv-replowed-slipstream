@@ -6,6 +6,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
 require_once AMFPHP_ROOTPATH . "Helpers/quest_progress.php";
 
 use App\Helpers\JsonHelper;
+use App\Support\CraftingCottages;
 
 class WorldService
 {
@@ -31,14 +32,25 @@ class WorldService
 
         switch ($action) {
             case ACTION_PLANT:
-                $plantObj = $request->params[1];
+                $marketPurchaseObj = $request->params[1];
+                $plantObj = clone $marketPurchaseObj;
+                $cottage = CraftingCottages::normalizeMarketPlacement($plantObj);
                 $className = $plantObj->className ?? '';
-                $retId = $playerObj->setWorld($request->params[1], $action);
+                $retId = $playerObj->setWorld($plantObj, $action);
+
+                if ($cottage !== null) {
+                    Logger::log(self::LOG, sprintf(
+                        'Converted crafting market item %s to functional cottage %s (objectId=%d)',
+                        $marketPurchaseObj->itemName ?? '',
+                        $cottage['functionalItem'],
+                        $retId
+                    ));
+                }
 
                 try {
                     $currency = ($extraParams !== null && isset($extraParams->currency))
                         ? (string) $extraParams->currency : null;
-                    $market->newTransaction($action, $request->params[1], $currency);
+                    $market->newTransaction($action, $marketPurchaseObj, $currency);
                 } catch (\Throwable $e) {
                     Logger::error('WorldService', "Plant transaction error: " . $e->getMessage());
                 }
@@ -47,7 +59,7 @@ class WorldService
                     $isStorageWithdrawal = (int) ($extraParams->isStorageWithdrawal ?? 0);
 
                     if ($isStorageWithdrawal === GIFTBOX_ID) {
-                        $placedItemName = $request->params[1]->itemName ?? null;
+                        $placedItemName = $plantObj->itemName ?? null;
                         if ($placedItemName && $retId > 0) {
                             $uid = $playerObj->getUid();
                             $itemData = getItemByName($placedItemName, "db");
@@ -91,7 +103,7 @@ class WorldService
                             }
                         }
                     } elseif ($isStorageWithdrawal > 0 || $isStorageWithdrawal === HOME_INVENTORY_ID) {
-                        $placedItemName = $request->params[1]->itemName ?? null;
+                        $placedItemName = $plantObj->itemName ?? null;
                         if ($placedItemName) {
                             $itemData = getItemByName($placedItemName, "db");
                             if ($itemData && isset($itemData["code"])) {
@@ -151,7 +163,7 @@ class WorldService
                     }
                 }
 
-                $plantedItemName = $request->params[1]->itemName ?? null;
+                $plantedItemName = $plantObj->itemName ?? null;
                 if ($plantedItemName) {
                     $uid = $playerObj->getUid();
                     $itemData = getItemByName($plantedItemName, "db");

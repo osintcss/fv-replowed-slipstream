@@ -6,6 +6,7 @@ use App\Models\CraftingQueue;
 use App\Models\CraftingSkill;
 use App\Models\CraftingRecipeState;
 use App\Models\MarketStall;
+use App\Support\CraftingCottages;
 
 function getCraftTypeFromCottageName(?string $itemName): ?string
 {
@@ -13,37 +14,7 @@ function getCraftTypeFromCottageName(?string $itemName): ?string
         return null;
     }
 
-    $mapping = [
-        'craftingwinery' => 'winery',
-        'craftingbakery' => 'bakery',
-        'craftingspa' => 'spa',
-        'craftingcreamery' => 'creamery',
-        'craftingfirework' => 'firework',
-        'craftingsauna' => 'sauna',
-        'craftingicecream' => 'icecream',
-        'craftingtailor' => 'tailor',
-        'craftingtoy' => 'toy',
-        'craftingcarousel' => 'carousel',
-        'craftingcandle' => 'candle',
-        'craftingperfume' => 'perfume',
-        'craftingcake' => 'cake',
-        'craftingjewelry' => 'jewelry',
-        'craftingdye' => 'dye',
-        'craftingink' => 'ink',
-        'craftingflower' => 'flower',
-    ];
-
-    $lowerName = strtolower($itemName);
-
-    if (isset($mapping[$lowerName])) {
-        return $mapping[$lowerName];
-    }
-
-    if (strpos($lowerName, 'crafting') === 0) {
-        return substr($lowerName, 8);
-    }
-
-    return null;
+    return CraftingCottages::craftTypeForItem($itemName);
 }
 
 function getRecipeQueueForCraftType(int $uid, string $craftType): array
