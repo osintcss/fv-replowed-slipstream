@@ -1734,7 +1734,9 @@ return [
 "fv_xmb_motd_generalaccess" => 1,
 "fv_long_weekend_delight" => 2,
 "fv_farmrun_quest" => 2,
-"fv_ops_strings_reduction" => 2,
+// The reduced locale asset (en_US_min.swf) is not shipped with this archive.
+// Use the complete en_US.swf so quest dialogue and task text can be localized.
+"fv_ops_strings_reduction" => 0,
 "fv_ops_quest_settings_reduction" => 1,
 "fv_toggle_animation" => 0,
 "fv_treasurehunterstavern_toaster" => 1,

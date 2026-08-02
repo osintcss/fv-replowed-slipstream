@@ -12,6 +12,27 @@ use App\Http\Controllers\AdminController;
 use App\Http\Controllers\DailyGiftController;
 use App\Http\Controllers\WorldShopController;
 use App\Http\Controllers\ChatController;
+use Illuminate\Http\Request;
+
+// Flash checks this policy before a loaded SWF exposes scriptable data to the
+// main game movie. Allow only the host that served the policy, rather than a
+// broad wildcard policy.
+Route::get('/crossdomain.xml', function (Request $request) {
+    $host = $request->getHost();
+
+    if (!preg_match('/^[A-Za-z0-9.-]+$/', $host)) {
+        abort(400);
+    }
+
+    $policy = '<?xml version="1.0"?>' . "\n"
+        . '<cross-domain-policy>' . "\n"
+        . '  <allow-access-from domain="' . $host . '" secure="false" />' . "\n"
+        . '</cross-domain-policy>' . "\n";
+
+    return response($policy, 200)
+        ->header('Content-Type', 'text/x-cross-domain-policy')
+        ->header('Cache-Control', 'public, max-age=3600');
+});
 
 Route::get('/up', function () {
     $health = [

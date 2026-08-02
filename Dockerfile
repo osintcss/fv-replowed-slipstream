@@ -27,6 +27,30 @@ COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 WORKDIR /var/www/html
 COPY . .
 
+# Some client experiment assignments request the reduced locale filename even
+# when the complete locale is the only archive asset available. Both contain
+# the same localization contract for this deployment.
+RUN if [ -f public/farmville/xml/gz/v855038/en_US.swf ] && [ ! -e public/farmville/xml/gz/v855038/en_US_min.swf ]; then \
+        ln -s en_US.swf public/farmville/xml/gz/v855038/en_US_min.swf; \
+    fi
+
+# Give the locale loader a versioned path. This bypasses CDN/browser caches
+# without duplicating the XML asset tree.
+RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-locale ]; then \
+        ln -s v855038 public/farmville/xml/gz/v855038-locale; \
+    fi
+
+# Flash persists downloaded SWFs aggressively. A new full-tree alias forces
+# it to fetch the complete archived locale movie without breaking its other
+# XML, settings, or asset lookups.
+RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-locale-v2 ]; then \
+        ln -s v855038 public/farmville/xml/gz/v855038-locale-v2; \
+    fi
+
+RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-locale-v3 ]; then \
+        ln -s v855038 public/farmville/xml/gz/v855038-locale-v3; \
+    fi
+
 RUN cp .env.example .env \
     && composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader \
     && npm ci \
