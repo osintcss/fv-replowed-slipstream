@@ -6,6 +6,7 @@ use App\Helpers\JsonHelper;
 use App\Helpers\ObjectHelper;
 use App\Models\CraftingQueue;
 use App\Models\CraftingSkill;
+use App\Support\CraftingCottages;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\Log;
@@ -224,43 +225,9 @@ class WorldObject extends Model
         $obj->paintColor = $components->paintColor ?? null;
     }
 
-    private const CRAFT_TYPE_MAPPINGS = [
-        'craftingwinery' => 'winery',
-        'craftingbakery' => 'bakery',
-        'craftingspa' => 'spa',
-        'craftingcreamery' => 'creamery',
-        'craftingfirework' => 'firework',
-        'craftingsauna' => 'sauna',
-        'craftingicecream' => 'icecream',
-        'craftingtailor' => 'tailor',
-        'craftingtoy' => 'toy',
-        'craftingcarousel' => 'carousel',
-        'craftingcandle' => 'candle',
-        'craftingperfume' => 'perfume',
-        'craftingcake' => 'cake',
-        'craftingjewelry' => 'jewelry',
-        'craftingdye' => 'dye',
-        'craftingink' => 'ink',
-        'craftingflower' => 'flower',
-    ];
-
     public static function getCraftTypeFromItemName(?string $itemName): ?string
     {
-        if ($itemName === null || $itemName === '') {
-            return null;
-        }
-
-        $lowerName = strtolower($itemName);
-
-        if (isset(self::CRAFT_TYPE_MAPPINGS[$lowerName])) {
-            return self::CRAFT_TYPE_MAPPINGS[$lowerName];
-        }
-
-        if (strpos($lowerName, 'crafting') === 0) {
-            return substr($lowerName, 8);
-        }
-
-        return null;
+        return CraftingCottages::craftTypeForItem($itemName);
     }
 
     private static function fetchRecipeQueue(int $uid, string $craftType): array

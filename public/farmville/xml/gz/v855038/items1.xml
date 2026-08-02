@@ -3990,16 +3990,52 @@
 			<limitedIcon>craftingPerfume_mc</limitedIcon>
 			<image name="icon" url="assets/buildings/building_perfumery_icon.png"/>
 		</item>
+		<!-- The market item above is a purchase proxy. World state uses this functional item. -->
+		<item name="craftingspa" className="CraftingCottageBuilding" type="building" subtype="bldg_misc" buyable="false" giftable="false" placeable="true">
+			<sizeX>4</sizeX>
+			<sizeY>4</sizeY>
+			<craftType>perfumery</craftType>
+			<image name="built_0" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="built_1" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="built_2" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="built_3" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="built_4" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="icon" url="assets/buildings/building_perfumery_icon.png"/>
+		</item>
 		<item name="winery" type="building" subtype="bldg_misc" buyable="true" giftable="false" buystring="Crafting_test" market="coins" pricetest="fv_fm_crafting_buildings" code="L9">
 			<cost>1000000</cost>
 			<pricetest variant="1">1000000</pricetest>
 			<limitedIcon>craftingWine_mc</limitedIcon>
 			<image name="icon" url="assets/buildings/building_winery_icon.png"/>
 		</item>
+		<!-- The market item above is a purchase proxy. World state uses this functional item. -->
+		<item name="craftingwinery" className="CraftingCottageBuilding" type="building" subtype="bldg_misc" buyable="false" giftable="false" placeable="true">
+			<sizeX>4</sizeX>
+			<sizeY>4</sizeY>
+			<craftType>winery</craftType>
+			<image name="built_0" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="built_1" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="built_2" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="built_3" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="built_4" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="icon" url="assets/buildings/building_winery_icon.png"/>
+		</item>
 		<item name="bakery" type="building" subtype="bldg_misc" buyable="true" giftable="false" buystring="Crafting_test" market="coins" pricetest="fv_fm_crafting_buildings" code="LA">
 			<cost>1000000</cost>
 			<pricetest variant="1">1000000</pricetest>
 			<limitedIcon>craftingPastry_mc</limitedIcon>
+			<image name="icon" url="assets/buildings/building_bakeryindia_icon.png"/>
+		</item>
+		<!-- The market item above is a purchase proxy. World state uses this functional item. -->
+		<item name="craftingbakery" className="CraftingCottageBuilding" type="building" subtype="bldg_misc" buyable="false" giftable="false" placeable="true">
+			<sizeX>4</sizeX>
+			<sizeY>4</sizeY>
+			<craftType>bakery</craftType>
+			<image name="built_0" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="built_1" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="built_2" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="built_3" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
+			<image name="built_4" url="assets/buildings/crafting_buildings.swf" loadClass="1"/>
 			<image name="icon" url="assets/buildings/building_bakeryindia_icon.png"/>
 		</item>
 		<item name="refinery" type="building" subtype="bldg_misc" buyable="true" giftable="false" buystring="Crafting_test" market="coins" pricetest="fv_fm_crafting_buildings" code="LL">

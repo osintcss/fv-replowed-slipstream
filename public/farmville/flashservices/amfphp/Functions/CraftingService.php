@@ -122,7 +122,8 @@ class CraftingService
             });
 
         foreach ($claimedByCraftType as $craftType => $claimedItems) {
-            $cottageItemName = 'crafting' . strtolower($craftType);
+            $cottageItemName = \App\Support\CraftingCottages::functionalItemForCraftType($craftType)
+                ?? ('crafting' . strtolower($craftType));
 
             $cottage = $cottages->get($cottageItemName);
 
