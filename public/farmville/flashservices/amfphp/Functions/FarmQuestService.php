@@ -22,6 +22,27 @@ class FarmQuestService
         $xp = $userMeta ? (int) $userMeta->xp : 0;
         $playerLevel = getLevelForXp($xp);
 
+        $questDefinition = getQuestByName($questName);
+        if ($questDefinition && !empty($questDefinition['replay'])) {
+            // The replay-quest manager removes the completed chain from its
+            // local view, then calls this method directly when the player
+            // presses Start. It does not call userResetQuestChapter first.
+            // Reset only an entirely inactive completed chain; never disturb
+            // a chain that is currently in progress.
+            $chainRoot = findQuestChainRoot($questName);
+            $chainNames = getQuestChainNames($chainRoot);
+            $activeQuests = getActiveQuests($uid);
+            $hasActiveChainQuest = (bool) array_intersect(array_keys($activeQuests), $chainNames);
+
+            if (!$hasActiveChainQuest && hasCompletedReplayableQuest($uid, $questName)) {
+                $completedReplayable = array_values(array_diff(
+                    getCompletedReplayableQuests($uid),
+                    $chainNames
+                ));
+                set_meta($uid, META_QUEST_COMPLETED_REPLAYABLE, serialize($completedReplayable));
+            }
+        }
+
         try {
             $questState = startQuestIfEligible($uid, $questName, $playerLevel);
         } catch (\Throwable $e) {
@@ -29,16 +50,96 @@ class FarmQuestService
         }
 
         if ($questState === null) {
-            return ["data" => ["success" => false], "errorType" => 1, "errorData" => "Quest not available"];
+            // Repair intros that were started before the atomic transition
+            // existed. They are still active in saved state, so a normal
+            // start attempt is a no-op unless we complete the intro and put
+            // its eligible child into the response now.
+            if (isViewDialogOnlyQuest($questDefinition)
+                && isset(getActiveQuests($uid)[$questName])) {
+                $completion = completeQuest($uid, $questName);
+                if (($completion['success'] ?? false) === true) {
+                    $questComponent = buildQuestComponent($uid);
+                    $questComponentOverride = $questComponent;
+                    $questComponentOverride[] = [
+                        'name' => $questName,
+                        'progress' => [(string) getViewDialogTaskTotal($questDefinition)],
+                        'removed' => false,
+                        'expired' => false,
+                        'complete' => true,
+                    ];
+
+                    return ["data" => [
+                        "success" => true,
+                        "quest" => null,
+                        "quests" => $questComponent,
+                        "repairedIntro" => true,
+                    ], "_questComponentOverride" => $questComponentOverride];
+                }
+            }
+
+            // The Flash quest UI leaves its "One moment" modal open when this
+            // transaction returns an AMF error. A repeat click is normal after
+            // an intro has completed (or while a refresh is catching up), so
+            // return the current quest state as a successful no-op instead.
+            // ensureAvailableStoryQuest also repairs an already-completed intro
+            // whose eligible child has not yet been placed in active quests.
+            ensureAvailableStoryQuest($uid);
+
+            return ["data" => [
+                "success" => true,
+                "quest" => null,
+                "quests" => buildQuestComponent($uid),
+                "alreadyStarted" => true,
+            ]];
         }
 
-        return ["data" => ["success" => true, "quest" => $questState]];
+        $questDefinition = getQuestByName($questName);
+        $questComponentOverride = null;
+
+        // A one-task `viewDialog` quest is an intro speech bubble, not a
+        // progress panel. Complete it now so its child quest is persisted in
+        // the same response that opens the dialogue. The Flash client queues
+        // markViewDialogTaskDone only after displaying the dialogue; relying
+        // on that later acknowledgement left the UI holding a completed intro
+        // with no active child task to render.
+        if (isViewDialogOnlyQuest($questDefinition)) {
+            $completion = completeQuest($uid, $questName);
+            if (($completion['success'] ?? false) === true) {
+                // The client still needs the completed intro in this one
+                // metadata snapshot in order to show its scripted dialogue.
+                // buildQuestComponent() now contains the real child quest.
+                $questComponentOverride = buildQuestComponent($uid);
+                $questComponentOverride[] = [
+                    'name' => $questName,
+                    'progress' => [(string) getViewDialogTaskTotal($questDefinition)],
+                    'removed' => false,
+                    'expired' => false,
+                    'complete' => true,
+                ];
+            }
+        }
+
+        $questComponent = buildQuestComponent($uid);
+        $startedQuest = null;
+        foreach ($questComponent as $quest) {
+            if ($quest['name'] === $questName) {
+                $startedQuest = $quest;
+                break;
+            }
+        }
+
+        return ["data" => [
+            "success" => true,
+            "quest" => $startedQuest,
+            "quests" => $questComponent,
+        ], "_questComponentOverride" => $questComponentOverride];
     }
 
     
     public static function fullQuestRefresh($playerObj, $request, $market = null)
     {
         $uid = $playerObj->getUid();
+        ensureAvailableStoryQuest($uid);
         $questComponent = buildQuestComponent($uid);
 
         return [
@@ -176,6 +277,19 @@ class FarmQuestService
         $quest = getQuestByName($questName);
         if (!$quest) {
             return ["data" => ["success" => false]];
+        }
+
+        // Intro quests are completed atomically when their replay chain is
+        // started. Flash still sends this acknowledgement after the dialogue
+        // has been shown, so accept that delayed request without restarting
+        // or changing the child quest.
+        if (!isset(getActiveQuests($uid)[$questName]) && hasCompletedQuest($uid, $questName)) {
+            return ["data" => [
+                "success" => true,
+                "questCompleted" => true,
+                "alreadyCompleted" => true,
+                "rewards" => [],
+            ]];
         }
 
         foreach ($quest['tasks'] as $taskIndex => $task) {
