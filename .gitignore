@@ -20,6 +20,8 @@
 /storage/pail
 /vendor
 .cache/
+/public/farmville/embeds/Flash/v855037.855026/FarmGame-*debug.swf
+/public/farmville/embeds/Flash/v855037.855026/FarmGame-compat.swf
 Homestead.json
 Homestead.yaml
 Thumbs.db
