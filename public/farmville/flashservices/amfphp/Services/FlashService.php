@@ -44,8 +44,9 @@ class FlashService {
             $market = new MarketTransactions($userData->zy_user);
         }
 
-        // Build QuestComponent once for all requests (same player)
-        $questComponent = buildQuestComponent($player->getUid());
+        // A new player needs an active story quest before the client can render
+        // QuestComponent. This is idempotent for players who already have one.
+        ensureAvailableStoryQuest($player->getUid());
         $worldTime = time();
 
         Logger::debug('FlashService', "dispatchBatch: " . count($reqData) . " requests");
@@ -53,9 +54,13 @@ class FlashService {
         foreach ($reqData as $key => $requ){
             Logger::debug('FlashService', "Request[$key]: " . $requ->functionName);
 
-            // Debug: Log params for PresentService calls
-            if (strpos($requ->functionName, 'PresentService') !== false) {
-                Logger::debug('FlashService', "PresentService params: " . json_encode($requ->params, JSON_PRETTY_PRINT));
+            // Debug: Log purchase inputs so failed client transactions can be
+            // matched to the item and currency received by the server.
+            if (strpos($requ->functionName, 'PresentService') !== false
+                || $requ->functionName === 'FarmService.expandFarm'
+                || $requ->functionName === 'WorldService.performAction'
+                || strpos($requ->functionName, 'FarmQuestService.') === 0) {
+                Logger::debug('FlashService', $requ->functionName . ' params: ' . json_encode($requ->params, JSON_PRETTY_PRINT));
             }
 
             $data[$key] = array(
@@ -64,15 +69,17 @@ class FlashService {
                 "sequenceNumber" => $requ->sequence,
                 "worldTime" => $worldTime
             );
-            $data[$key]["metadata"] = array(
-                "QuestComponent" => $questComponent
-            );
-
+            $questComponentOverride = null;
             try{
                 $fn_details = explode(".", $requ->functionName);
 
                 if (method_exists($fn_details[0], $fn_details[1])){
                     $result = call_user_func(array($fn_details[0], $fn_details[1]), $player, $requ, $market);
+                    if (strpos($requ->functionName, 'FarmQuestService.') === 0) {
+                        Logger::debug('FlashService', $requ->functionName . ' result: ' . json_encode($result, JSON_PRETTY_PRINT));
+                    }
+                    $questComponentOverride = $result['_questComponentOverride'] ?? null;
+                    unset($result['_questComponentOverride']);
                     $data[$key] = array_merge($data[$key], $result);
                 } else {
                     Logger::error("FlashService", "Method not found: " . $requ->functionName);
@@ -84,6 +91,12 @@ class FlashService {
                 $data[$key]["errorType"] = 1;
                 $data[$key]["errorData"] = "Server error: " . $e->getMessage();
             }
+
+            // Quest actions can start, complete, or remove a quest. Build this
+            // after the handler runs so the client receives the current state.
+            $data[$key]["metadata"] = array(
+                "QuestComponent" => $questComponentOverride ?? buildQuestComponent($player->getUid())
+            );
             
         } 
 

@@ -112,8 +112,12 @@ function addCompletedReplayableQuest($uid, $questName) {
 }
 
 function hasCompletedQuest($uid, $questName) {
-    $completed = getCompletedQuests($uid);
-    return in_array($questName, $completed);
+    return in_array($questName, getCompletedQuests($uid))
+        || in_array($questName, getCompletedReplayableQuests($uid));
+}
+
+function hasCompletedReplayableQuest($uid, $questName) {
+    return in_array($questName, getCompletedReplayableQuests($uid));
 }
 
 function startQuest($uid, $questName) {
@@ -220,11 +224,18 @@ function completeQuest($uid, $questName, $worldType = 'main') {
         addCompletedQuest($uid, $questName);
     }
 
+    // Child quests must be evaluated at the player's actual level. Passing
+    // startQuestIfEligible() no level here made every chained quest look as
+    // though it belonged to a level-1 player, so children with level_min
+    // requirements silently failed to start after their intro completed.
+    $userMeta = \App\Models\UserMeta::where('uid', $uid)->first(['xp']);
+    $playerLevel = $userMeta ? getLevelForXp((int) $userMeta->xp) : 1;
+
     $childrenStarted = [];
     if (!empty($quest['children'])) {
         foreach ($quest['children'] as $child) {
             if ($child['type'] === 'Quest') {
-                $childQuest = startQuestIfEligible($uid, $child['value']);
+                $childQuest = startQuestIfEligible($uid, $child['value'], $playerLevel);
                 if ($childQuest) {
                     $childrenStarted[] = $child['value'];
                 }
@@ -377,6 +388,12 @@ function startQuestIfEligible($uid, $questName, $playerLevel = 1) {
         return null;
     }
 
+    // Replay chains are restarted through userResetQuestChapter, which clears
+    // this marker. Do not allow the start button to create duplicate chains.
+    if ($quest['replay'] && hasCompletedReplayableQuest($uid, $questName)) {
+        return null;
+    }
+
     if (!checkQuestPrereqs($uid, $quest['prereqs'], $playerLevel)) {
         return null;
     }
@@ -444,11 +461,21 @@ function buildQuestComponent($uid) {
             'progress' => $progressStrings,
             'removed' => $state['removed'] ?? false,
             'expired' => $state['expired'] ?? false,
-            'completed' => $state['completed'] ?? false,
+            'complete' => $state['completed'] ?? false,
         ];
     }
 
     return $component;
+}
+
+function isViewDialogOnlyQuest(?array $quest): bool {
+    return $quest !== null
+        && count($quest['tasks'] ?? []) === 1
+        && (($quest['tasks'][0]['action'] ?? null) === 'viewDialog');
+}
+
+function getViewDialogTaskTotal(array $quest): int {
+    return max(1, (int) ($quest['tasks'][0]['total'] ?? 1));
 }
 
 function getAvailableQuests($uid, $playerLevel = 1, $limit = 20) {
@@ -483,4 +510,54 @@ function getAvailableQuests($uid, $playerLevel = 1, $limit = 20) {
     }
 
     return $available;
+}
+
+/**
+ * Ensure a player with no active quests receives the next eligible story quest.
+ *
+ * The Flash client receives active quest state through QuestComponent metadata;
+ * it does not create a starter quest on its own.
+ */
+function ensureAvailableStoryQuest($uid) {
+    if (!empty(getActiveQuests($uid))) {
+        return null;
+    }
+
+    $meta = \App\Models\UserMeta::where('uid', $uid)->first(['xp']);
+    $playerLevel = $meta ? getLevelForXp((int) $meta->xp) : 1;
+
+    // CompleteQuest normally starts child quests immediately. This also
+    // repairs chains that were completed before replayable completions were
+    // considered valid `quest_complete` prerequisites.
+    $completedNames = array_merge(getCompletedQuests($uid), getCompletedReplayableQuests($uid));
+    foreach ($completedNames as $completedName) {
+        $completedQuest = getQuestByName($completedName);
+        if (!$completedQuest) {
+            continue;
+        }
+
+        foreach ($completedQuest['children'] as $child) {
+            if (($child['type'] ?? null) !== 'Quest') {
+                continue;
+            }
+
+            $childName = $child['value'] ?? null;
+            if (!$childName || hasCompletedQuest($uid, $childName)) {
+                continue;
+            }
+
+            $started = startQuestIfEligible($uid, $childName, $playerLevel);
+            if ($started !== null) {
+                return $started;
+            }
+        }
+    }
+
+    $available = getAvailableQuests($uid, $playerLevel, 1);
+
+    if (empty($available)) {
+        return null;
+    }
+
+    return startQuestIfEligible($uid, $available[0]['name'], $playerLevel);
 }
