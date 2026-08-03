@@ -12,6 +12,8 @@ use App\Http\Controllers\AdminController;
 use App\Http\Controllers\DailyGiftController;
 use App\Http\Controllers\WorldShopController;
 use App\Http\Controllers\ChatController;
+use App\Http\Controllers\PlayerExportController;
+use App\Http\Controllers\AdminPlayerImportController;
 use Illuminate\Http\Request;
 
 // Flash checks this policy before a loaded SWF exposes scriptable data to the
@@ -112,6 +114,9 @@ Route::middleware(['auth', 'verified', 'admin'])->group(function () {
     Route::get('/admin', [AdminController::class, 'index'])->name('admin');
     Route::post('/admin/lookup', [AdminController::class, 'lookupUser'])->name('admin.lookup');
     Route::post('/admin/update-currency', [AdminController::class, 'updateCurrency'])->name('admin.update-currency');
+    Route::post('/admin/import-save', [AdminPlayerImportController::class, 'import'])
+        ->name('admin.import-save')
+        ->middleware('throttle:5,1');
 });
 
 Route::middleware('auth')->group(function () {
@@ -123,6 +128,9 @@ Route::middleware('auth')->group(function () {
         ->name('profile.picture.upload')
         ->middleware('throttle:5,1'); // 5 uploads per minute
     Route::delete('/profile/picture', [ProfileController::class, 'deleteProfilePicture'])->name('profile.picture.delete');
+    Route::get('/profile/export', [PlayerExportController::class, 'download'])
+        ->name('profile.export')
+        ->middleware('throttle:5,1');
 
     Route::get('/neighbors/data', [NeighborController::class, 'getNeighborsData'])->name('neighbors.data');
     Route::get('/neighbors/potential', [NeighborController::class, 'getPotentialNeighbors'])->name('neighbors.potential');
