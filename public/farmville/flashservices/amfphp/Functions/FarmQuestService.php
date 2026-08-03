@@ -323,9 +323,62 @@ class FarmQuestService
         $taskIndex = $request->params[1] ?? 0;
 
         $key = "quest_item_request_{$questName}_{$taskIndex}";
-        set_meta($uid, $key, time());
+        $requestedAt = time();
+        set_meta($uid, $key, $requestedAt);
 
-        return ["data" => ["success" => true]];
+        // Offline social fallback: Ask Friends objectives cannot be fulfilled
+        // through Facebook any more. Only fulfil the exact active
+        // useItemByCode task requested by Flash; do not turn arbitrary quest
+        // requests into item grants.
+        $quest = getQuestByName($questName);
+        $activeQuests = getActiveQuests($uid);
+        $task = $quest['tasks'][$taskIndex] ?? null;
+        $questState = $activeQuests[$questName] ?? null;
+
+        if (is_array($task)
+            && is_array($questState)
+            && ($task['action'] ?? null) === 'useItemByCode'
+            && !empty($task['type'])) {
+            $required = max(1, (int) ($task['total'] ?? 1));
+            $current = (int) ($questState['progress'][$taskIndex] ?? 0);
+            $remaining = max(0, $required - $current);
+
+            if ($remaining > 0) {
+                $itemCode = (string) $task['type'];
+                addGiftByCode($uid, $itemCode, $remaining, $uid, [
+                    'source' => 'offline_quest_ask',
+                    'questName' => $questName,
+                    'taskIndex' => (int) $taskIndex,
+                ]);
+                updateQuestProgress($uid, $questName, $taskIndex, $remaining);
+                checkAndCompleteQuest($uid, $questName);
+
+                Logger::debug('FarmQuestService', sprintf(
+                    'Offline Ask Friends fulfilment: uid=%s quest=%s task=%d item=%s amount=%d',
+                    $uid,
+                    $questName,
+                    $taskIndex,
+                    $itemCode,
+                    $remaining
+                ));
+            }
+        }
+
+        // TAskForQuestItem is not a generic acknowledgement transaction.
+        // Transaction.onAmfComplete passes the AMF response's outer `data`
+        // object to this callback, so its `data` payload and `ts` must both be
+        // nested here. This local deployment has no Facebook feed publisher,
+        // so acknowledge the publish immediately. The helper clears its
+        // outstanding request and applies the normal ask cooldown, while
+        // actual quest-item delivery remains PresentService.buyAndSend's job.
+        return [
+            "data" => [
+                "ts" => $requestedAt,
+                "data" => [
+                    "published" => true,
+                ],
+            ],
+        ];
     }
 
     

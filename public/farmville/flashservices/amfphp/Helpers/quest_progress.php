@@ -101,8 +101,16 @@ function matchesTaskType($taskAction, $taskType, $playerType, $extraData = []) {
             $categoryToMatch = substr($taskType, 3);
         }
 
+        // Several quest definitions use an `all<ItemName>` category even
+        // though the imported item only exposes its internal key.  Treat the
+        // key itself as a category too (case and punctuation insensitive), so
+        // `wheat` correctly fulfils `allWheat` without an alias per crop.
+        if (normalizeQuestIdentifier($playerType) === normalizeQuestIdentifier($categoryToMatch)) {
+            return true;
+        }
+
         foreach ($itemCategories as $cat) {
-            if (strcasecmp($cat, $categoryToMatch) === 0) {
+            if (normalizeQuestIdentifier($cat) === normalizeQuestIdentifier($categoryToMatch)) {
                 return true;
             }
         }
@@ -111,6 +119,10 @@ function matchesTaskType($taskAction, $taskType, $playerType, $extraData = []) {
     }
 
     return false;
+}
+
+function normalizeQuestIdentifier($value) {
+    return strtolower(preg_replace('/[^a-z0-9]/i', '', (string) $value));
 }
 
 /**
@@ -146,8 +158,30 @@ function getQuestItemCategories($itemName, $itemData = []) {
         'aloe' => ['AloeVera'],
     ];
 
-    foreach ($itemCategoryAliases[$itemName] ?? [] as $category) {
+    $normalizedItemName = strtolower((string) $itemName);
+    foreach ($itemCategoryAliases[$normalizedItemName] ?? [] as $category) {
         $categories[] = $category;
+    }
+
+    // FarmQuest uses habitat categories while world objects use their full
+    // building key, for example `animal_breeding_petrun_finished`.  Map the
+    // stable item-name family once, rather than hard-coding every finished
+    // Pet Run variant.
+    if (str_contains($normalizedItemName, 'petrun')) {
+        $categories[] = 'petRunHabitat';
+    }
+
+    // The same finished-building naming convention is used by livestock
+    // breeding pens. Quest definitions refer to the family as a habitat.
+    if (str_contains($normalizedItemName, 'livestock')) {
+        $categories[] = 'livestockHabitat';
+    }
+
+    // Horse paddocks use the same finished-building key convention. Quest
+    // settings call this family paddockHabitat rather than the internal
+    // animal_breeding_horsepaddock_finished item name.
+    if (str_contains($normalizedItemName, 'paddock')) {
+        $categories[] = 'paddockHabitat';
     }
 
     return array_values(array_unique($categories));

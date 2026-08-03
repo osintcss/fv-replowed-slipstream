@@ -145,7 +145,86 @@ The plant and harvest tracker helpers accept an optional count so a bulk action
 increments the objective by the number of affected plots, not merely one.
 
 `getQuestItemCategories()` reads the generic imported category/subtype data
-(such as fruit, grain, vegetable, and flowers). The imported item definition
-for internal crop name `aloe` has no subtype, while quest settings call its
-client-side category `allAloeVera`; the small `aloe` → `AloeVera` alias handles
-that display-name exception without requiring a mapping for every crop.
+(such as fruit, grain, vegetable, and flowers). Quest settings also use
+`all<ItemName>` values such as `allWheat`; the matcher treats the internal item
+key as a normalized category, so this works for named crops without a mapping
+for every crop. `aloe` remains an explicit exception because its client-facing
+name is `AloeVera`, not `aloe`.
+
+Some harvesting tasks use a habitat category rather than a crop category. The
+server maps the stable `petrun` world-object family (including finished Pet
+Runs) to `petRunHabitat`, allowing its harvest event to persist progress for
+those objectives. The corresponding `livestock` building family maps to
+`livestockHabitat` for livestock-pen objectives; `paddock` maps to
+`paddockHabitat` for horse-paddock objectives.
+
+### Live counters versus saved counters
+
+The Flash client predicts non-server-synchronised quest actions locally. Its
+prediction code replaces every non-sticky task counter on each transaction,
+which can make a saved harvest counter briefly show progress and then return to
+zero until a reload. The server was already saving the correct value; the UI
+was using a different, transient value.
+
+During the Docker image build, `scripts/patch-quest-settings.php` marks only
+the actions backed by the PHP tracker (`harvestByCode`, `harvestByCategory`,
+`plantCropByCode`, `plantCropByCategory`, `plowPlot`, and `useItemByCode`) with the client’s
+misspelled `requireServerReponse="true"` flag. Flash then applies the AMF
+`QuestComponent` snapshot returned after the world action, keeping the live
+counter and persisted counter aligned. Do not mark an action authoritative
+until its server-side tracker has been implemented.
+
+The game page includes a `revision=server-progress-1` query parameter on both
+quest-settings URLs. This is intentional: Flash can otherwise reuse a cached
+pre-patch `questSettings_0.xml.gz` after a Docker rebuild, which produces the
+misleading combination of a green **Progress!** indicator while the visible
+counter remains at `0/50`. Increment this revision whenever the build-time
+quest-settings patch changes.
+
+`QuestComponent.progress` must also be sent as an AMF number array, not an
+array of numeric-looking strings. The client performs arithmetic using this
+state during a world transaction; a string causes ActionScript concatenation
+instead. For example, a local prediction of `10000` combined with saved
+progress `"2"` displays as `10002/50`. `buildQuestComponent()` therefore casts
+every persisted task value with `intval()` before returning it.
+
+### Quest items received from friends
+
+Some objectives say **Ask Friends** and use a `useItemByCode` task, such as
+the blankets in `kepler-01-001` (**It might get chilly**). Their item is saved
+in the recipient's giftbox, but the giftbox record and quest progress are
+separate state. `PresentService.buyAndSend()` now records the recipient's
+`useItemByCode` progress immediately after storing the item. This prevents a
+temporary client-side counter from reverting to zero when a later quest
+response or reload uses the persisted `QuestComponent`.
+
+For an operator-created test grant, use the normal `PresentService` path when
+possible. A raw `playermeta.giftbox` edit bypasses service logic and does not
+update quest progress on its own.
+
+## Animal pens: Pet Run storage and duplicate animals
+
+Animal pens are `FeatureBuilding` objects, but they inherit Flash's storage
+behaviour. When an animal is dragged into a Pet Run, Flash first harvests the
+loose animal, then calls `WorldService.performAction("store", ...)` with the
+Pet Run's object ID and the animal's item code. It then sends
+`setMultipleFeaturedItems` to choose the animal rendered in the pen.
+
+The old server removed the loose animal but placed it in the player's generic
+inventory. It did not update the Pet Run's `contents` or preserve the featured
+slot. The client only held its local, optimistic version until a reload. This
+made animals disappear from the pen and left the server-side inventory able to
+place additional copies.
+
+The server now persists the building's `contents` entries in the Flash format
+`{ itemCode, numItem }`, removes the loose world object, and stores the
+`featuredItems` state in that building's components. `WorldObject` sends these
+fields back at the top level required by `FeatureBuilding.loadObject()`. A
+placement originating from a positive storage ID now withdraws from that exact
+building before placing, instead of treating it as generic inventory. If the
+placement fails, the item is restored to the building.
+
+This applies to Pet Runs and other feature-based animal pens using the same
+storage protocol. It does not retroactively move animals that were already
+stranded in generic inventory before this change; recover those deliberately,
+after inspecting the affected user's storage and pen contents.
