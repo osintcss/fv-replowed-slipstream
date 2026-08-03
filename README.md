@@ -4,6 +4,8 @@
 
 - Uses Laravel's Eloquent ORM
 - Realtime chat powered by Laravel Reverb
+- Flash client implementation map: [FLASH_CLIENT_CONTRACTS.md](FLASH_CLIENT_CONTRACTS.md)
+- Flash decompilation and contract-tracing commands: [FLASH_CLIENT_CONTRACTS.md#powershell-flash-reverse-engineering-playbook](FLASH_CLIENT_CONTRACTS.md#powershell-flash-reverse-engineering-playbook)
 - Artisan commands:
   - `quest:parse` - Parse quest XML and populate quests table
   - `chat:cleanup` - Delete chat messages older than 7 days
