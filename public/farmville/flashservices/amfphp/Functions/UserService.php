@@ -9,6 +9,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/hud_icons.php";
 require_once AMFPHP_ROOTPATH . "Functions/AvatarService.php";
 
 use App\Helpers\JsonHelper;
+use App\Models\User;
 use App\Models\UserMeta;
 
 class UserService{
@@ -239,6 +240,130 @@ class UserService{
         }
 
         return [];
+    }
+
+    /**
+     * Action counters are persisted independently from the Flash client. The
+     * ordinary action-count transaction has no callback, but interval counters
+     * explicitly read data.actionCount, so both methods share this state.
+     */
+    public static function incrementActionCount($playerObj, $request = null, $market = null){
+        $uid = $playerObj->getUid();
+        $flagName = (string) ($request->params[0] ?? '');
+        if ($flagName === '') {
+            return ['data' => ['actionCount' => 0]];
+        }
+
+        $counts = self::getArrayMeta($uid, 'action_counts');
+        $counts[$flagName] = max(0, (int) ($counts[$flagName] ?? 0)) + 1;
+        set_meta($uid, 'action_counts', serialize($counts));
+
+        return ['data' => ['actionCount' => $counts[$flagName]]];
+    }
+
+    public static function incrementIntervalActionCount($playerObj, $request = null, $market = null){
+        $uid = $playerObj->getUid();
+        $flagName = (string) ($request->params[0] ?? '');
+        $interval = max(0, (int) ($request->params[1] ?? 0));
+        if ($flagName === '') {
+            return ['data' => ['actionCount' => 0]];
+        }
+
+        $intervalCounts = self::getArrayMeta($uid, 'interval_action_counts');
+        $entry = $intervalCounts[$flagName] ?? [];
+        $now = time();
+        $startedAt = (int) ($entry['startedAt'] ?? 0);
+        $count = (int) ($entry['count'] ?? 0);
+        if ($startedAt <= 0 || ($interval > 0 && $now - $startedAt >= $interval)) {
+            $startedAt = $now;
+            $count = 0;
+        }
+
+        $count++;
+        $intervalCounts[$flagName] = ['count' => $count, 'startedAt' => $startedAt];
+        set_meta($uid, 'interval_action_counts', serialize($intervalCounts));
+
+        return ['data' => ['actionCount' => $count]];
+    }
+
+    public static function resetSystemNotifications($playerObj, $request = null, $market = null){
+        set_meta($playerObj->getUid(), 'system_notifications_reset_at', (string) time());
+        return ['data' => ['success' => true]];
+    }
+
+    public static function updateFeatureFrequencyWithBackoff($playerObj, $request = null, $market = null){
+        $uid = $playerObj->getUid();
+        $featureName = (string) ($request->params[0] ?? '');
+        $maxIncrements = max(0, (int) ($request->params[1] ?? 3));
+        if ($featureName === '') {
+            return ['data' => ['success' => false]];
+        }
+
+        $timestamps = self::getArrayMeta($uid, 'feature_frequency_timestamps');
+        $backoffKey = $featureName . '_backoff';
+        $timestamps[$featureName] = time();
+        $timestamps[$backoffKey] = min($maxIncrements, max(0, (int) ($timestamps[$backoffKey] ?? 0)) + 1);
+        set_meta($uid, 'feature_frequency_timestamps', serialize($timestamps));
+
+        return ['data' => ['success' => true]];
+    }
+
+    public static function saveOptions($playerObj, $request = null, $market = null){
+        $options = $request->params[0] ?? null;
+        $options = is_object($options) ? get_object_vars($options) : $options;
+        if (!is_array($options)) {
+            return ['data' => ['success' => false]];
+        }
+
+        $allowed = ['sfxDisabled', 'musicDisabled', 'animationDisabled'];
+        $saved = self::getArrayMeta($playerObj->getUid(), 'player_options');
+        foreach ($allowed as $key) {
+            if (array_key_exists($key, $options)) {
+                $saved[$key] = (bool) $options[$key];
+            }
+        }
+        set_meta($playerObj->getUid(), 'player_options', serialize($saved));
+
+        return ['data' => ['success' => true]];
+    }
+
+    public static function setItemFlag($playerObj, $request = null, $market = null){
+        $name = (string) ($request->params[0] ?? '');
+        if ($name === '') {
+            return ['data' => ['success' => false]];
+        }
+
+        $flags = self::getArrayMeta($playerObj->getUid(), 'item_flags');
+        $flags[$name] = (string) ($request->params[1] ?? '');
+        set_meta($playerObj->getUid(), 'item_flags', serialize($flags));
+
+        return ['data' => ['success' => true]];
+    }
+
+    public static function sawMOTD($playerObj, $request = null, $market = null){
+        set_meta($playerObj->getUid(), 'motd_last_seen_at', (string) time());
+        return ['data' => ['success' => true]];
+    }
+
+    public static function sawSpecificMOTD($playerObj, $request = null, $market = null){
+        $flag = (string) ($request->params[0] ?? '');
+        $seenFlags = self::getArrayMeta($playerObj->getUid(), 'motd_seen_flags');
+        if ($flag !== '') {
+            $seenFlags[$flag] = true;
+            set_meta($playerObj->getUid(), 'motd_seen_flags', serialize($seenFlags));
+        }
+
+        return ['data' => ['success' => true]];
+    }
+
+    private static function getArrayMeta($uid, $key){
+        $raw = get_meta($uid, $key);
+        if (!is_string($raw) || $raw === '') {
+            return [];
+        }
+
+        $value = @unserialize($raw);
+        return is_array($value) ? $value : [];
     }
 
     public static function getGiftboxErrorState($playerObj, $request = null, $market = null){
@@ -511,6 +636,80 @@ class UserService{
                     "FarmVille" => $friends
                 ]
             ]
+        ];
+    }
+
+    /**
+     * Populate the Flash MFS (multi-friend selector) for item requests from
+     * this server's local-neighbor graph. The client supplies the friend-type
+     * names that its tabs read; local neighbors are valid for each requested
+     * type because Facebook/non-app friend classes do not exist here.
+     */
+    public static function getAskItemFriends($playerObj, $request = null, $market = null){
+        $uid = $playerObj->getUid();
+        $requestedTypes = $request->params[3] ?? [];
+        $requestedTypes = is_array($requestedTypes) ? $requestedTypes : [];
+
+        $friendTypes = array_values(array_unique(array_filter(
+            $requestedTypes,
+            static fn ($type) => is_string($type) && $type !== ''
+        )));
+        if (empty($friendTypes)) {
+            $friendTypes = ['FarmVille'];
+        }
+
+        $currNeighbors = get_meta($uid, 'current_neighbors');
+        $neighborUids = $currNeighbors ? (@unserialize($currNeighbors) ?: []) : [];
+        $neighborUids = array_values(array_unique(array_filter($neighborUids, 'is_numeric')));
+
+        $friends = [];
+        if (!empty($neighborUids)) {
+            $usersData = User::join('usermeta', 'users.uid', '=', 'usermeta.uid')
+                ->whereIn('users.uid', $neighborUids)
+                ->select([
+                    'users.uid as uid',
+                    'users.name as name',
+                    'usermeta.firstName as firstName',
+                    'usermeta.lastName as lastName',
+                    'usermeta.xp as xp',
+                    'usermeta.profile_picture as profile_picture',
+                ])
+                ->get();
+
+            foreach ($usersData as $userData) {
+                $xp = (int) ($userData->xp ?? 0);
+                $displayName = trim(($userData->firstName ?? '') . ' ' . ($userData->lastName ?? ''));
+                if ($displayName === '') {
+                    $displayName = $userData->name ?: 'Neighbor';
+                }
+
+                $friends[] = [
+                    'uid' => (string) $userData->uid,
+                    'name' => $displayName,
+                    'pic_square' => $userData->profile_picture
+                        ?: 'https://fv-assets.s3.us-east-005.backblazeb2.com/profile-pictures/default_avatar.png',
+                    'level' => (int) floor($xp / 500) + 1,
+                    'valid' => true,
+                ];
+            }
+        }
+
+        $requestedFriends = [];
+        foreach ($friendTypes as $friendType) {
+            $requestedFriends[$friendType] = $friends;
+        }
+
+        Logger::debug('UserService', sprintf(
+            'getAskItemFriends: uid=%s types=%s neighbors=%d',
+            $uid,
+            json_encode($friendTypes),
+            count($friends)
+        ));
+
+        return [
+            'data' => [
+                'requestedFriends' => $requestedFriends,
+            ],
         ];
     }
 }

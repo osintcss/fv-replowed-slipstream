@@ -10,6 +10,25 @@ use App\Models\CraftingSkill;
 
 class CraftingService
 {
+    /**
+     * TCottageHistorySeen's callback reads data.responseCode. Persist the
+     * acknowledgement so a cottage history prompt does not reappear after a
+     * reload, while leaving recipe/queue state untouched.
+     */
+    public static function onMarkCottageHistorySeen($playerObj, $request, $market = null)
+    {
+        $craftType = (string) ($request->params[0] ?? '');
+        if ($craftType !== '') {
+            $raw = get_meta($playerObj->getUid(), 'crafting_history_seen');
+            $seen = @unserialize($raw);
+            $seen = is_array($seen) ? $seen : [];
+            $seen[$craftType] = true;
+            set_meta($playerObj->getUid(), 'crafting_history_seen', serialize($seen));
+        }
+
+        return ['data' => ['responseCode' => 0]];
+    }
+
     public static function onBeginRecipe($playerObj, $request, $market)
     {
         $data = array();
