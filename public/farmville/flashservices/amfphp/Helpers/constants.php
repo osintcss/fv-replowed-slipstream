@@ -135,6 +135,7 @@ define('ACTION_CLEAR', 'clear');
 define('ACTION_CLEAR_WITHERED', 'clearWithered');
 define('ACTION_INSTANT_GROW', 'instantGrow');
 define('ACTION_STORE', 'store');
+define('ACTION_SET_MULTIPLE_FEATURED_ITEMS', 'setMultipleFeaturedItems');
 define('ACTION_NEIGHBOR_ACT', 'neighborAct');
 define('ACTION_REDEEM_NEIGHBOR_FERTILIZE', 'redeemNeighborFertilize');
 define('ACTION_PLACE_MESSAGE', 'placeMessage');

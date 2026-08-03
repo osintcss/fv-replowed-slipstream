@@ -167,6 +167,10 @@ class WorldObject extends Model
             $this->enrichCraftingCottageData($obj, $uid);
         }
 
+        if ($this->class_name === 'FeatureBuilding') {
+            $this->enrichFeatureBuildingStorageData($obj);
+        }
+
         if ($this->class_name === 'StorageBuilding' || $this->class_name === 'InventoryCellar') {
             $this->enrichStorageBuildingData($obj);
         }
@@ -223,6 +227,26 @@ class WorldObject extends Model
             $components = new \stdClass();
         }
         $obj->paintColor = $components->paintColor ?? null;
+    }
+
+    /**
+     * Feature buildings such as animal pens inherit the Flash storage
+     * implementation, but identify themselves as FeatureBuilding in world
+     * state. The Flash client expects these fields at the top level rather
+     * than nested under components.
+     */
+    private function enrichFeatureBuildingStorageData(\stdClass $obj): void
+    {
+        $obj->isFullyBuilt = ($this->state !== 'construction');
+
+        $components = $this->components;
+        if (!is_object($components)) {
+            $components = new \stdClass();
+        }
+
+        $obj->paintColor = $components->paintColor ?? null;
+        $obj->storageMetadata = $components->storageMetadata ?? new \stdClass();
+        $obj->featuredItems = $components->featuredItems ?? new \stdClass();
     }
 
     public static function getCraftTypeFromItemName(?string $itemName): ?string
