@@ -27,6 +27,11 @@ COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 WORKDIR /var/www/html
 COPY . .
 
+# The archived quest settings let Flash predict crop/harvest progress. Our
+# server already persists these actions, so make the client consume the
+# authoritative QuestComponent returned with each AMF response instead.
+RUN php scripts/patch-quest-settings.php
+
 # Some client experiment assignments request the reduced locale filename even
 # when the complete locale is the only archive asset available. Both contain
 # the same localization contract for this deployment.

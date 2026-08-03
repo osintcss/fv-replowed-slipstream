@@ -1598,8 +1598,12 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "OPS_TEMPID_ON_PLOTS_TMPRT": true,
                             "R2_NEIGHBOR_AUTOPOP_ENABLE": false,
                             "dialogs_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/dialogs.xml.gz",
-                            "quest_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/questSettings.xml.gz",
-                            "quest_min_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/questSettings_0.xml.gz",
+                            // The quest-settings archive is patched during the Docker build so
+                            // server-tracked actions use the AMF QuestComponent snapshot. Keep a
+                            // revision in the URL: Flash otherwise reuses a previously cached,
+                            // unpatched archive even after the server image has been rebuilt.
+                            "quest_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/questSettings.xml.gz?revision=server-progress-2",
+                            "quest_min_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/questSettings_0.xml.gz?revision=server-progress-2",
                             "OPS_TRACK_MEMORY_TRENDING": true,
                             "OPS_MEMORY_TRACKING_TIMEINTERVAL_MINUTES": 2,
                             "OPS_FLASH_CRASH_TRACKING_SECONDS": 4000,

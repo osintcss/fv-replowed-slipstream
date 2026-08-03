@@ -454,11 +454,16 @@ function buildQuestComponent($uid) {
     $component = [];
 
     foreach ($activeQuests as $questName => $state) {
-        $progressStrings = array_map('strval', $state['progress']);
+        // AMF must carry task progress as numbers.  The Flash quest manager
+        // performs arithmetic with this array while processing a world-action
+        // response.  Sending strings makes ActionScript concatenate values
+        // instead (for example a predicted 10000 plus saved "2" becomes
+        // 10002), which can falsely complete an objective.
+        $progressValues = array_map('intval', $state['progress']);
 
         $component[] = [
             'name' => $questName,
-            'progress' => $progressStrings,
+            'progress' => $progressValues,
             'removed' => $state['removed'] ?? false,
             'expired' => $state['expired'] ?? false,
             'complete' => $state['completed'] ?? false,

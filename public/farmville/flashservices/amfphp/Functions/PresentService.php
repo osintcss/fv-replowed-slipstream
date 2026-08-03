@@ -4,6 +4,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/globals.php";
 require_once AMFPHP_ROOTPATH . "Helpers/user_resources.php";
 require_once AMFPHP_ROOTPATH . "Helpers/general_functions.php";
 require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
+require_once AMFPHP_ROOTPATH . "Helpers/quest_progress.php";
 
 class PresentService
 {
@@ -115,6 +116,13 @@ class PresentService
         $numSent = 0;
         foreach ($recipientUids as $recipientUid) {
             addGiftByCode($recipientUid, $itemCode, 1, $uid, $giftExtraData);
+
+            // Quest "Ask Friends" rewards are represented by a
+            // CQuestProgress item. Saving that item to the giftbox alone is
+            // not enough: a later QuestComponent snapshot would otherwise
+            // restore the task's saved progress to zero. Record the receipt
+            // against any active useItemByCode objective now.
+            trackUseItemProgress($recipientUid, $itemCode, 1);
             $numSent++;
         }
 
