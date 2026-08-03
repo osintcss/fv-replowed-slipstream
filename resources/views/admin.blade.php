@@ -4,6 +4,34 @@
             <div class="bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg">
                 <div class="p-6 text-gray-900 dark:text-gray-100">
 
+                    <section class="mb-8 p-4 border border-red-300 dark:border-red-800 rounded-lg max-w-2xl">
+                        <h3 class="text-lg font-medium mb-2">Restore player save</h3>
+                        <p class="text-sm mb-4 text-gray-600 dark:text-gray-400">
+                            Restores the export into the existing account whose UID is embedded in the save file. This replaces that account’s worlds, items, inventories, and game progress. Account credentials and chat are not changed.
+                        </p>
+                        @if (session('status'))
+                            <p class="mb-3 text-sm text-green-600 dark:text-green-400">{{ session('status') }}</p>
+                        @endif
+                        <form method="POST" action="{{ route('admin.import-save') }}" enctype="multipart/form-data" class="space-y-3">
+                            @csrf
+                            <input type="file" name="save_file" accept="application/json,.json" required class="block text-sm">
+                            @error('save_file')
+                                <p class="text-sm text-red-600">{{ $message }}</p>
+                            @enderror
+                            <label class="flex items-start gap-2 text-sm">
+                                <input type="checkbox" name="replace_existing_save" value="1" required class="mt-1">
+                                <span>I understand this permanently replaces the target player’s current game save.</span>
+                            </label>
+                            @error('replace_existing_save')
+                                <p class="text-sm text-red-600">{{ $message }}</p>
+                            @enderror
+                            <button type="submit" onclick="return confirm('Restore this save and replace the target player’s current game data?');"
+                                class="px-4 py-2 bg-red-700 text-white rounded-md text-xs font-semibold uppercase hover:bg-red-600 transition">
+                                Restore save
+                            </button>
+                        </form>
+                    </section>
+
                     <div x-data="{
                             email: '',
                             user: null,
