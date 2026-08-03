@@ -36,7 +36,98 @@ class WorldService
                 $plantObj = clone $marketPurchaseObj;
                 $cottage = CraftingCottages::normalizeMarketPlacement($plantObj);
                 $className = $plantObj->className ?? '';
+                $isStorageWithdrawal = $extraParams !== null
+                    ? (int) ($extraParams->isStorageWithdrawal ?? 0) : 0;
+                // Flash identifies the giftbox itself as -6 in storageData.
+                // Older requests used the legacy -1 source ID, so accept
+                // both formats when removing an item placed from the box.
+                $isGiftboxWithdrawal = in_array($isStorageWithdrawal, [
+                    GIFTBOX_ID,
+                    (int) GIFTBOX_STORAGE_KEY,
+                ], true);
+                $isBuildingWithdrawal = $isStorageWithdrawal > 0;
+                $isInventoryWithdrawal = $isStorageWithdrawal === HOME_INVENTORY_ID;
+                $withdrawnInventoryItemCode = null;
+                $withdrawnInventoryExtraData = null;
+                $withdrawnBuildingItemCode = null;
+
+                // Remove home/inventory items before creating their world
+                // object. The previous post-placement withdrawal silently
+                // did nothing when item lookup or storage data was missing,
+                // which allowed the same animal to be placed repeatedly.
+                if ($isInventoryWithdrawal) {
+                    $itemData = getItemByName($plantObj->itemName ?? '', 'db');
+                    $itemCode = $itemData['code'] ?? null;
+                    $inventory = $itemCode ? getInventoryStorage($playerObj->getUid()) : [];
+                    $available = $itemCode ? (int) ($inventory[$itemCode][0] ?? 0) : 0;
+
+                    if (!$itemCode || $available < 1) {
+                        Logger::error(self::LOG, sprintf(
+                            'Rejected storage placement: uid=%s source=%d item=%s code=%s available=%d',
+                            $playerObj->getUid(),
+                            $isStorageWithdrawal,
+                            $plantObj->itemName ?? '',
+                            $itemCode ?? 'unknown',
+                            $available
+                        ));
+
+                        return [
+                            'id' => 0,
+                            'data' => ['id' => 0, 'success' => false, 'error' => 'Item is not available in storage'],
+                        ];
+                    }
+
+                    $withdrawnInventoryItemCode = $itemCode;
+                    $withdrawnInventoryExtraData = withdrawFromInventoryStorage(
+                        $playerObj->getUid(),
+                        $itemCode
+                    );
+                } elseif ($isBuildingWithdrawal) {
+                    $itemData = getItemByName($plantObj->itemName ?? '', 'db');
+                    $itemCode = $itemData['code'] ?? null;
+
+                    if (!$itemCode || !$playerObj->withdrawStoredItem($isStorageWithdrawal, $itemCode)) {
+                        Logger::error(self::LOG, sprintf(
+                            'Rejected building-storage placement: uid=%s buildingId=%d item=%s code=%s',
+                            $playerObj->getUid(),
+                            $isStorageWithdrawal,
+                            $plantObj->itemName ?? '',
+                            $itemCode ?? 'unknown'
+                        ));
+
+                        return [
+                            'id' => 0,
+                            'data' => ['id' => 0, 'success' => false, 'error' => 'Item is not available in this building'],
+                        ];
+                    }
+
+                    $withdrawnBuildingItemCode = $itemCode;
+                }
                 $retId = $playerObj->setWorld($plantObj, $action);
+
+                // An unsuccessful placement must not consume the item.
+                if ($isInventoryWithdrawal && $retId <= 0) {
+                    addToInventoryStorage(
+                        $playerObj->getUid(),
+                        $withdrawnInventoryItemCode,
+                        1,
+                        $withdrawnInventoryExtraData
+                    );
+
+                    return [
+                        'id' => 0,
+                        'data' => ['id' => 0, 'success' => false, 'error' => 'Could not place item'],
+                    ];
+                }
+
+                if ($isBuildingWithdrawal && $retId <= 0) {
+                    $playerObj->restoreStoredItem($isStorageWithdrawal, $withdrawnBuildingItemCode);
+
+                    return [
+                        'id' => 0,
+                        'data' => ['id' => 0, 'success' => false, 'error' => 'Could not place item'],
+                    ];
+                }
 
                 if ($cottage !== null) {
                     Logger::log(self::LOG, sprintf(
@@ -47,18 +138,20 @@ class WorldService
                     ));
                 }
 
-                try {
-                    $currency = ($extraParams !== null && isset($extraParams->currency))
-                        ? (string) $extraParams->currency : null;
-                    $market->newTransaction($action, $marketPurchaseObj, $currency);
-                } catch (\Throwable $e) {
-                    Logger::error('WorldService', "Plant transaction error: " . $e->getMessage());
+                // Placing an item already owned in a storage box must not be
+                // processed as a new market purchase.
+                if ($isStorageWithdrawal === 0) {
+                    try {
+                        $currency = ($extraParams !== null && isset($extraParams->currency))
+                            ? (string) $extraParams->currency : null;
+                        $market->newTransaction($action, $marketPurchaseObj, $currency);
+                    } catch (\Throwable $e) {
+                        Logger::error('WorldService', "Plant transaction error: " . $e->getMessage());
+                    }
                 }
 
                 if ($extraParams) {
-                    $isStorageWithdrawal = (int) ($extraParams->isStorageWithdrawal ?? 0);
-
-                    if ($isStorageWithdrawal === GIFTBOX_ID) {
+                    if ($isGiftboxWithdrawal) {
                         $placedItemName = $plantObj->itemName ?? null;
                         if ($placedItemName && $retId > 0) {
                             $uid = $playerObj->getUid();
@@ -100,14 +193,6 @@ class WorldService
                                         }
                                     }
                                 }
-                            }
-                        }
-                    } elseif ($isStorageWithdrawal > 0 || $isStorageWithdrawal === HOME_INVENTORY_ID) {
-                        $placedItemName = $plantObj->itemName ?? null;
-                        if ($placedItemName) {
-                            $itemData = getItemByName($placedItemName, "db");
-                            if ($itemData && isset($itemData["code"])) {
-                                $playerObj->withdrawItem($isStorageWithdrawal, $itemData["code"]);
                             }
                         }
                     }
@@ -525,6 +610,40 @@ class WorldService
                         }
                     }
                 }
+                break;
+
+            case ACTION_SET_MULTIPLE_FEATURED_ITEMS:
+                $buildingObj = $request->params[1] ?? null;
+                $featuredItems = $extraParams->featuredItems ?? null;
+                $buildingId = (int) ($buildingObj->id ?? 0);
+                $uid = $playerObj->getUid();
+
+                if ($buildingId > 0 && is_object($featuredItems)) {
+                    $currentWorldType = getCurrentWorldType($uid);
+                    $currWorld = getWorldByType($uid, $currentWorldType);
+
+                    foreach ($currWorld['objectsArray'] as $key => $building) {
+                        if ((int) ($building->id ?? 0) !== $buildingId) {
+                            continue;
+                        }
+
+                        if (!isset($building->components) || !is_object($building->components)) {
+                            $building->components = new \stdClass();
+                        }
+                        $building->components->featuredItems = $featuredItems;
+                        $currWorld['objectsArray'][$key] = $building;
+
+                        if (!saveWorld($uid, $currentWorldType, $currWorld)) {
+                            throw new \Exception("Failed to save featured items for uid=$uid buildingId=$buildingId");
+                        }
+                        break;
+                    }
+                }
+
+                // TSetMultipleFeaturedItems only uses this field when a caller
+                // supplied a callback, but returning the canonical data keeps
+                // the AMF response aligned with the Flash transaction.
+                $data['data'] = ['featuredItems' => $featuredItems ?? new \stdClass()];
                 break;
 
             case ACTION_NEIGHBOR_ACT:

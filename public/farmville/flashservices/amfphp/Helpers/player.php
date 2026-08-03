@@ -42,6 +42,16 @@ class Player {
         $currentWorldType = get_meta($this->uid, "currentWorldType") ?: "farm";
         $currentWorld = getWorldByType($this->uid, $currentWorldType);
         $masteryClientData = getMasteryForClient($this->uid);
+        $savedOptionsRaw = get_meta($this->uid, 'player_options');
+        $savedOptions = is_string($savedOptionsRaw) ? (@unserialize($savedOptionsRaw) ?: []) : [];
+        $playerOptions = array_merge([
+            'sfxDisabled' => false,
+            'musicDisabled' => false,
+            'animationDisabled' => false,
+        ], is_array($savedOptions) ? $savedOptions : []);
+        $savedItemFlagsRaw = get_meta($this->uid, 'item_flags');
+        $savedItemFlags = is_string($savedItemFlagsRaw) ? (@unserialize($savedItemFlagsRaw) ?: []) : [];
+        $itemFlags = array_merge(['giftcard' => ''], is_array($savedItemFlags) ? $savedItemFlags : []);
 
         $this->pData = array(
             "sequenceNumber" => $requ->sequence,
@@ -54,8 +64,20 @@ class Player {
                 "ZRUNTIME_KEY_HIDE_STATS_HUD" => false,
                 "SKIP_NEW_CMS_MODULES" => false,
                 "BINGO" => '{"CADENCENAME": "bingo","START_DATE": "05/13/2013","END_DATE": "05/30/2013","PREVIOUS_END_DATE": "05/30/2013","TITLE": "FARM BINGO","WINDOW_BACKGROUND": "assets/dialogs/FV_Support/FV_Bingo/Bingo_bg_default.png","MOTD": "assets/dialogs/FV_motd_Bingo.swf","BUY_RANDOM_PRICE": 2,"BUY_SPECIFIC_PRICE": 5,"COOLDOWN_HOURS": 6,"AUTOPOP_HOURS": 10,"PRIZES": "saddleshoetree,atthehop,sheep_thickglasses,cow_designersuit,pegacorn_poodleskirt","CARD_NUMBERS": "14,8,2,5,11,25,17,30,26,19,44,42,37,39,57,53,48,60,58,63,74,72,66,61","CARD_NUMBERS_NOT_SELECTED": "1,3,4,6,7,9,10,12,13,15,16,18,20,21,22,23,24,27,28,29,31,32,33,34,35,36,38,40,41,43,45,46,47,49,50,51,52,54,55,56,59,62,64,65,67,68,69,70,71,73,75"}',
+                // Feature-message prerequisites construct MiniDartsManager even
+                // when Mini Darts is not being offered. Its constructor
+                // unconditionally JSON-decodes this runtime value. Keep a valid,
+                // expired runtime here so the unsupported feature remains hidden
+                // without crashing post-init for affected accounts.
+                "MINIDARTS" => '{"CURRENCY_ITEM":"","THROTTLE":0,"CONSUMABLE":"consume_mystery_game_revamp_dart","END_DATE":"01/01/2010","VERSION":1,"CONSUMABLE_COST":15}',
                 "REALITEMNAME_ENABLED" => true,
                 "MARKET_REPOP_BLACKLIST" => "",
+                // The original cash-purchase flow opened Zynga's external
+                // payment dialog.  In the offline build it instead falls
+                // back to this message.  The Flash client dereferences this
+                // value, so leaving it absent causes an Error #1009 whenever
+                // a player tries to buy an item they cannot afford.
+                "FC_POPUP_MESSAGE" => "You do not have enough Farm Cash for that item.",
                 "LONELY_ANIMAL_CREW_ITEM" => "horse_xhf_octoberfestival"
             ),
             "wishData" => array(
@@ -124,11 +146,7 @@ class Player {
                     "xp" => $row['xp'],
                     "energyMax" => $row['energyMax'],
                     "energy" => $row['energy'],
-                    "options" => array(
-                        "sfxDisabled" => false,
-                        "musicDisabled" => false,
-                        "animationDisabled" => false
-                    ),
+                    "options" => $playerOptions,
                     "storageData" => [
                         GIFTBOX_STORAGE_KEY => buildGiftBoxStorageData($this->uid),
                         INVENTORY_STORAGE_KEY => buildInventoryStorageData($this->uid)
@@ -179,7 +197,7 @@ class Player {
                     'incrementalFriendChecks' => array(),
                     'friendRewards' => null,
                     'seenFlags' => @unserialize($row['seenFlags']) ?: [], //tutorial flag
-                    'itemFlags' => array("giftcard" => ""),
+                    'itemFlags' => $itemFlags,
                     'featureFrequency' => $this->getFeatureFrequencies(),
                     'externalLevels' => array(
 
@@ -523,16 +541,55 @@ class Player {
 
         if (!$buildingId || !$itemCode) return 0;
 
-        $extraData = null;
+        $buildingKey = null;
+        foreach ($currWorld["objectsArray"] as $key => $obj) {
+            if ((int) ($obj->id ?? 0) === (int) $buildingId) {
+                $buildingKey = $key;
+                break;
+            }
+        }
+
+        if ($buildingKey === null) {
+            Logger::error('World', "storeItem: building not found uid={$this->uid} buildingId={$buildingId}");
+            return 0;
+        }
+
+        $building = $currWorld["objectsArray"][$buildingKey];
+        $contents = isset($building->contents) && is_array($building->contents)
+            ? $building->contents : [];
+
+        // Flash keeps storage contents on the building itself. A Pet Run sends
+        // this action after an animal is harvested from the farm; storing it in
+        // the player's generic inventory instead made the client and server
+        // disagree after a reload, which is what caused disappearing/duplicate
+        // animals.
+        $contentIndex = null;
+        foreach ($contents as $key => $content) {
+            if (is_object($content) && ($content->itemCode ?? null) === $itemCode) {
+                $contentIndex = $key;
+                break;
+            }
+            if (is_array($content) && ($content['itemCode'] ?? null) === $itemCode) {
+                $contentIndex = $key;
+                break;
+            }
+        }
+
+        if ($contentIndex === null) {
+            $contents[] = (object) [
+                'itemCode' => $itemCode,
+                'numItem' => max(1, $numToStore),
+            ];
+        } elseif (is_object($contents[$contentIndex])) {
+            $contents[$contentIndex]->numItem = (int) ($contents[$contentIndex]->numItem ?? 0) + max(1, $numToStore);
+        } else {
+            $contents[$contentIndex]['numItem'] = (int) ($contents[$contentIndex]['numItem'] ?? 0) + max(1, $numToStore);
+        }
+
+        $building->contents = $contents;
         if ($resourceId > 0) {
             foreach ($currWorld["objectsArray"] as $key => $obj) {
-                if ($obj->id == $resourceId) {
-                    $extraData = (object)[
-                        'id' => $obj->id,
-                        'itemName' => $obj->itemName ?? null,
-                        'state' => $obj->state ?? null,
-                        'direction' => $obj->direction ?? null
-                    ];
+                if ((int) ($obj->id ?? 0) === $resourceId) {
                     unset($currWorld["objectsArray"][$key]);
                     $currWorld["objectsArray"] = array_values($currWorld["objectsArray"]);
                     break;
@@ -540,7 +597,13 @@ class Player {
             }
         }
 
-        addToInventoryStorage($this->uid, $itemCode, $numToStore, $extraData);
+        // The resource removal above may have reindexed objectsArray.
+        foreach ($currWorld["objectsArray"] as $key => $obj) {
+            if ((int) ($obj->id ?? 0) === (int) $buildingId) {
+                $currWorld["objectsArray"][$key] = $building;
+                break;
+            }
+        }
 
         $this->worldData = $currWorld;
         $saveResult = saveWorld($this->uid, $currentWorldType, $currWorld);
@@ -559,6 +622,83 @@ class Player {
             removeFromInventoryStorage($this->uid, $itemCode, $count - 1);
         }
         return $extraData;
+    }
+
+    /**
+     * Removes one item from a particular world storage building. Unlike home
+     * inventory, FeatureBuilding storage (such as a Pet Run) belongs to the
+     * building's `contents` array and has to survive a world reload.
+     */
+    public function withdrawStoredItem($buildingId, $itemCode){
+        return $this->adjustStoredItemCount($buildingId, $itemCode, -1);
+    }
+
+    /** Restore a building-stored item if its subsequent world placement fails. */
+    public function restoreStoredItem($buildingId, $itemCode){
+        return $this->adjustStoredItemCount($buildingId, $itemCode, 1);
+    }
+
+    private function adjustStoredItemCount($buildingId, $itemCode, $delta){
+        $currentWorldType = get_meta($this->uid, 'currentWorldType') ?: 'farm';
+        $currWorld = empty($this->worldData)
+            ? getWorldByType($this->uid, $currentWorldType)
+            : $this->worldData;
+
+        foreach ($currWorld['objectsArray'] as $buildingKey => $building) {
+            if ((int) ($building->id ?? 0) !== (int) $buildingId) {
+                continue;
+            }
+
+            $contents = isset($building->contents) && is_array($building->contents)
+                ? $building->contents : [];
+            $contentIndex = null;
+            $currentCount = 0;
+
+            foreach ($contents as $key => $content) {
+                $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                if ($code === $itemCode) {
+                    $contentIndex = $key;
+                    $currentCount = is_object($content)
+                        ? (int) ($content->numItem ?? 0)
+                        : (int) ($content['numItem'] ?? 0);
+                    break;
+                }
+            }
+
+            if ($delta < 0 && ($contentIndex === null || $currentCount < abs($delta))) {
+                return false;
+            }
+
+            if ($contentIndex === null) {
+                $contents[] = (object) [
+                    'itemCode' => $itemCode,
+                    'numItem' => $delta,
+                ];
+            } else {
+                $newCount = $currentCount + $delta;
+                if ($newCount <= 0) {
+                    unset($contents[$contentIndex]);
+                    $contents = array_values($contents);
+                } elseif (is_object($contents[$contentIndex])) {
+                    $contents[$contentIndex]->numItem = $newCount;
+                } else {
+                    $contents[$contentIndex]['numItem'] = $newCount;
+                }
+            }
+
+            $building->contents = $contents;
+            $currWorld['objectsArray'][$buildingKey] = $building;
+            $this->worldData = $currWorld;
+
+            if (!saveWorld($this->uid, $currentWorldType, $currWorld)) {
+                throw new \Exception("Failed to save building storage for uid={$this->uid} buildingId={$buildingId}");
+            }
+
+            $this->db->destroy();
+            return true;
+        }
+
+        return false;
     }
 
     public function setAvatar($attribs){
