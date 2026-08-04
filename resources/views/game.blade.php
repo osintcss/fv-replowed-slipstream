@@ -849,10 +849,10 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                         const WORLD_SHOP_PRICE = 200;
                         const PURCHASABLE_WORLDS = [
                             { id: 'england', name: 'England' },
-                            { id: 'fisherman', name: 'Fisherman\'s Wharf' },
+                            { id: 'fisherman', name: 'Lighthouse Cove' },
                             { id: 'winterwonderland', name: 'Winter Wonderland' },
                             { id: 'australia', name: 'Australia' },
-                            { id: 'space', name: 'Lighthouse Cove' },
+                            { id: 'space', name: 'Celestial Pastures' },
                             { id: 'candy', name: 'Candy' },
                             { id: 'fforest', name: 'Fairy Forest' },
                             { id: 'hlights', name: 'Holiday Lights' },
@@ -1588,7 +1588,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "OPS_JS_GET_FRIENDS_PERMISSION": false,
                             "game_config_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/gameSettings.xml.gz",
                             "gameSettingsCMS_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/gameSettingsCMS.xml.gz",
-                            "items_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/items.xml.gz",
+                            "items_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-expansions-v1/items.xml.gz",
                             "IS_MASTERY_CLEANED": true,
                             "fgsm_amf_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/fgsm.amf.gz",
                             "FGSM_AMF_ENABLED": false,
@@ -1602,8 +1602,8 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             // server-tracked actions use the AMF QuestComponent snapshot. Keep a
                             // revision in the URL: Flash otherwise reuses a previously cached,
                             // unpatched archive even after the server image has been rebuilt.
-                            "quest_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/questSettings.xml.gz?revision=server-progress-2",
-                            "quest_min_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/questSettings_0.xml.gz?revision=server-progress-2",
+                            "quest_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/questSettings.xml.gz?revision=server-progress-4",
+                            "quest_min_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/questSettings_0.xml.gz?revision=server-progress-4",
                             "OPS_TRACK_MEMORY_TRENDING": true,
                             "OPS_MEMORY_TRACKING_TIMEINTERVAL_MINUTES": 2,
                             "OPS_FLASH_CRASH_TRACKING_SECONDS": 4000,
@@ -2183,7 +2183,6 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                                 </div>
                             </div>
                             <!-- PREFETCHED ASSETS -->
-                            <link rel="prefetch" href="<?= $baseUrl ?>/farmville/xml/gz/v855038/items_opt.amf">
                             <link rel="prefetch" href="<?= $baseUrl ?>/farmville/xml/gz/v855038/gameSettings.xml.gz">
                             <link rel="prefetch" href="<?= $baseUrl ?>/farmville/xml/gz/v855038/gameSettingsCMS.xml.gz">
                             <link rel="prefetch" href="<?= $baseUrl ?>/farmville/xml/gz/v855038/FarmConfig.swf">

@@ -32,6 +32,11 @@ COPY . .
 # authoritative QuestComponent returned with each AMF response instead.
 RUN php scripts/patch-quest-settings.php
 
+# Farm-size expansion used Facebook neighbour gates. Keep the original coin
+# progression, but remove that unavailable social prerequisite from the XML
+# that Flash uses to populate the Market's Farm Expansions category.
+RUN php -d memory_limit=512M scripts/patch-farm-expansion-settings.php
+
 # Some client experiment assignments request the reduced locale filename even
 # when the complete locale is the only archive asset available. Both contain
 # the same localization contract for this deployment.
@@ -54,6 +59,13 @@ RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/
 
 RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-locale-v3 ]; then \
         ln -s v855038 public/farmville/xml/gz/v855038-locale-v3; \
+    fi
+
+# Flash's XML cache is keyed by path on some legacy players and ignores a
+# query-string revision. Give the patched item catalog a fresh path so a
+# rebuilt image cannot reuse the pre-patch expansion definitions.
+RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-expansions-v1 ]; then \
+        ln -s v855038 public/farmville/xml/gz/v855038-expansions-v1; \
     fi
 
 RUN cp .env.example .env \
