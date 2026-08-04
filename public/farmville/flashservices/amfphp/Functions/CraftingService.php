@@ -133,7 +133,7 @@ class CraftingService
     private static function updateCottageHistory($worldId, $claimedByCraftType, $uid, $worldType)
     {
         $cottages = \App\Models\WorldObject::where('world_id', $worldId)
-            ->where('class_name', 'CraftingCottageBuilding')
+            ->whereIn('class_name', ['CraftingCottageBuilding', 'FeatureBuilding'])
             ->where('deleted', false)
             ->get()
             ->groupBy(function ($cottage) {
