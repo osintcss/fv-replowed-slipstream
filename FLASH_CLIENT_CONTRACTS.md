@@ -73,6 +73,37 @@ the client, but present fields must retain the expected type.
 Regression test: complete normal startup and inspect the first AMF batch for
 unexpected `Method not found` errors that block a visible system.
 
+### Free unwither flow
+
+**Verified/implemented.** `TPostInit` creates
+`Global.priceFormulaSettings` from `data.pricingTests`, not from the
+`initUser` response. `UnwitherDialog` looks up the exact test name
+`fv_unwither_optimization`; omitting that entry makes
+`PriceFormulaSettings.getMultipleForTest` dereference a null setting and
+crash with ActionScript Error #1009 when a withered crop is clicked.
+
+The required shape is:
+
+```php
+'pricingTests' => [
+    'fv_unwither_optimization' => [
+        'type' => 'cash',
+        'scheme' => ['multiple' => 0, 'cap' => 0],
+    ],
+],
+```
+
+The shipped SWF clamps the calculated cash price to a minimum of five, so a
+zero formula alone cannot create a visibly free purchase. The offline build
+therefore supplies the native `consume_unwither` gift-box consumable; the
+same dialog detects that credit and uses its built-in free-consumable path.
+`PurchaseUnwitherService.purchaseUnwitherItem` remains available for the
+cash-purchase transaction contract.
+
+Regression test: let at least one crop wither, click it, confirm the dialog
+opens without Error #1009 and shows the consumable path, accept it, then
+verify the crops become harvestable and no Farm Cash is deducted.
+
 ### Locale SWF
 
 **Verified/implemented.** The client must receive the matching locale SWF for
@@ -82,6 +113,52 @@ paths used by the preloader to the matching `en_US.swf` asset.
 
 Regression test: start a normal quest and a `*bubble*` intro. Both the intro
 bubbles and the objective panel must display text.
+
+### Coin farm expansions and incremental gates
+
+**Verified/implemented.** Coin farm-expansion entries in the archived item
+catalog used Facebook-neighbour requirements and legacy incremental gate
+identifiers. The offline server has no corresponding Facebook graph or gate
+service, but `FarmItem.checkIncrementalGate()` still runs while Flash builds
+each Market slot.
+
+The Docker build runs `scripts/patch-farm-expansion-settings.php`, which
+preserves the original farm sizes and coin prices while removing the obsolete
+neighbour and experiment gate fields from coin `expand_farm` entries and
+making them level-1 eligible. The game page uses the versioned
+`v855038-expansions-v1` catalog alias because some Flash players cache XML by
+path and ignore a query-string revision.
+
+There is also a startup-payload compatibility fallback. `player.incrementalGateArray`
+must be an object whose entries are gate records, not the scalar `0`:
+
+```php
+'incrementalGateArray' => [
+    'I001' => ['acquired' => true],
+],
+```
+
+This is intentionally present even after XML patching: a browser can retain an
+older item catalog. It makes the legacy `I001` gate safely available offline
+instead of crashing the Market.
+
+Diagnostic ladder for this class of failure:
+
+1. A blank Farm Expansions category points to a catalog unlock/filter rule.
+2. `Error #1069: Property I001 not found on Number` means the client read a
+   gate entry but the containing `incrementalGateArray` had the wrong type.
+3. `Error #1069: Property acquired not found on Number` means the container
+   type is fixed but the specific gate value must itself be a record with an
+   `acquired` member.
+4. Rebuild the image and completely restart the Flash player before retesting:
+
+```bash
+docker compose up -d --build
+```
+
+Regression test: open Market > Farm Expansions, select Coin Expansions, verify
+the slots render without an ActionScript error, and purchase the next eligible
+coin expansion. Reload and verify the world size persists.
 
 Related detailed notes: [QUEST_DEBUGGING.md](QUEST_DEBUGGING.md).
 
@@ -162,7 +239,7 @@ index.
 | `FarmQuestService.markViewDialogTaskDone` | Acknowledges the intro after its dialogue. It must be idempotent because the server atomically starts the eligible child before Flash sends this acknowledgement. | Implemented. |
 | `FarmQuestService.askForQuestItem` | `Transaction.onAmfComplete` passes the AMF response's outer `data` object to `TAskForQuestItem`, which requires that callback object to contain `data` and `ts`. The handler returns `data: { ts, data: { published: true } }` for a local immediate-publish acknowledgement. With no Facebook delivery path, it grants the remaining amount for the exact active `useItemByCode` task to the giftbox and advances that task's saved progress. It never grants an item for an inactive task or another task action. | Implemented. |
 | Quest component in action responses | Server-backed action counters must be returned as the authoritative quest component when the client is configured to wait for the server. | Implemented for supported actions. |
-| `harvestByCode`, `harvestByCategory`, `plantCropByCode`, `plantCropByCategory`, `plowPlot`, `useItemByCode` | Persist progress against the active quest and cap it at the task requirement. | Implemented. The Docker build marks only these actions as server-backed in quest settings. |
+| `harvestByCode`, `harvestByCategory`, `plantCropByCode`, `plantCropByCategory`, `plowPlot`, `storeItemByCode`, `storeItemByAnySpecificInventoryStorage`, `useItemByCode` | Persist progress against the active quest and cap it at the task requirement. | Implemented. The Docker build marks these actions as server-backed in quest settings. `storeItemByAnySpecificInventoryStorage` is the name used by objectives such as “Store 10 Items on Your Home Farm”; it must not be treated as a client-only synonym. |
 | Bulk equipment actions | `EquipmentWorldService` applies actions to multiple plots; task progress must use the affected count, not one event per request. | Implemented for bulk plow, plant, harvest, and combine. |
 
 Important: crop categories such as `allWheat` are normalized from imported item
@@ -453,7 +530,13 @@ correct response shape or uncached quest settings.
 
 `scripts/audit-flash-contracts.ps1` exports the matching SWF's ActionScript,
 collects literal client service/method calls, and compares them with the PHP
-handlers under `public/farmville/flashservices/amfphp/Functions`.
+handlers under `public/farmville/flashservices/amfphp/Functions`. It also:
+
+- extracts direct fields read from transaction callback objects;
+- distinguishes a missing handler from a handler file that exists but is not
+  loaded by `Services/FlashService.php`;
+- batches JPEXS exports so the full transaction set stays below Windows'
+  command-line length limit.
 
 Run it from PowerShell on a machine with JPEXS Free Flash Decompiler:
 
@@ -467,4 +550,69 @@ first pass scans the SWF transaction layer (rather than exporting every client
 class, which is unnecessarily memory-intensive). Use the report as a backlog:
 group missing calls by feature family, trace the callback for the ones relevant
 to normal play, then promote the result into this catalog. A missing handler is
-a lead, not sufficient evidence to invent its response shape.
+a lead, not sufficient evidence to invent its response shape. Callback fields
+are conservative first-level reads; fields reached through aliases, nested
+objects, or helper methods still require a focused decompile.
+
+## Executable response fixtures
+
+`tests/Fixtures/flash_response_contracts.php` records high-risk AMF callbacks
+as executable response contracts. `tests/Unit/FlashResponseContractTest.php`
+checks that each method exists, its service file is registered by
+`FlashService`, and its response contains the required keys, types, and fixed
+values.
+
+Add a fixture whenever a verified client callback is implemented or repaired.
+Keep fixtures focused on fields proven to be read by Flash; do not freeze large
+placeholder responses merely because the audit lists them. Stateful handlers
+may use `registered_only` until a database-backed lifecycle test exists.
+
+Run the fast fixtures with the normal test suite:
+
+```bash
+php artisan test --filter FlashResponseContractTest
+```
+
+Together, the generated audit and executable fixtures form the proactive loop:
+the audit discovers likely gaps from the SWF, focused tracing establishes the
+real contract, and a fixture prevents that contract from regressing.
+
+## Completed quest journal state
+
+The green task checkmarks only mean `checkAndCompleteQuest()` has marked an
+active quest ready to finish. `QuestComponent.complete` must nevertheless
+remain `false` while the quest is active: the SWF uses `complete: true` to skip
+server-progress reconciliation, which prevents its own `QuestEvent.COMPLETED`
+from firing. Flash then sends
+`FarmQuestService.updateRecentlyCompletedQuests` after the reward/share flow.
+That acknowledgement remains an idempotent compatibility path. The durable
+transition now happens earlier: when a server-tracked action brings the final
+saved task counter to its requirement, `trackQuestProgress()` finalizes the
+quest, grants rewards, removes it from active state, and stores its name in
+`quest_completed`. This is necessary because some client flows paint every
+green checkmark but never send the later acknowledgement before a refresh.
+
+On the next initialization, `UserService.postInit` returns that list as
+`completedQuests`; `TPostInit` passes it to `FarmQuestManager`, which populates
+the journal's Completed tab. Returning `null` here leaves the tab empty even
+when the saved quest state is correct.
+
+Replayable quests use a separate `completedReplayableQuests` object keyed by
+the quest definition's `memStoreId`. The SWF turns each entry into a
+`ReplayableFarmQuestData` record, requiring `completion_count` and
+`completion_date`. The local server stores only completed quest names, so it
+reconstructs that response object from the normalized `quests` table.
+
+For saves produced before the `QuestComponent.complete` correction,
+`finalizePendingCompletedQuests()` repairs only quests already persisted as
+completed-but-active during `postInit`. This moves the stuck quest into history
+and evaluates its child quests without touching in-progress work.
+
+### First contract completed with the loop
+
+`LeaderboardService.getBatchFriendLists` is called during ordinary startup.
+`TGetLeaderboardFriendLists` sends an array of leaderboard names, then looks up
+each callback value directly as `result[leaderboardName]`. The offline handler
+therefore returns every requested name as a key with an empty array value. This
+finishes the original callbacks without fabricating Facebook friend data. Its
+two-name response shape is covered by the executable fixture suite.
