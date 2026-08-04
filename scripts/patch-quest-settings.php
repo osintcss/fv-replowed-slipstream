@@ -27,6 +27,8 @@ $serverTrackedActions = [
     'plantCropByCode',
     'plantCropByCategory',
     'plowPlot',
+    'storeItemByCode',
+    'storeItemByAnySpecificInventoryStorage',
     'useItemByCode',
 ];
 

@@ -6,6 +6,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/market_transactions.php";
 require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
 require_once AMFPHP_ROOTPATH . "Helpers/constants.php";
 require_once AMFPHP_ROOTPATH . "Helpers/hud_icons.php";
+require_once AMFPHP_ROOTPATH . "Helpers/quest_helper.php";
 require_once AMFPHP_ROOTPATH . "Functions/AvatarService.php";
 
 use App\Helpers\JsonHelper;
@@ -32,6 +33,8 @@ class UserService{
             "female" => new stdClass()
         ];
         $playerLevel = 0;
+        $completedQuests = [];
+        $completedReplayableQuests = [];
 
         if ($playerObj) {
             $uid = $playerObj->getUid();
@@ -43,6 +46,18 @@ class UserService{
 
             $unlockedAvatarItems = AvatarService::getUnlockedItems($uid);
             $avatarConfigurations = AvatarService::getConfigurations($uid);
+            // TPostInit uses this exact list to populate the journal's
+            // Completed tab. Sending null leaves FarmQuestManager with no
+            // completion history even though quest progress was persisted.
+            $repairedQuests = finalizePendingCompletedQuests($uid);
+            if ($repairedQuests) {
+                Logger::debug(
+                    'UserService',
+                    'Finalized previously stuck completed quests for uid='.$uid.': '.implode(',', $repairedQuests)
+                );
+            }
+            $completedQuests = getCompletedQuests($uid);
+            $completedReplayableQuests = buildCompletedReplayableQuestData($uid);
 
             $userMeta = UserMeta::where('uid', $uid)->first();
             if ($userMeta) {
@@ -80,9 +95,16 @@ class UserService{
             "breedingState" => null,
             "w2wState" => null,
             "bestSellers" => null,
-            "completedQuests" => null,
-            "completedReplayableQuests" => null,
-            "pricingTests" => null,
+            "completedQuests" => $completedQuests,
+            "completedReplayableQuests" => $completedReplayableQuests,
+            // TPostInit constructs Global.priceFormulaSettings from this
+            // field. The Unwither dialog looks up this exact test name.
+            "pricingTests" => array(
+                "fv_unwither_optimization" => array(
+                    "type" => "cash",
+                    "scheme" => array("multiple" => 0, "cap" => 0),
+                ),
+            ),
             "buildingActions" => null,
             "lastPphActionType" => "PphAction",
             "communityGoalsData" => null,
@@ -131,6 +153,20 @@ class UserService{
 
     public static function getGifts($playerObj, $request = null, $market = null){
         $uid = $playerObj->getUid();
+        $unwitherItem = getItemByName('consume_unwither', 'db');
+        $unwitherCode = $unwitherItem['code'] ?? null;
+
+        // UnwitherDialog hard-codes a minimum cash price of 5 even when its
+        // price formula returns zero. Supplying the native consumable makes
+        // the same dialog use its built-in free-credit path instead.
+        if ($unwitherCode) {
+            $giftbox = getGiftBox($uid);
+            $quantity = (int) ($giftbox[$unwitherCode][0] ?? 0);
+            if ($quantity < 9999) {
+                addGiftByCode($uid, $unwitherCode, 9999 - $quantity);
+            }
+        }
+
         $data["data"] = array(
             "storageData" => array(
                 "-6" => buildGiftBoxStorageData($uid)
