@@ -18,18 +18,22 @@ class RepairCraftingCottages extends Command
             static fn (array $cottage) => $cottage['marketItem'] ?? null,
             CraftingCottages::all()
         )));
+        $functionalItems = array_map(
+            static fn (array $cottage) => $cottage['functionalItem'],
+            CraftingCottages::all()
+        );
 
         $objects = WorldObject::query()
             ->where('deleted', false)
-            ->where(function ($query) use ($marketItems) {
+            ->where(function ($query) use ($marketItems, $functionalItems) {
                 $query->whereIn('item_name', $marketItems)
-                    ->orWhere(function ($query) {
-                        $query->where('class_name', 'CraftingCottageBuilding')
-                            ->whereIn('item_name', array_map(
-                                static fn (array $cottage) => $cottage['functionalItem'],
-                                CraftingCottages::all()
-                            ))
-                            ->where('state', 'built_0');
+                    ->orWhere(function ($query) use ($functionalItems) {
+                        $query->whereIn('item_name', $functionalItems)
+                            ->where(function ($query) {
+                                $query->whereNull('class_name')
+                                    ->orWhere('class_name', '!=', 'CraftingCottageBuilding')
+                                    ->orWhere('state', 'built_0');
+                            });
                     });
             })
             ->orderBy('world_id')

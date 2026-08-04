@@ -136,15 +136,12 @@ class CraftingService
             ->where('class_name', 'CraftingCottageBuilding')
             ->where('deleted', false)
             ->get()
-            ->keyBy(function ($cottage) {
-                return strtolower($cottage->item_name ?? '');
+            ->groupBy(function ($cottage) {
+                return \App\Support\CraftingCottages::craftTypeForItem($cottage->item_name) ?? '';
             });
 
         foreach ($claimedByCraftType as $craftType => $claimedItems) {
-            $cottageItemName = \App\Support\CraftingCottages::functionalItemForCraftType($craftType)
-                ?? ('crafting' . strtolower($craftType));
-
-            $cottage = $cottages->get($cottageItemName);
+            $cottage = $cottages->get(strtolower($craftType))?->first();
 
             if (!$cottage) {
                 continue;

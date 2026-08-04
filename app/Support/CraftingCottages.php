@@ -42,6 +42,11 @@ final class CraftingCottages
         ['functionalItem' => 'craftingdye', 'craftType' => 'dye'],
         ['functionalItem' => 'craftingink', 'craftType' => 'ink'],
         ['functionalItem' => 'craftingflower', 'craftType' => 'flower'],
+        // The Craftshop is an older special cottage. Unlike Winery and
+        // Bakery, its world-object names do not follow the "crafting" +
+        // craft-type convention, so they must be listed explicitly.
+        ['functionalItem' => 'craftingworkshop_finished', 'craftType' => 'craftshop'],
+        ['functionalItem' => 'xalcraftingworkshop_finished', 'craftType' => 'craftshop'],
     ];
 
     public static function forMarketItem(?string $itemName): ?array
@@ -80,12 +85,14 @@ final class CraftingCottages
     }
 
     /**
-     * Convert a market-only placement request to the corresponding object the
-     * Flash client can render and open. Returns null for ordinary placements.
+     * Normalize a crafting-cottage placement to the object identity and state
+     * the Flash client can render and open. Returns null for ordinary
+     * placements.
      */
     public static function normalizeMarketPlacement(\stdClass $object): ?array
     {
-        $cottage = self::forMarketItem($object->itemName ?? null);
+        $cottage = self::forMarketItem($object->itemName ?? null)
+            ?? self::forFunctionalItem($object->itemName ?? null);
 
         if ($cottage === null) {
             return null;
