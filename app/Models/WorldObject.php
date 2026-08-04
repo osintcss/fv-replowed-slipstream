@@ -163,7 +163,9 @@ class WorldObject extends Model
         $obj->hostId = $this->host_id;
         $obj->timestamp = $this->message_timestamp;
 
-        if ($this->class_name === 'CraftingCottageBuilding') {
+        $craftingContract = CraftingCottages::worldContractForItem($this->item_name);
+        if ($this->class_name === 'CraftingCottageBuilding'
+            || ($craftingContract !== null && $craftingContract['className'] === 'FeatureBuilding')) {
             $this->enrichCraftingCottageData($obj, $uid);
         }
 

@@ -42,11 +42,21 @@ final class CraftingCottages
         ['functionalItem' => 'craftingdye', 'craftType' => 'dye'],
         ['functionalItem' => 'craftingink', 'craftType' => 'ink'],
         ['functionalItem' => 'craftingflower', 'craftType' => 'flower'],
-        // The Craftshop is an older special cottage. Unlike Winery and
-        // Bakery, its world-object names do not follow the "crafting" +
-        // craft-type convention, so they must be listed explicitly.
-        ['functionalItem' => 'craftingworkshop_finished', 'craftType' => 'craftshop'],
-        ['functionalItem' => 'xalcraftingworkshop_finished', 'craftType' => 'craftshop'],
+        // Craftshop is a pre-cottage feature building. It uses the crafting
+        // service, but Flash renders and opens it through FeatureBuilding
+        // while it is in the completed "grown" state.
+        [
+            'functionalItem' => 'craftingworkshop_finished',
+            'craftType' => 'craftshop',
+            'worldClass' => 'FeatureBuilding',
+            'worldState' => 'grown',
+        ],
+        [
+            'functionalItem' => 'xalcraftingworkshop_finished',
+            'craftType' => 'craftshop',
+            'worldClass' => 'FeatureBuilding',
+            'worldState' => 'grown',
+        ],
     ];
 
     public static function forMarketItem(?string $itemName): ?array
@@ -99,10 +109,11 @@ final class CraftingCottages
         }
 
         $object->itemName = $cottage['functionalItem'];
-        $object->className = 'CraftingCottageBuilding';
+        $object->className = $cottage['worldClass'] ?? 'CraftingCottageBuilding';
         // CraftingCottageBuilding derives the image suffix (_0 through _4)
-        // from its craft level. The stored state itself must stay "built".
-        $object->state = 'built';
+        // from its craft level. Older FeatureBuilding-based craft systems
+        // retain their own completed world state instead.
+        $object->state = $cottage['worldState'] ?? 'built';
 
         return $cottage;
     }
@@ -111,6 +122,21 @@ final class CraftingCottages
     public static function all(): array
     {
         return self::COTTAGES;
+    }
+
+    /** @return array{className: string, state: string}|null */
+    public static function worldContractForItem(?string $itemName): ?array
+    {
+        $cottage = self::forFunctionalItem($itemName) ?? self::forMarketItem($itemName);
+
+        if ($cottage === null) {
+            return null;
+        }
+
+        return [
+            'className' => $cottage['worldClass'] ?? 'CraftingCottageBuilding',
+            'state' => $cottage['worldState'] ?? 'built',
+        ];
     }
 
     private static function find(?string $value, string $field): ?array

@@ -27,18 +27,27 @@ class RepairCraftingCottages extends Command
             ->where('deleted', false)
             ->where(function ($query) use ($marketItems, $functionalItems) {
                 $query->whereIn('item_name', $marketItems)
-                    ->orWhere(function ($query) use ($functionalItems) {
-                        $query->whereIn('item_name', $functionalItems)
-                            ->where(function ($query) {
-                                $query->whereNull('class_name')
-                                    ->orWhere('class_name', '!=', 'CraftingCottageBuilding')
-                                    ->orWhere('state', 'built_0');
-                            });
-                    });
+                    ->orWhereIn('item_name', $functionalItems);
             })
             ->orderBy('world_id')
             ->orderBy('object_id')
-            ->get();
+            ->get()
+            ->filter(function (WorldObject $object): bool {
+                $cottage = CraftingCottages::forMarketItem($object->item_name)
+                    ?? CraftingCottages::forFunctionalItem($object->item_name);
+                if ($cottage === null) {
+                    return false;
+                }
+
+                $contract = CraftingCottages::worldContractForItem($cottage['functionalItem']);
+
+                return $contract !== null && (
+                    $object->item_name !== $cottage['functionalItem']
+                    || $object->class_name !== $contract['className']
+                    || $object->state !== $contract['state']
+                );
+            })
+            ->values();
 
         if ($objects->isEmpty()) {
             $this->info('No market-proxy crafting cottages need repair.');
@@ -54,23 +63,19 @@ class RepairCraftingCottages extends Command
                 continue;
             }
 
-            // A legacy Craftshop can arrive as a FeatureBuilding in its
-            // generic "bare" state. CraftingCottageBuilding only accepts the
-            // completed "built" state; leaving bare in place produces a
-            // shadow that cannot be opened.
-            $needsContractRepair = $object->class_name !== 'CraftingCottageBuilding';
-            $needsStateRepair = $object->state === 'built_0' || $needsContractRepair;
             $targetItemName = $cottage['functionalItem'];
-            $targetState = $needsStateRepair || CraftingCottages::forMarketItem($object->item_name) !== null
-                ? 'built'
-                : $object->state;
+            $contract = CraftingCottages::worldContractForItem($targetItemName);
+            $targetClassName = $contract['className'];
+            $targetState = $contract['state'];
 
             $this->line(sprintf(
-                'world=%d object=%d item=%s -> %s, state=%s -> %s',
+                'world=%d object=%d item=%s -> %s, class=%s -> %s, state=%s -> %s',
                 $object->world_id,
                 $object->object_id,
                 $object->item_name,
                 $targetItemName,
+                $object->class_name,
+                $targetClassName,
                 $object->state ?? '(null)',
                 $targetState ?? '(null)',
             ));
@@ -78,7 +83,7 @@ class RepairCraftingCottages extends Command
             if (! $this->option('dry-run')) {
                 $object->forceFill([
                     'item_name' => $targetItemName,
-                    'class_name' => 'CraftingCottageBuilding',
+                    'class_name' => $targetClassName,
                     'state' => $targetState,
                 ])->save();
             }
