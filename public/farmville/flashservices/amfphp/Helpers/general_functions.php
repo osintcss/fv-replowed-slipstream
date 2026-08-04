@@ -1365,7 +1365,18 @@
     function insertWorldObject($worldId, $obj) {
         try {
             $data = WorldObject::fromFlashObject($obj, $worldId);
-            WorldObject::create($data);
+
+            // A Flash retry can resend a placement after the first request
+            // has already committed. World object IDs are the stable client
+            // identity within a world, so inserting a second row for that
+            // identity creates overlapping crops on every later load.
+            WorldObject::updateOrCreate(
+                [
+                    'world_id' => $worldId,
+                    'object_id' => (int) $data['object_id'],
+                ],
+                $data
+            );
 
             Logger::debug('World', "insertWorldObject: worldId=$worldId pos=({$data['position_x']},{$data['position_y']})");
             return true;
@@ -1407,6 +1418,17 @@
             $affectedRows = WorldObject::where('world_id', $worldId)
                 ->where('object_id', (int)$objectId)
                 ->update($data);
+
+            // A client may still hold a valid object after an interrupted
+            // full-world save removed its row. Restore that one object rather
+            // than reporting a successful update that wrote nothing.
+            if ($affectedRows === 0) {
+                WorldObject::create(array_merge($data, [
+                    'world_id' => $worldId,
+                    'object_id' => (int) $objectId,
+                ]));
+                $affectedRows = 1;
+            }
 
             $posX = $data['position_x'] ?? '?';
             $posY = $data['position_y'] ?? '?';

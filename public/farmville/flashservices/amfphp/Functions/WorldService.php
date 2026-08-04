@@ -490,6 +490,7 @@ class WorldService
                     $storedItemName = $extraParams->storedItemName ?? null;
                     $storedItemCode = $extraParams->storedItemCode ?? null;
                     $numToStore = (int) ($extraParams->numToStore ?? 1);
+                    $storageTarget = isset($extraParams->target) ? (int) $extraParams->target : null;
                     $buildingId = $buildingObj->id ?? null;
                     $buildingItemName = $buildingObj->itemName ?? null;
 
@@ -517,8 +518,40 @@ class WorldService
                         }
                     }
 
+                    $storeResult = null;
                     if (!$isExpansionPartItem) {
-                        $playerObj->storeItem($buildingObj, $extraParams);
+                        // TInventoryStore identifies its destination with
+                        // target=-2 and sends the resource itself as the
+                        // action object. TStoreItem has no target and sends a
+                        // real StorageBuilding. They must not share a path.
+                        $storeResult = $storageTarget === HOME_INVENTORY_ID
+                            ? $playerObj->storeInHomeInventory($extraParams)
+                            : $playerObj->storeItem($buildingObj, $extraParams);
+
+                        if (!$storeResult) {
+                            return [
+                                'id' => 0,
+                                'data' => [
+                                    'id' => 0,
+                                    'success' => false,
+                                    'error' => 'Could not store item',
+                                ],
+                            ];
+                        }
+
+                        // Quest progress is only recorded after the storage
+                        // write succeeds, so a rejected store neither removes
+                        // an item nor advances a quest.
+                        trackStoreProgress(
+                            $playerObj->getUid(),
+                            $storedItemCode ?? ($storeResult['itemCode'] ?? ''),
+                            max(1, $numToStore)
+                        );
+
+                        $data['data'] = [
+                            'id' => $storeResult['id'] ?? 0,
+                            'success' => true,
+                        ];
                     }
 
                     $creditItems = [

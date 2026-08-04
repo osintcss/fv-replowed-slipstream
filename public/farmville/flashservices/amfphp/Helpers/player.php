@@ -171,7 +171,21 @@ class Player {
                     'lastHorseStableSendTime' => 0,
                     'lastFrenchChateauSendTime' => 0,
                     'lastNurserySendTime' => 0,
-                    'incrementalGateArray' => 0,
+                    // Older item catalogs still contain incremental-gate
+                    // identifiers (for example I001 on coin farm
+                    // expansions). The Flash market unconditionally reads
+                    // this as an object; returning scalar 0 causes Error
+                    // #1069 before it can render a slot. Keep the legacy
+                    // gate available and unlocked for offline play. The XML
+                    // patch removes these gates from new catalogs, but this
+                    // also safely supports a player with a cached catalog.
+                    'incrementalGateArray' => [
+                        // FarmItem.checkIncrementalGate() reads the nested
+                        // `acquired` member, not a numeric flag.
+                        'I001' => [
+                            'acquired' => true,
+                        ],
+                    ],
                     'progressBarData' => null,
                     'neighborPlumbingAddExcludeList' => null,
                     'pendingNeighbors' => $this->getPendingNeighbors(),
@@ -539,7 +553,7 @@ class Player {
         $resourceId = (int) ($storeParams->resource ?? 0);
         $numToStore = (int) ($storeParams->numToStore ?? 1);
 
-        if (!$buildingId || !$itemCode) return 0;
+        if (!$buildingId || !$itemCode) return false;
 
         $buildingKey = null;
         foreach ($currWorld["objectsArray"] as $key => $obj) {
@@ -551,7 +565,7 @@ class Player {
 
         if ($buildingKey === null) {
             Logger::error('World', "storeItem: building not found uid={$this->uid} buildingId={$buildingId}");
-            return 0;
+            return false;
         }
 
         $building = $currWorld["objectsArray"][$buildingKey];
@@ -613,7 +627,81 @@ class Player {
             throw new \Exception("Failed to save world data (storeItem) for uid={$this->uid}");
         }
 
-        return 0;
+        return [
+            'success' => true,
+            'id' => $resourceId,
+            'itemCode' => $itemCode,
+            'quantity' => max(1, $numToStore),
+        ];
+    }
+
+    /**
+     * Store an item in the player's Home Inventory (-2).
+     *
+     * Flash uses the same `store` world action for both a physical storage
+     * building and Home Inventory.  In the latter form the action object is
+     * the resource being stored, not a building.  Treating it as a building
+     * wrote its contents and then removed it from the world, losing the item.
+     */
+    public function storeInHomeInventory($storeParams){
+        $itemCode = $storeParams->storedItemCode ?? $storeParams->code ?? null;
+        $resourceId = (int) ($storeParams->resource ?? 0);
+        $quantity = max(1, (int) ($storeParams->numToStore ?? 1));
+
+        if (!$itemCode) {
+            Logger::error('World', "storeInHomeInventory: missing item code uid={$this->uid}");
+            return false;
+        }
+
+        $currentWorldType = get_meta($this->uid, 'currentWorldType') ?: 'farm';
+        $currWorld = empty($this->worldData)
+            ? getWorldByType($this->uid, $currentWorldType)
+            : $this->worldData;
+        $resourceKey = null;
+
+        if ($resourceId > 0) {
+            foreach ($currWorld['objectsArray'] as $key => $obj) {
+                if ((int) ($obj->id ?? 0) === $resourceId) {
+                    $resourceKey = $key;
+                    break;
+                }
+            }
+
+            // Never grant/remove an on-farm item unless the server can see
+            // that exact object. A rejected request leaves the farm intact.
+            if ($resourceKey === null) {
+                Logger::error('World', "storeInHomeInventory: resource not found uid={$this->uid} resourceId={$resourceId}");
+                return false;
+            }
+        }
+
+        // `packStoreItemMetaData` carries per-animal state such as names and
+        // breeding information. Persist it beside the inventory count so a
+        // later placement recreates the original object rather than a blank
+        // copy.
+        $metadata = $storeParams->metadata ?? null;
+        addToInventoryStorage($this->uid, $itemCode, $quantity, $metadata);
+
+        if ($resourceKey !== null) {
+            unset($currWorld['objectsArray'][$resourceKey]);
+            $currWorld['objectsArray'] = array_values($currWorld['objectsArray']);
+            $this->worldData = $currWorld;
+
+            if (!saveWorld($this->uid, $currentWorldType, $currWorld)) {
+                // The inventory write is deliberately first: a save failure
+                // may duplicate an item, but can never destroy one.
+                throw new \Exception("Failed to save world data (storeInHomeInventory) for uid={$this->uid}");
+            }
+        }
+
+        $this->db->destroy();
+
+        return [
+            'success' => true,
+            'id' => $resourceId,
+            'itemCode' => $itemCode,
+            'quantity' => $quantity,
+        ];
     }
 
     public function withdrawItem($buildingId, $itemCode, $count = 1){
