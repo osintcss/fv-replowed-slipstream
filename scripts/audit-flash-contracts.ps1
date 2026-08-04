@@ -1,5 +1,5 @@
 param(
-    [string] $SwfPath = 'public/farmville/embeds/Flash/v855037.855026/FarmGame.855037.855026.swf',
+    [string] $SwfPath = 'public/farmville/embeds/Flash/v855037.855026/FarmGame-10.swf',
     [Parameter(Mandatory = $true)]
     [string] $FfdecPath,
     [string] $OutputPath = 'storage/app/flash-contract-audit.md'
@@ -25,6 +25,48 @@ function Get-LiteralAmfCalls {
     }
 
     return $calls
+}
+
+function Get-CallbackFieldReads {
+    param([string] $Source)
+
+    $fields = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $methodPattern = '(?m)(?:override\s+)?(?:public|protected|private)?\s*function\s+(?:onComplete|on[A-Z][A-Za-z0-9_]*)\s*\(\s*(?<param>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*Object[^)]*\)[^{]*\{'
+
+    foreach ($methodMatch in [regex]::Matches($Source, $methodPattern)) {
+        $parameter = $methodMatch.Groups['param'].Value
+        $bodyStart = $methodMatch.Index + $methodMatch.Length
+        $depth = 1
+        $position = $bodyStart
+
+        while ($position -lt $Source.Length -and $depth -gt 0) {
+            switch ($Source[$position]) {
+                '{' { $depth++ }
+                '}' { $depth-- }
+            }
+            $position++
+        }
+
+        $bodyLength = [Math]::Max(0, $position - $bodyStart - 1)
+        $body = $Source.Substring($bodyStart, $bodyLength)
+        $escapedParameter = [regex]::Escape($parameter)
+        $patterns = @(
+            "\b$escapedParameter\s*\.\s*(?<field>[A-Za-z_][A-Za-z0-9_]*)",
+            ('\b{0}\s*\[\s*["''](?<field>[^"'']+)["'']\s*\]' -f $escapedParameter),
+            ('\b{0}\s*\.\s*hasOwnProperty\s*\(\s*["''](?<field>[^"'']+)["'']' -f $escapedParameter)
+        )
+
+        foreach ($pattern in $patterns) {
+            foreach ($fieldMatch in [regex]::Matches($body, $pattern)) {
+                $field = $fieldMatch.Groups['field'].Value
+                if ($field -ne 'hasOwnProperty') {
+                    [void] $fields.Add($field)
+                }
+            }
+        }
+    }
+
+    return $fields
 }
 
 if (-not (Test-Path -LiteralPath $SwfPath -PathType Leaf)) {
@@ -68,21 +110,39 @@ if ($transactionClasses.Count -eq 0) {
 Write-Host "Exporting $($transactionClasses.Count) transaction classes from the SWF..."
 # Parallel export inflates JPEXS' heap substantially on large game SWFs. A
 # serial export is slower but makes the audit usable on the same modest VM
-# that runs the game stack.
-& $FfdecPath -config parallelSpeedUp=false -selectclass ($transactionClasses -join ',') -export script $workingRoot $SwfPath
-if ($LASTEXITCODE -ne 0) {
-    throw "JPEXS export failed with exit code $LASTEXITCODE"
+# that runs the game stack. Batch class names to stay below Windows' command-
+# line length limit on clients with hundreds of transaction classes.
+$exportBatchSize = 60
+for ($offset = 0; $offset -lt $transactionClasses.Count; $offset += $exportBatchSize) {
+    $lastIndex = [Math]::Min($offset + $exportBatchSize - 1, $transactionClasses.Count - 1)
+    $batch = $transactionClasses[$offset..$lastIndex]
+    Write-Host "  Batch $($offset + 1)-$($lastIndex + 1)..."
+    & $FfdecPath -config parallelSpeedUp=false -selectclass ($batch -join ',') -export script $workingRoot $SwfPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "JPEXS export failed for transaction classes $($offset + 1)-$($lastIndex + 1) with exit code $LASTEXITCODE"
+    }
 }
 
 $clientCalls = @{}
+$callbackFields = @{}
 Get-ChildItem -LiteralPath $scriptExport -Filter '*.as' -File -Recurse | ForEach-Object {
     $relativePath = $_.FullName.Substring($scriptExport.Length).TrimStart('\', '/')
     $source = Get-Content -LiteralPath $_.FullName -Raw
-    Get-LiteralAmfCalls -Source $source | ForEach-Object {
-        if (-not $clientCalls.ContainsKey($_)) {
-            $clientCalls[$_] = [System.Collections.Generic.List[string]]::new()
+    $sourceCalls = @(Get-LiteralAmfCalls -Source $source)
+    $sourceFields = @(Get-CallbackFieldReads -Source $source)
+    $sourceCalls | ForEach-Object {
+        $call = $_
+        if (-not $clientCalls.ContainsKey($call)) {
+            $clientCalls[$call] = [System.Collections.Generic.List[string]]::new()
         }
-        $clientCalls[$_].Add($relativePath)
+        $clientCalls[$call].Add($relativePath)
+
+        if (-not $callbackFields.ContainsKey($call)) {
+            $callbackFields[$call] = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        }
+        foreach ($field in $sourceFields) {
+            [void] $callbackFields[$call].Add($field)
+        }
     }
 }
 
@@ -95,6 +155,13 @@ $clientCalls['WorldService.performAction'].Add('Transactions/TWorldState.as')
 
 $serverMethods = @{}
 $functionsDir = Join-Path $repoRoot 'public/farmville/flashservices/amfphp/Functions'
+$flashServicePath = Join-Path $repoRoot 'public/farmville/flashservices/amfphp/Services/FlashService.php'
+$flashServiceSource = Get-Content -LiteralPath $flashServicePath -Raw
+$registeredFunctionFiles = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+[regex]::Matches($flashServiceSource, 'Functions/(?<file>[A-Za-z_][A-Za-z0-9_]*\.php)') | ForEach-Object {
+    [void] $registeredFunctionFiles.Add($_.Groups['file'].Value)
+}
+
 Get-ChildItem -LiteralPath $functionsDir -Filter '*.php' -File | ForEach-Object {
     $source = Get-Content -LiteralPath $_.FullName -Raw
     $classMatch = [regex]::Match($source, '\bclass\s+(?<class>[A-Za-z_][A-Za-z0-9_]*)')
@@ -105,23 +172,41 @@ Get-ChildItem -LiteralPath $functionsDir -Filter '*.php' -File | ForEach-Object 
     $service = $classMatch.Groups['class'].Value
     $methods = [regex]::Matches($source, '\bpublic\s+(?:static\s+)?function\s+(?<method>[A-Za-z_][A-Za-z0-9_]*)') |
         ForEach-Object { $_.Groups['method'].Value }
-    $serverMethods[$service] = @($methods)
+    $serverMethods[$service] = [PSCustomObject]@{
+        Methods = @($methods)
+        Registered = $registeredFunctionFiles.Contains($_.Name)
+    }
 }
 
 $rows = foreach ($call in $clientCalls.Keys | Sort-Object) {
     $parts = $call.Split('.', 2)
     $service = $parts[0]
     $method = $parts[1]
-    $implemented = $serverMethods.ContainsKey($service) -and $serverMethods[$service] -contains $method
+    $handlerPresent = $serverMethods.ContainsKey($service) -and $serverMethods[$service].Methods -contains $method
+    $handlerRegistered = $handlerPresent -and $serverMethods[$service].Registered
+    $fields = if ($callbackFields.ContainsKey($call)) {
+        @($callbackFields[$call] | Sort-Object)
+    } else {
+        @()
+    }
     [PSCustomObject]@{
         Contract = $call
-        Status = if ($implemented) { 'handler present' } else { 'no PHP handler found' }
+        Status = if (-not $handlerPresent) {
+            'no PHP handler found'
+        } elseif (-not $handlerRegistered) {
+            'handler file not registered'
+        } else {
+            'handler present'
+        }
         Caller = ($clientCalls[$call] | Sort-Object -Unique | Select-Object -First 3) -join '<br>'
+        CallbackFields = if ($fields.Count -gt 0) { ($fields -join ', ') } else { 'none detected' }
     }
 }
 
 $implementedCount = @($rows | Where-Object Status -eq 'handler present').Count
 $missingCount = @($rows | Where-Object Status -eq 'no PHP handler found').Count
+$unregisteredCount = @($rows | Where-Object Status -eq 'handler file not registered').Count
+$callbackFieldCount = @($callbackFields.Values | ForEach-Object { $_ } | Sort-Object -Unique).Count
 $missingByService = $rows |
     Where-Object Status -eq 'no PHP handler found' |
     ForEach-Object {
@@ -140,8 +225,10 @@ $markdown.Add('')
 $markdown.Add("- Literal client AMF calls found: **$($rows.Count)**")
 $markdown.Add("- PHP handlers present: **$implementedCount**")
 $markdown.Add("- Calls without a PHP handler: **$missingCount**")
+$markdown.Add("- Handlers whose files are not registered: **$unregisteredCount**")
+$markdown.Add("- Distinct direct callback fields detected: **$callbackFieldCount**")
 $markdown.Add('')
-$markdown.Add('This is an inventory, not proof that every missing call blocks gameplay. It includes literal service/method strings from the transaction layer; dynamic calls, non-transaction callers, and callback-field requirements still need individual contract tracing.')
+$markdown.Add('This is an inventory, not proof that every missing call blocks gameplay. It includes literal service/method strings and direct callback-field reads from the transaction layer. Dynamic calls, non-transaction callers, nested/aliased fields, and the semantic meaning of each response still need focused tracing.')
 $markdown.Add('')
 $markdown.Add('## Missing-handler triage by service')
 $markdown.Add('')
@@ -153,10 +240,10 @@ foreach ($service in $missingByService) {
     $markdown.Add("| ``$($service.Name)`` | $($service.Count) |")
 }
 $markdown.Add('')
-$markdown.Add('| Client contract | PHP coverage | First caller(s) |')
-$markdown.Add('| --- | --- | --- |')
+$markdown.Add('| Client contract | PHP coverage | Direct callback fields | First caller(s) |')
+$markdown.Add('| --- | --- | --- | --- |')
 foreach ($row in $rows) {
-    $markdown.Add("| ``$($row.Contract)`` | $($row.Status) | $($row.Caller) |")
+    $markdown.Add("| ``$($row.Contract)`` | $($row.Status) | $($row.CallbackFields) | $($row.Caller) |")
 }
 
 Set-Content -LiteralPath $outputAbsolute -Value $markdown -Encoding utf8
