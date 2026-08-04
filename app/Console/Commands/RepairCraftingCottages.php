@@ -54,7 +54,12 @@ class RepairCraftingCottages extends Command
                 continue;
             }
 
-            $needsStateRepair = $object->state === 'built_0';
+            // A legacy Craftshop can arrive as a FeatureBuilding in its
+            // generic "bare" state. CraftingCottageBuilding only accepts the
+            // completed "built" state; leaving bare in place produces a
+            // shadow that cannot be opened.
+            $needsContractRepair = $object->class_name !== 'CraftingCottageBuilding';
+            $needsStateRepair = $object->state === 'built_0' || $needsContractRepair;
             $targetItemName = $cottage['functionalItem'];
             $targetState = $needsStateRepair || CraftingCottages::forMarketItem($object->item_name) !== null
                 ? 'built'
