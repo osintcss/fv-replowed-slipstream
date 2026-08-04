@@ -111,6 +111,31 @@ function addCompletedReplayableQuest($uid, $questName) {
     }
 }
 
+/**
+ * TPostInit converts this object into ReplayableFarmQuestData instances. The
+ * old server only persisted quest names, so reconstruct the client record
+ * from each quest definition's stable memStoreId.
+ */
+function buildCompletedReplayableQuestData($uid) {
+    $completed = [];
+
+    foreach (getCompletedReplayableQuests($uid) as $questName) {
+        $quest = getQuestByName($questName);
+        $memStoreId = $quest['mem_store_id'] ?? null;
+        if ($memStoreId === null || $memStoreId === '') {
+            continue;
+        }
+
+        $completed[(string) $memStoreId] = [
+            'completion_count' => 1,
+            'completion_date' => time(),
+            'hideFromQuestManagerComplete' => false,
+        ];
+    }
+
+    return $completed;
+}
+
 function hasCompletedQuest($uid, $questName) {
     return in_array($questName, getCompletedQuests($uid))
         || in_array($questName, getCompletedReplayableQuests($uid));
@@ -248,6 +273,52 @@ function completeQuest($uid, $questName, $worldType = 'main') {
         'rewards' => $rewardsGranted,
         'childrenStarted' => $childrenStarted,
     ];
+}
+
+/**
+ * Repair quests saved by earlier server responses as completed-but-active.
+ * Those clients never received their QuestEvent.COMPLETED and therefore never
+ * sent the normal reward/share acknowledgement. This is deliberately limited
+ * to states already marked complete; in-progress quests are untouched.
+ */
+function finalizePendingCompletedQuests($uid, $worldType = 'main') {
+    $finalized = [];
+
+    foreach (getActiveQuests($uid) as $questName => $state) {
+        if (!is_array($state)) {
+            continue;
+        }
+
+        $quest = getQuestByName($questName);
+        if (!$quest) {
+            continue;
+        }
+
+        $isMarkedComplete = ($state['completed'] ?? false) === true;
+        $hasFinishedProgress = true;
+        foreach ($quest['tasks'] as $taskIndex => $task) {
+            $required = max(1, (int) ($task['total'] ?? 1));
+            $progress = (int) ($state['progress'][$taskIndex] ?? 0);
+            if ($progress < $required) {
+                $hasFinishedProgress = false;
+                break;
+            }
+        }
+
+        // Older saves can contain exact completed counters but a false flag
+        // because the final progress response was acknowledged by Flash
+        // before the server wrote its completion marker.
+        if (!$isMarkedComplete && !$hasFinishedProgress) {
+            continue;
+        }
+
+        $completion = completeQuest($uid, $questName, $worldType);
+        if (($completion['success'] ?? false) === true) {
+            $finalized[] = $questName;
+        }
+    }
+
+    return $finalized;
 }
 
 function grantQuestRewards($uid, $rewards, $worldType = 'main') {
@@ -466,7 +537,14 @@ function buildQuestComponent($uid) {
             'progress' => $progressValues,
             'removed' => $state['removed'] ?? false,
             'expired' => $state['expired'] ?? false,
-            'complete' => $state['completed'] ?? false,
+            // `complete: true` means something very specific to the Flash
+            // quest manager: it skips reconciling the returned progress.
+            // If we set it as soon as the server notices every task is done,
+            // Flash never dispatches its QuestEvent.COMPLETED, so it shows
+            // green checks but never runs the reward/share flow or moves the
+            // quest to Completed. Keep this false until that original client
+            // flow acknowledges the completion and removes the quest.
+            'complete' => false,
         ];
     }
 

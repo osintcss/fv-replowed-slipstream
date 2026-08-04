@@ -402,12 +402,37 @@ class FarmQuestService
         $questName = $request->params[0] ?? null;
         $shouldGenerateFriendReward = $request->params[1] ?? false;
 
+        if (is_string($questName) && $questName !== '') {
+            $activeQuests = getActiveQuests($uid);
+            $questState = $activeQuests[$questName] ?? null;
+
+            // Flash sends this acknowledgement after it has shown a quest's
+            // reward/share flow. Recheck the persisted counters rather than
+            // relying only on the transient `completed` flag: older client
+            // flows can show the reward UI before that flag is returned to
+            // the server. This makes the state transition durable even if a
+            // browser refresh immediately follows the completion screen.
+            if (is_array($questState) && checkAndCompleteQuest($uid, $questName)) {
+                $completion = completeQuest($uid, $questName);
+                if (($completion['success'] ?? false) === true) {
+                    Logger::debug('FarmQuestService', sprintf(
+                        'Finalized completed quest: uid=%s quest=%s',
+                        $uid,
+                        $questName
+                    ));
+                }
+            }
+        }
+
         if ($shouldGenerateFriendReward) {
             $key = "quest_friend_reward_{$questName}";
             set_meta($uid, $key, time());
         }
 
-        return ["data" => ["success" => true]];
+        return ["data" => [
+            "success" => true,
+            "completedQuests" => getCompletedQuests($uid),
+        ]];
     }
 
     

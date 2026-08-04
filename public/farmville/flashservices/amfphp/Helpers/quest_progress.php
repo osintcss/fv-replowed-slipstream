@@ -33,8 +33,27 @@ function trackQuestProgress($uid, $action, $type, $amount = 1, $extraData = []) 
             if ($result) {
                 $updatedQuests[$questName] = $result;
 
-                checkAndCompleteQuest($uid, $questName);
             }
+        }
+    }
+
+    // Flash can paint the final green checkmark without ever sending its
+    // later completion acknowledgement. Treat the saved counter totals as
+    // authoritative: when this action finished a quest, atomically archive
+    // it, grant its rewards, and make its child quest eligible now. This
+    // prevents a completed-looking quest from returning as active on reload.
+    foreach (array_keys($updatedQuests) as $questName) {
+        if (!checkAndCompleteQuest($uid, $questName)) {
+            continue;
+        }
+
+        $completion = completeQuest($uid, $questName);
+        if (($completion['success'] ?? false) === true) {
+            Logger::debug('QuestProgress', sprintf(
+                'Finalized uid=%s quest=%s after saved task completion',
+                $uid,
+                $questName
+            ));
         }
     }
 
@@ -71,6 +90,7 @@ function matchesTaskAction($taskAction, $playerAction, $taskType, $playerType, $
             'plowPlot' => ['plow'],
             'makeRecipeByCode' => ['makeRecipe', 'craft'],
             'buyItemByCode' => ['buyItem', 'purchase'],
+            'storeItemByAnySpecificInventoryStorage' => ['storeItemByCode', 'store'],
             'useItemByCode' => ['useItem', 'use'],
             'getMasteryLevelByCode' => ['mastery', 'getMastery'],
         ];
@@ -91,6 +111,16 @@ function matchesTaskAction($taskAction, $playerAction, $taskType, $playerType, $
 function matchesTaskType($taskAction, $taskType, $playerType, $extraData = []) {
     if ($taskType === $playerType) {
         return true;
+    }
+
+    // Generic storage tasks are displayed as “Store N Items” and use an
+    // all-items marker rather than the code of a particular animal or
+    // decoration.  They should advance for every successfully stored item.
+    if (in_array($taskAction, ['storeItemByCode', 'storeItemByAnySpecificInventoryStorage'], true)) {
+        $normalizedTaskType = normalizeQuestIdentifier($taskType);
+        if (in_array($normalizedTaskType, ['', 'all', 'allitem', 'allitems', 'item', 'items'], true)) {
+            return true;
+        }
     }
 
     if (strpos($taskAction, 'ByCategory') !== false) {
