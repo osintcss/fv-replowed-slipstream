@@ -11,6 +11,9 @@ ASSETS_DIR="$PUBLIC_DIR/farmville/assets"
 TOOLBAR_ICON_REL="hashed/assets/decorations/toolbar32x32.png"
 TOOLBAR_ICON_PATH="$ASSETS_DIR/$TOOLBAR_ICON_REL"
 TOOLBAR_ICON_CACHE="$CACHE_DIR/toolbar32x32.png"
+# A repository bootstrap may contain only the toolbar icon. It must not be
+# mistaken for the complete archive extraction.
+ASSET_COMPLETION_MARKER="hashed/assets/SWFs"
 
 # The previous FarmPlay mirror is Cloudflare-Access protected. These files are
 # the same WARC archives, preserved in the public Internet Archive collection.
@@ -55,9 +58,12 @@ fetch() {
   fi
 }
 
-if [[ -d "$ASSETS_DIR/hashed/assets" ]]; then
+if [[ -d "$ASSETS_DIR/$ASSET_COMPLETION_MARKER" ]]; then
   echo "Game assets already present at $ASSETS_DIR; skipping archive extraction."
 else
+  if [[ -d "$ASSETS_DIR/hashed/assets" ]]; then
+    echo "Incomplete game assets found at $ASSETS_DIR; downloading and extracting the full archive."
+  fi
   DEHASHER_ZIP="$CACHE_DIR/$DEHASHER_LINK_FILE"
   fetch "$DEHASHER_LINK_BASE/$DEHASHER_LINK_FILE" "$DEHASHER_ZIP"
   if [[ ! -f "$CACHE_DIR/$DEHASHER_FILE" ]]; then
