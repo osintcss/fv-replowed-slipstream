@@ -46,6 +46,18 @@ The game is then served at `http://localhost:8000`; MariaDB is exposed on
 port `33061`, and Reverb on port `8080`. Use `make stop` to stop the stack,
 `make logs` to follow its logs, and `make test` to run the Laravel test suite.
 
+### Ruffle browser player
+
+The game page uses a self-hosted Ruffle WebAssembly player. Players therefore
+need only a current browser; they do not install Adobe Flash or a browser
+extension. `make build` (and consequently `make init`) installs the pinned
+Ruffle package and copies its JavaScript and WebAssembly files to
+`public/ruffle` inside the application image.
+
+Ruffle compatibility is still under active evaluation for this large AS3
+client. When testing, use the browser console and Network panel to record the
+first unsupported ActionScript operation or failed game-service request.
+
 For an internet-facing deployment, edit the untracked `.env` file before
 starting the stack and set at least `APP_ENV=production`, `APP_DEBUG=false`,
 and unique database credentials.

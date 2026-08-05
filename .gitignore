@@ -12,7 +12,10 @@
 /.zed
 /auth.json
 /node_modules
+/scripts/__pycache__
+/tools/locale-runtime/build
 /public/build
+/public/ruffle
 /public/hot
 /public/storage
 /public/farmville/assets

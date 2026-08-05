@@ -36,6 +36,36 @@ Route::get('/crossdomain.xml', function (Request $request) {
         ->header('Cache-Control', 'public, max-age=3600');
 });
 
+// Reversible Ruffle locale experiment. `?locale_test=1` changes only the
+// locale base URL; this route serves the lazy prototype for the two locale
+// SWF names and proxies every other file in the archived locale tree.
+Route::get('/farmville/xml/gz/v855038-locale-test/{asset}', function (string $asset) {
+    $asset = ltrim($asset, '/');
+    if ($asset === '' || str_contains($asset, '..') || str_contains($asset, '\\')) {
+        abort(404);
+    }
+
+    if (in_array($asset, ['en_US.swf', 'en_US_min.swf'], true)) {
+        $prototype = base_path('tools/locale-runtime/build/Locale_en_US.lazy.swf');
+        if (!is_file($prototype)) {
+            abort(503, 'Lazy locale prototype has not been built.');
+        }
+
+        return response()->file($prototype, [
+            'Content-Type' => 'application/vnd.adobe.flash.movie',
+            'Cache-Control' => 'no-store',
+        ]);
+    }
+
+    $root = realpath(public_path('farmville/xml/gz/v855038'));
+    $file = $root === false ? false : realpath($root . DIRECTORY_SEPARATOR . $asset);
+    if ($file === false || !str_starts_with($file, $root . DIRECTORY_SEPARATOR) || !is_file($file)) {
+        abort(404);
+    }
+
+    return response()->file($file, ['Cache-Control' => 'no-store']);
+})->where('asset', '.*');
+
 Route::get('/up', function () {
     $health = [
         'status' => 'ok',

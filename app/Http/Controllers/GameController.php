@@ -3,10 +3,11 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Http\Request;
 
 class GameController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
         $neighborController = new NeighborController();
         $neighborsData = $neighborController->getNeighborsData();
@@ -18,11 +19,13 @@ class GameController extends Controller
             'neighborIds' => $neighborsData['neighborIds'],
             'neighborsBase64' => $neighborsData['neighborsBase64'],
             'user' => $user,
-            'fotdImages' => $this->getFotdImages()
+            'fotdImages' => $this->getFotdImages(),
+            'localeTest' => $request->boolean('locale_test'),
+            'useRuffle' => $request->boolean('ruffle') || $request->boolean('locale_test'),
         ]);
     }
 
-    public function play()
+    public function play(Request $request)
     {
         $neighborController = new NeighborController();
         $neighborsData = $neighborController->getNeighborsData();
@@ -35,7 +38,9 @@ class GameController extends Controller
             'neighborsBase64' => $neighborsData['neighborsBase64'],
             'user' => $user,
             'isLauncher' => true,
-            'fotdImages' => $this->getFotdImages()
+            'fotdImages' => $this->getFotdImages(),
+            'localeTest' => $request->boolean('locale_test'),
+            'useRuffle' => $request->boolean('ruffle') || $request->boolean('locale_test'),
         ]);
     }
 

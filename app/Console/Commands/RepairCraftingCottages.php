@@ -41,10 +41,14 @@ class RepairCraftingCottages extends Command
 
                 $contract = CraftingCottages::worldContractForItem($cottage['functionalItem']);
 
+                $components = is_object($object->components) ? $object->components : new \stdClass();
+                $hasCottageMetadata = (int) ($components->foundingTS ?? 0) > 0;
+
                 return $contract !== null && (
                     $object->item_name !== $cottage['functionalItem']
                     || $object->class_name !== $contract['className']
                     || $object->state !== $contract['state']
+                    || ! $hasCottageMetadata
                 );
             })
             ->values();
@@ -68,8 +72,23 @@ class RepairCraftingCottages extends Command
             $targetClassName = $contract['className'];
             $targetState = $contract['state'];
 
+            $components = is_object($object->components) ? $object->components : new \stdClass();
+            $previousFoundingTS = (int) ($components->foundingTS ?? 0);
+            if ($previousFoundingTS <= 0) {
+                $components->foundingTS = (int) ($object->build_time ?: $object->plant_time);
+                if ($components->foundingTS <= 0) {
+                    $components->foundingTS = (int) (microtime(true) * 1000);
+                }
+            }
+            $components->cottageName = $components->cottageName ?? '';
+            $components->finishedRecipes = $components->finishedRecipes ?? new \stdClass();
+            $components->transactionHistory = $components->transactionHistory ?? [];
+            $components->historyLastViewedTS = $components->historyLastViewedTS ?? 0;
+            $components->historyXPGain = $components->historyXPGain ?? 0;
+            $components->pendingLevelUpFeed = $components->pendingLevelUpFeed ?? null;
+
             $this->line(sprintf(
-                'world=%d object=%d item=%s -> %s, class=%s -> %s, state=%s -> %s',
+                'world=%d object=%d item=%s -> %s, class=%s -> %s, state=%s -> %s, foundingTS=%d -> %d',
                 $object->world_id,
                 $object->object_id,
                 $object->item_name,
@@ -78,6 +97,8 @@ class RepairCraftingCottages extends Command
                 $targetClassName,
                 $object->state ?? '(null)',
                 $targetState ?? '(null)',
+                $previousFoundingTS,
+                $components->foundingTS,
             ));
 
             if (! $this->option('dry-run')) {
@@ -85,6 +106,7 @@ class RepairCraftingCottages extends Command
                     'item_name' => $targetItemName,
                     'class_name' => $targetClassName,
                     'state' => $targetState,
+                    'components' => $components,
                 ])->save();
             }
         }

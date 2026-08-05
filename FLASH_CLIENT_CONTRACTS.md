@@ -227,6 +227,69 @@ Regression test: harvest an animal, put it in a Pet Run, reload, remove it
 from the Pet Run, reload, then repeat. At every stage verify there is one and
 only one animal.
 
+### Crafting cottages: Winery and Craftshop
+
+**Verified/implemented.** A crafting building cannot be restored by placing a
+generic market item and returning only its position and `itemName`. Flash uses
+three connected contracts: the placed world object's class/state, its
+class-specific metadata, and the player's crafting state.
+
+The successful restoration path was established from the shipped item catalog,
+the relevant Flash constructors/windows, and reload tests:
+
+- `craftingwinery` and the other dedicated cottages use
+  `CraftingCottageBuilding`. They must be fully built and receive top-level
+  cottage data, including `isFullyBuilt`, a positive `foundingTS`,
+  `cottageName`, recipe/history collections, queue data, and craft level.
+  Without `isFullyBuilt`, Flash renders the placement footprint/shadow even
+  when the database row otherwise says the building is complete.
+- The legacy Craftshop (`craftingworkshop_finished`) is different: it remains
+  a `FeatureBuilding` in `grown` state and is opened through its configured
+  FeatureBuilding crafting-dialog shim. Converting it to
+  `CraftingCottageBuilding` makes it a shadow or routes it through the wrong
+  window.
+- `UserService.initUser` must initialize a craft type for every owned cottage,
+  including legacy/imported ones. The client expects
+  `craftingSkillState.craftTypes` as an array of records with `type`, `level`,
+  `xp`, and `exp`; it does not consume an associative `craftTypeStates` map.
+- The Craftshop recipe list assumes every visible recipe has a state. Each
+  `recipeStates` record must use the ActionScript member names
+  `m_type`, `m_level`, `m_experience`, and `m_isUnlocked`. Build the initial
+  state from the full `crafting.xml.gz` catalog, not the small uncompressed
+  fallback. Recipes using `sharedMastery` are keyed by that shared mastery ID.
+  Recipe IDs can exceed the original 20-character schema, so the database
+  columns are widened to 100 characters by
+  `2026_08_05_000000_widen_crafting_recipe_ids.php`.
+
+`CraftingCottages` is the single mapping between market proxy items,
+functional item names, craft type, and required world-object contract.
+`WorldService` normalizes a new cottage and initializes its durable metadata;
+`WorldObject::toFlashObject()` emits the exact fields Flash reads. For old
+rows, run the repair after deploying the code:
+
+```bash
+docker compose exec fv-replowed-slipstream php artisan crafting:repair-cottages
+```
+
+Diagnostic sequence for a shadow or a failing crafting window:
+
+1. Query the object's `item_name`, `class_name`, `state`, `components`, and
+   `build_time` from `world_objects`.
+2. Check it against the `CraftingCottages` mapping; do not infer the required
+   class from the building's artwork.
+3. Serialize it through `WorldObject::toFlashObject($uid)` and inspect the
+   class-specific top-level fields Flash will receive.
+4. Check `crafting_skills` and `crafting_recipe_states` for the owner, then
+   look for `UserService.initUser` failures such as a truncated `recipe_id`.
+5. Rebuild, reload the entire game, and test both the building image and
+   **Look Inside**. A visible building alone is not a completed regression.
+
+Regression test: place a Winery and a Craftshop, reload, confirm neither is a
+shadow, open **Look Inside** on each, start a recipe, reload while it is
+queued, then claim it after completion. Test a neighbor's Winery market view
+separately because that uses `CraftingService.onRefreshUserOffering` rather
+than the owner's cottage state.
+
 ## Quest contracts
 
 The detailed history and implementation notes are in

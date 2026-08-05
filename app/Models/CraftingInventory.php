@@ -14,6 +14,7 @@ class CraftingInventory extends Model
         'uid',
         'item_code',
         'quantity',
+        'storage_type',
     ];
 
     protected $casts = [
@@ -34,10 +35,11 @@ class CraftingInventory extends Model
             return false;
         }
 
-        static::updateOrCreate(
+        $item = static::firstOrCreate(
             ['uid' => $uid, 'item_code' => $itemCode],
-            ['quantity' => \DB::raw("quantity + {$quantity}")]
+            ['quantity' => 0]
         );
+        static::whereKey($item->getKey())->increment('quantity', $quantity);
 
         return true;
     }

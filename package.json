@@ -2,8 +2,9 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "build": "vite build",
-        "dev": "vite"
+        "build": "vite build && node scripts/copy-ruffle.mjs",
+        "dev": "vite",
+        "ruffle:copy": "node scripts/copy-ruffle.mjs"
     },
     "devDependencies": {
         "@tailwindcss/forms": "^0.5.2",
@@ -17,6 +18,7 @@
         "vite": "^6.4.1"
     },
     "dependencies": {
+        "@ruffle-rs/ruffle": "^0.5.0",
         "laravel-echo": "^2.3.0",
         "pusher-js": "^8.4.0"
     }

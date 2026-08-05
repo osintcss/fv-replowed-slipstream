@@ -3,6 +3,10 @@
 // configured public URL so the Flash movie and every asset it loads share the
 // HTTPS origin seen by the player.
 $baseUrl = rtrim((string) config('app.url'), '/');
+$ruffleBuild = '0.5.0';
+$localeXmlUrl = $baseUrl . ($localeTest ?? false
+    ? '/farmville/xml/gz/v855038-locale-test/'
+    : '/farmville/xml/gz/v855038-locale-v3/');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -690,7 +694,14 @@ $baseUrl = rtrim((string) config('app.url'), '/');
             </span>
         </div>
         <div class="game-content">
+                    @if ($useRuffle ?? false)
+                    {{-- Ruffle is opt-in while browser renderer compatibility is evaluated. --}}
+                    {{-- The Ruffle loader imports hash-named WASM files. Versioning its URL keeps
+                         a browser/CDN cache from combining an older loader with newer WASM. --}}
+                    <script type="text/javascript" src="<?= $baseUrl ?>/ruffle/ruffle.js?v=<?= $ruffleBuild ?>"></script>
+                    @else
                     <script type="text/javascript" src="<?= $baseUrl ?>/farmville/v855036/webassets/js/swfobject_2_2/swfobject.js"></script>
+                    @endif
 
                     <script>
                         function getExperiments() {
@@ -1576,7 +1587,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "flashRevision": "855037.855026",
                             "phpRevision": "855038",
                             "configRevision": "",
-                            "xml_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v3/",
+                            "xml_url": "<?= $localeXmlUrl ?>",
                             "master_assethash_url": "<?= $baseUrl ?>/farmville/assethash/v9/",
                             "masterysigns_amf_url": "<?= $baseUrl ?>/farmville/masterysigns/v1/",
                             "ITEMS_AMF_BUILD_TIME_REDUCTION": false,
@@ -1708,9 +1719,61 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "neighbors": "{{ $neighborsBase64 ?? '' }}"
                         };
 
-                        var swfCallback = function(e) {
+                        @if ($useRuffle ?? false)
+                        function showRuffleLoadError(error) {
+                            var container = document.getElementById("flashContent");
+                            if (!container) return;
 
+                            container.replaceChildren();
+                            var panel = document.createElement("div");
+                            panel.style.cssText = "height:100%;display:flex;align-items:center;justify-content:center;padding:2rem;text-align:center;color:#fff;font:16px/1.5 Segoe UI,sans-serif;background:#274617;";
+                            panel.textContent = "FarmVille could not start in Ruffle. Open the browser console for the compatibility error.";
+                            container.appendChild(panel);
+                            console.error("[FarmVille] Ruffle failed to load the Flash client.", error);
                         }
+
+                        function bootRuffle() {
+                            if (!window.RufflePlayer || typeof window.RufflePlayer.newest !== "function") {
+                                showRuffleLoadError(new Error("The self-hosted Ruffle player was not loaded."));
+                                return;
+                            }
+
+                            var container = document.getElementById("flashContent");
+                            if (!container) {
+                                showRuffleLoadError(new Error("The Flash player container is missing."));
+                                return;
+                            }
+
+                            var player = window.RufflePlayer.newest().createPlayer();
+                            player.id = "flashapp";
+                            player.setAttribute("name", "flashapp");
+                            player.style.width = "100%";
+                            player.style.height = "100%";
+                            container.replaceChildren(player);
+
+                            // Existing page integrations obtain this element through FarmNS.getFlash().
+                            // Ruffle implements supported ExternalInterface callbacks on the player.
+                            window.FarmVilleRufflePlayer = player;
+
+                            player.ruffle().load({
+                                url: "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FV_Preloader.swf?restore_original=1",
+                                parameters: flashVars,
+                                allowScriptAccess: true,
+                                allowFullscreen: true,
+                                // The lazy locale passes the original client contract but the
+                                // archived item parser still needs longer than Ruffle's default
+                                // watchdog on its first large lookup burst. Test-only for now.
+                                maxExecutionDuration: <?= ($localeTest ?? false) ? 60 : 15 ?>
+                            }).catch(showRuffleLoadError);
+                        }
+
+                        // The player container is rendered later in this legacy page. Waiting for
+                        // DOMContentLoaded also ensures every JavaScript callback the SWF may call
+                        // has been registered before the preloader starts.
+                        document.addEventListener("DOMContentLoaded", bootRuffle, { once: true });
+                        @else
+                        var swfCallback = function(e) {
+                        };
                         var params = {
                             allowScriptAccess: "always",
                             wmode: "default",
@@ -1723,6 +1786,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                         swfobject.embedSWF("<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FV_Preloader.swf?restore_original=1", "flashContent",
                             "100%", "100%", "10.0.0", "playerProductInstall.swf",
                             flashVars, params, attrs, swfCallback);
+                        @endif
 
                         document.addEventListener('keydown', function(e) {
                             if (e.shiftKey && e.key === 'M') {
