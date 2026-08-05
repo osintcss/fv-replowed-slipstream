@@ -275,6 +275,65 @@ function getCraftingInventory($uid, $storageType = null) {
     return $items;
 }
 
+/**
+ * Return the capacity granted by Crafting Silos placed in the player's active
+ * world. The Flash client receives this value on every TFarmTransaction (the
+ * init-user response included) and otherwise defaults its silo capacity to
+ * zero, even when a Crafting Silo object is present in world data.
+ */
+function getCraftingSiloCapacity($uid, $worldType = null): int {
+    if (!is_numeric($uid)) {
+        return 0;
+    }
+
+    $worldType = $worldType ?: getCurrentWorldType($uid);
+    $worldId = getWorldId($uid, $worldType);
+    if (!$worldId) {
+        return 0;
+    }
+
+    $item = \App\Models\Item::findByName('craftingsilo');
+    if (!is_object($item)) {
+        return 0;
+    }
+
+    $baseCapacity = max(0, (int) ($item->capacity ?? 0));
+    $upgradeCapacities = [];
+    $features = $item->features->feature ?? [];
+    if (!is_array($features)) {
+        $features = [$features];
+    }
+    foreach ($features as $feature) {
+        if (!is_object($feature) || ($feature->name ?? null) !== 'expand') {
+            continue;
+        }
+        $upgrades = $feature->upgrade ?? [];
+        if (!is_array($upgrades)) {
+            $upgrades = [$upgrades];
+        }
+        foreach ($upgrades as $upgrade) {
+            if (is_object($upgrade) && isset($upgrade->level, $upgrade->capacity)) {
+                $upgradeCapacities[(int) $upgrade->level] = (int) $upgrade->capacity;
+            }
+        }
+    }
+
+    return WorldObject::where('world_id', $worldId)
+        ->where('item_name', 'craftingsilo')
+        ->where('deleted', false)
+        ->get(['expansion_level'])
+        ->sum(function ($silo) use ($baseCapacity, $upgradeCapacities) {
+            $capacity = $baseCapacity;
+            $level = max(1, (int) $silo->expansion_level);
+            foreach ($upgradeCapacities as $upgradeLevel => $upgradeCapacity) {
+                if ($upgradeLevel <= $level) {
+                    $capacity = max($capacity, $upgradeCapacity);
+                }
+            }
+            return $capacity;
+        });
+}
+
 function addToInventory($uid, $itemCode, $quantity, $storageType = "silo") {
     if (!is_numeric($uid) || $quantity <= 0) return false;
 

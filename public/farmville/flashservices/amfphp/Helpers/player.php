@@ -58,6 +58,11 @@ class Player {
             "sequenceId" => 1483867184,
 
             "crossPromos" => null,
+            // TFarmTransaction copies this top-level field into
+            // CraftingInventoryStateV2. Omitting it leaves Flash with a
+            // zero-capacity Crafting Silo, so Buy Ingredients incorrectly
+            // reports that no silo has been placed.
+            "craftingSiloMaxCapacity" => getCraftingSiloCapacity($this->uid, $currentWorldType),
             "flashHotParams" => array(
                 "STAT_SAMPLE_ZLOC_FAIL" => 10,
                 "ZYNGA_USER_ID" => $this->uid,

@@ -215,6 +215,12 @@ silo” even when its world row exists. Persist it as `grown` with an
 `expansionLevel` of at least one; level one provides the initial ten ingredient
 slots. `crafting:repair-silos` repairs older `bare` records.
 
+The purchase flow also reads the top-level `craftingSiloMaxCapacity` field
+from the `TInitUser`/`TFarmTransaction` response. Emit it from the active
+world's Silo expansion level (10 at level one, then the item definition's
+upgrade capacities); otherwise Flash defaults capacity to zero and shows the
+same prompt even when the object was successfully loaded.
+
 Regression test: place or load a Crafting Silo, reload, open the Craftshop,
 and begin a recipe without receiving the missing-silo prompt.
 
