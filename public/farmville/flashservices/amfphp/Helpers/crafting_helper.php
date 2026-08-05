@@ -293,6 +293,9 @@ function getCraftingSiloCapacity($uid, $worldType = null): int {
     }
 
     $item = \App\Models\Item::findByName('craftingsilo');
+    if (is_array($item)) {
+        $item = (object) $item;
+    }
     if (!is_object($item)) {
         return 0;
     }
