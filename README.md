@@ -42,6 +42,31 @@ Archive WARC files are about 20 GB in total, and interrupted downloads resume
 automatically. Once the game assets are present, repeated runs skip WARC
 extraction.
 
+### Asset extraction on ARM64 hosts
+
+FVDehasher is distributed as an x86-64 Linux executable. On an ARM64 Ubuntu
+host, `make assets` runs it through Docker, which needs the Docker daemon's
+x86 emulation enabled once before the first extraction:
+
+```bash
+docker run --privileged --rm tonistiigi/binfmt --install amd64
+docker run --rm --platform linux/amd64 alpine uname -m
+```
+
+The verification command must print `x86_64`. Then run `make assets`. Docker
+must be installed and your user must be able to run `docker` without `sudo`.
+The script runs the container under your host UID/GID so extracted assets stay
+writable by your user. HTTP `416` lines while resuming WARC files mean the
+local archive is already complete and are safe to ignore.
+
+If an older extraction attempt left root-owned files and the final move fails
+with `Permission denied`, repair ownership of only the affected project paths,
+then run `make assets` again:
+
+```bash
+sudo chown -R "$USER:$USER" public/farmville .cache/fv-assets/farmville
+```
+
 The game is then served at `http://localhost:8000`; MariaDB is exposed on
 port `33061`, and Reverb on port `8080`. Use `make stop` to stop the stack,
 `make logs` to follow its logs, and `make test` to run the Laravel test suite.

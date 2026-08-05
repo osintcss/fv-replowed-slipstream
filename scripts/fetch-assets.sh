@@ -73,6 +73,7 @@ run_dehasher() {
       }
       echo "Running the x86-64 FVDehasher in Docker on $machine_arch..."
       docker run --rm --platform linux/amd64 \
+        --user "$(id -u):$(id -g)" \
         -v "$CACHE_DIR:/work" \
         -w /work \
         ubuntu:24.04 \
