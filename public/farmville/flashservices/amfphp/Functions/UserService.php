@@ -20,8 +20,15 @@ class UserService{
     }
 
     public static function initUser($playerObj, $request){
+        $playerData = $playerObj->getData($request);
+
+        // TInitUser consumes the player payload from `data`, but its
+        // TFarmTransaction parent reads capacity updates from the enclosing
+        // transaction result. Keep the normal payload intact and promote this
+        // one state-update field to the result envelope as well.
         return array(
-            "data" => $playerObj->getData($request)
+            "data" => $playerData,
+            "craftingSiloMaxCapacity" => $playerData["craftingSiloMaxCapacity"] ?? 0,
         );
     }
 
