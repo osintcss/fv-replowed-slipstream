@@ -58,6 +58,29 @@ fetch() {
   fi
 }
 
+run_dehasher() {
+  local machine_arch
+  machine_arch="$(uname -m)"
+
+  case "$machine_arch" in
+    x86_64|amd64)
+      (cd "$CACHE_DIR" && "./$DEHASHER_FILE")
+      ;;
+    *)
+      command -v docker >/dev/null 2>&1 || {
+        echo "FVDehasher is x86-64, but this host is $machine_arch. Docker is required to run it on this architecture." >&2
+        exit 1
+      }
+      echo "Running the x86-64 FVDehasher in Docker on $machine_arch..."
+      docker run --rm --platform linux/amd64 \
+        -v "$CACHE_DIR:/work" \
+        -w /work \
+        ubuntu:24.04 \
+        "./$DEHASHER_FILE"
+      ;;
+  esac
+}
+
 if [[ -d "$ASSETS_DIR/$ASSET_COMPLETION_MARKER" ]]; then
   echo "Game assets already present at $ASSETS_DIR; skipping archive extraction."
 else
@@ -75,9 +98,7 @@ else
     fetch "$ASSET_LINK_BASE/$file" "$CACHE_DIR/$file"
   done
 
-  pushd "$CACHE_DIR" >/dev/null
-  "./$DEHASHER_FILE"
-  popd >/dev/null
+  run_dehasher
 
   [[ -d "$CACHE_DIR/farmville/assets" ]] || {
     echo "Expected extracted assets not found at $CACHE_DIR/farmville/assets" >&2
