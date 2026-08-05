@@ -198,7 +198,10 @@ class WorldService
                     }
                 }
 
-                if ($className === 'CraftingCottageBuilding' && $retId > 0) {
+                // Craftshop has its own FeatureBuilding visual state, while
+                // the other cottages use CraftingCottageBuilding. Both need
+                // the common crafting metadata when first placed.
+                if ($cottage !== null && $retId > 0) {
                     $uid = $playerObj->getUid();
                     $worldType = getCurrentWorldType($uid);
                     $worldId = getWorldId($uid, $worldType);
@@ -218,7 +221,10 @@ class WorldService
                             }
 
                             if (!isset($components->foundingTS) || $components->foundingTS == 0) {
-                                $components->foundingTS = (int) (microtime(true) * 1000);
+                                $components->foundingTS = (int) ($plantObj->plantTime ?? 0);
+                                if ($components->foundingTS <= 0) {
+                                    $components->foundingTS = (int) (microtime(true) * 1000);
+                                }
                             }
 
                             if (!isset($components->cottageName)) {

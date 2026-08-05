@@ -6,6 +6,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/general_functions.php";
 
 use App\Helpers\JsonHelper;
 use App\Models\CraftingQueue;
+use App\Models\CraftingRecipeState;
 use App\Models\CraftingSkill;
 
 class CraftingService
@@ -52,7 +53,7 @@ class CraftingService
         $craftType = $recipe['craft'];
         $worldType = getCurrentWorldType($uid);
 
-        CraftingQueue::addRecipe($uid, $recipeId, $craftType, $ovenSlot, $startTs, $finishTs, $worldType);
+        $queueItem = CraftingQueue::addRecipe($uid, $recipeId, $craftType, $ovenSlot, $startTs, $finishTs, $worldType);
 
         $recipeXp = $recipe['OnMake']['recipeXp'] ?? 0;
         if ($recipeXp > 0) {
@@ -65,10 +66,7 @@ class CraftingService
             UserResources::addXp($uid, $playerXp);
         }
 
-        $data["data"] = array(
-            "start_ts" => $startTs,
-            "finish_ts" => $finishTs,
-        );
+        $data["data"] = getRecipeQueueEnvelope($uid, (string) $recipeId, $queueItem);
 
         return $data;
     }
@@ -640,7 +638,7 @@ class CraftingService
         $targetUid = $request->params[0] ?? null;
 
         if (!$targetUid) {
-            $data["data"] = array();
+            $data["data"] = self::emptyMarketView();
             return $data;
         }
 
@@ -653,12 +651,59 @@ class CraftingService
             }
         }
 
-        $data["data"] = array(
-            "uid" => (string) $targetUid,
-            "in" => $inventory,
-            "lastUpdated" => time()
-        );
+        // TGetUserMarketStallInventory passes this result to
+        // MarketViewManager.updateViewFromResponse(), not its single-user
+        // update method. Return the complete market-view envelope so the
+        // visitor's Winery (and every other cottage) can safely load it.
+        $now = time();
+        $data["data"] = [
+            "marketStalls" => [[
+                "uid" => (string) $targetUid,
+                "in" => $inventory,
+            ]],
+            "craftedGoods" => [],
+            "craftingSkills" => [self::craftingSkillSummary($targetUid)],
+            "ages" => [[
+                "uid" => (string) $targetUid,
+                "lastUpdated" => $now,
+            ]],
+            "lastUpdated" => $now,
+        ];
         return $data;
+    }
+
+    private static function emptyMarketView(): array
+    {
+        return [
+            "marketStalls" => [],
+            "craftedGoods" => [],
+            "craftingSkills" => [],
+            "ages" => [],
+            "lastUpdated" => time(),
+        ];
+    }
+
+    private static function craftingSkillSummary(string|int $uid): array
+    {
+        $recipes = [];
+        foreach (CraftingRecipeState::where('uid', $uid)->get() as $recipe) {
+            $recipes[(string) $recipe->recipe_id] = [
+                // CraftingSkillSummary.getLevelForRecipeId reads `l`.
+                "l" => max(1, (int) $recipe->level),
+            ];
+        }
+
+        $cottages = [];
+        foreach (CraftingSkill::where('uid', $uid)->get() as $skill) {
+            // CraftingSkillSummary.isActiveParticipantInSkill reads `a`.
+            $cottages[(string) $skill->craft_type] = ["a" => 1];
+        }
+
+        return [
+            "uid" => (string) $uid,
+            "recipes" => $recipes,
+            "cottages" => $cottages,
+        ];
     }
 
     public static function onReconfigureStall($playerObj, $request, $market)

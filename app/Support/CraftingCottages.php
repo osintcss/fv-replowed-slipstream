@@ -42,9 +42,10 @@ final class CraftingCottages
         ['functionalItem' => 'craftingdye', 'craftType' => 'dye'],
         ['functionalItem' => 'craftingink', 'craftType' => 'ink'],
         ['functionalItem' => 'craftingflower', 'craftType' => 'flower'],
-        // Craftshop is a pre-cottage feature building. It uses the crafting
-        // service, but Flash renders and opens it through FeatureBuilding
-        // while it is in the completed "grown" state.
+        // Craftshop is an older feature building. Its completed "grown"
+        // state is the only visual contract available in this client bundle;
+        // keep that representation until its separate crafting click route
+        // has been restored.
         [
             'functionalItem' => 'craftingworkshop_finished',
             'craftType' => 'craftshop',

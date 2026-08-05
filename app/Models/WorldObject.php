@@ -163,9 +163,7 @@ class WorldObject extends Model
         $obj->hostId = $this->host_id;
         $obj->timestamp = $this->message_timestamp;
 
-        $craftingContract = CraftingCottages::worldContractForItem($this->item_name);
-        if ($this->class_name === 'CraftingCottageBuilding'
-            || ($craftingContract !== null && $craftingContract['className'] === 'FeatureBuilding')) {
+        if ($this->class_name === 'CraftingCottageBuilding') {
             $this->enrichCraftingCottageData($obj, $uid);
         }
 
@@ -185,6 +183,12 @@ class WorldObject extends Model
         try {
             $craftType = self::getCraftTypeFromItemName($this->item_name);
 
+            // Crafting cottages share the construction contract used by
+            // storage buildings. Without this explicit flag the legacy Flash
+            // client treats an otherwise built cottage as its placement
+            // footprint and renders only the shadow.
+            $obj->isFullyBuilt = ($this->state !== 'construction');
+
             $components = $this->components;
             if (!is_object($components)) {
                 $components = new \stdClass();
@@ -196,7 +200,16 @@ class WorldObject extends Model
             $obj->historyLastViewedTS = $components->historyLastViewedTS ?? 0;
             $obj->historyXPGain = $components->historyXPGain ?? 0;
             $obj->pendingLevelUpFeed = $components->pendingLevelUpFeed ?? null;
-            $obj->foundingTS = $components->foundingTS ?? ($this->build_time ?? 0);
+
+            // Legacy Craftshops were persisted without cottage component
+            // data. The crafting-window gate requires a positive founding
+            // timestamp; plant_time is the faithful fallback for an imported
+            // completed workshop.
+            $foundingTS = (int) ($components->foundingTS ?? 0);
+            if ($foundingTS <= 0) {
+                $foundingTS = (int) ($this->build_time ?: $this->plant_time);
+            }
+            $obj->foundingTS = $foundingTS > 0 ? $foundingTS : (int) (microtime(true) * 1000);
 
             if ($uid !== null && $craftType !== null) {
                 $obj->recipeQueue = self::fetchRecipeQueue($uid, $craftType);
@@ -259,20 +272,31 @@ class WorldObject extends Model
     private static function fetchRecipeQueue(int $uid, string $craftType): array
     {
         try {
-            return CraftingQueue::where('uid', $uid)
+            $rows = CraftingQueue::where('uid', $uid)
                 ->where('craft_type', $craftType)
                 ->where('status', 'active')
                 ->orderBy('start_ts')
-                ->get()
-                ->map(fn($row) => [
-                    "recipeId" => $row->recipe_id,
-                    "craftType" => $row->craft_type,
-                    "ovenSlot" => (int) $row->oven_slot,
-                    "startTS" => (int) $row->start_ts,
-                    "finishTS" => (int) $row->finish_ts,
-                    "worldType" => $row->world_type,
-                ])
-                ->toArray();
+                ->get();
+
+            // CraftingCottageBuilding.loadObject feeds every entry directly
+            // to RecipeItem.fromPhpObject(). The old compact database shape
+            // (recipeId, craftType, timestamps) therefore crashes the Flash
+            // client as soon as an active cottage is attached to the world.
+            // Share the TInitUser/TBeginRecipe AMF serializer instead.
+            if (!function_exists('getRecipeQueueEnvelope')) {
+                Log::warning('Crafting queue serializer is unavailable');
+                return [];
+            }
+
+            $queue = [];
+            foreach ($rows as $row) {
+                $entry = getRecipeQueueEnvelope($uid, (string) $row->recipe_id, $row);
+                if ($entry !== null) {
+                    $queue[] = $entry;
+                }
+            }
+
+            return $queue;
         } catch (\Exception $e) {
             Log::warning('fetchRecipeQueue failed: ' . $e->getMessage());
             return [];
@@ -297,7 +321,7 @@ class WorldObject extends Model
     {
         [$posX, $posY, $posZ] = ObjectHelper::getPosition($obj);
 
-        return [
+        $data = [
             'world_id' => $worldId,
             'object_id' => $obj->id ?? 0,
             'class_name' => $obj->className ?? 'Unknown',
@@ -326,5 +350,15 @@ class WorldObject extends Model
             'host_id' => ObjectHelper::extractScalar($obj->hostId ?? null),
             'message_timestamp' => isset($obj->timestamp) ? $obj->timestamp : null,
         ];
+
+        // The Crafting Silo's item definition starts at expansion level one,
+        // which grants its initial ten ingredient slots. The placement object
+        // sent by Flash can omit that field (or send zero), and persisting it
+        // verbatim makes CraftingSiloWindow calculate a capacity of zero.
+        if ($data['item_name'] === 'craftingsilo') {
+            $data['expansion_level'] = max(1, (int) $data['expansion_level']);
+        }
+
+        return $data;
     }
 }

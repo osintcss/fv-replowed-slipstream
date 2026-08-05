@@ -36,10 +36,14 @@ class CraftingSkill extends Model
 
     public static function addXp(string|int $uid, string $craftType, int $xp): static
     {
-        return static::updateOrCreate(
+        $skill = static::firstOrCreate(
             ['uid' => $uid, 'craft_type' => $craftType],
-            ['xp' => \DB::raw("COALESCE(xp, 0) + {$xp}")]
+            ['level' => 1, 'xp' => 0]
         );
+        static::whereKey($skill->getKey())->increment('xp', $xp);
+
+        $skill->refresh();
+        return $skill;
     }
 
     public static function levelUp(string|int $uid, string $craftType, int $newLevel): static

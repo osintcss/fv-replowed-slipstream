@@ -13,13 +13,17 @@ class CraftingRecipeState extends Model
     protected $fillable = [
         'uid',
         'recipe_id',
+        'level',
         'xp',
         'times_crafted',
+        'is_unlocked',
     ];
 
     protected $casts = [
         'xp' => 'integer',
         'times_crafted' => 'integer',
+        'level' => 'integer',
+        'is_unlocked' => 'boolean',
     ];
 
     public static function getState(string|int $uid, string $recipeId): ?static
@@ -36,10 +40,14 @@ class CraftingRecipeState extends Model
 
     public static function addXp(string|int $uid, string $recipeId, int $xp): static
     {
-        return static::updateOrCreate(
+        $state = static::firstOrCreate(
             ['uid' => $uid, 'recipe_id' => $recipeId],
-            ['xp' => \DB::raw("COALESCE(xp, 0) + {$xp}")]
+            ['level' => 1, 'xp' => 0, 'is_unlocked' => true]
         );
+        static::whereKey($state->getKey())->increment('xp', $xp);
+
+        $state->refresh();
+        return $state;
     }
 
     public static function incrementCrafted(string|int $uid, string $recipeId): static

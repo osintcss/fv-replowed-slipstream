@@ -31575,6 +31575,20 @@
         "buildableDialogs": {
             "building": [
                 {
+                    "@name": "craftingworkshop_finished",
+                    "dialog": {
+                        "@name": "lookInsideDialog",
+                        "@className": "Widgets.Windows.FeatureCraftingBuildingShimWindow"
+                    }
+                },
+                {
+                    "@name": "xalcraftingworkshop_finished",
+                    "dialog": {
+                        "@name": "lookInsideDialog",
+                        "@className": "Widgets.Windows.FeatureCraftingBuildingShimWindow"
+                    }
+                },
+                {
                     "@name": "xyt_elitehorses",
                     "dialog": {
                         "@name": "lookInsideDialog",

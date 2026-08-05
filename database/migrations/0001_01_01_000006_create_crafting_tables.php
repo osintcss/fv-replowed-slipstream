@@ -11,7 +11,7 @@ return new class extends Migration
         Schema::create('crafting_queue', function (Blueprint $table) {
             $table->id();
             $table->string('uid', 20);
-            $table->string('recipe_id', 20);
+            $table->string('recipe_id', 100);
             $table->string('craft_type', 40);
             $table->integer('oven_slot')->default(-1);
             $table->integer('start_ts');
@@ -46,7 +46,7 @@ return new class extends Migration
         Schema::create('crafting_recipe_states', function (Blueprint $table) {
             $table->id();
             $table->string('uid', 20);
-            $table->string('recipe_id', 20);
+            $table->string('recipe_id', 100);
             $table->integer('level')->default(1);
             $table->integer('xp')->default(0);
             $table->tinyInteger('is_unlocked')->default(1);
