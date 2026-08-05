@@ -36,6 +36,22 @@ Route::get('/crossdomain.xml', function (Request $request) {
         ->header('Cache-Control', 'public, max-age=3600');
 });
 
+// The v2 Buy Ingredients movie was referenced by the preserved game client but
+// is absent from the recovered asset collection. The prior dialog has the same
+// ActionScript contract and is present in the collection, so serve it only for
+// this missing hashed URL. If the original v2 file is recovered later, the web
+// server will serve that real file before this Laravel fallback is reached.
+Route::get('/farmville/assets/hashed/assets/dialogs/01c114a2b75b35d546263f7b101c9809.swf', function () {
+    $fallback = public_path('farmville/assets/hashed/assets/dialogs/ff6f26b47a9429c3bafdbfbda1600cf5.swf');
+
+    abort_unless(is_file($fallback), 404);
+
+    return response()->file($fallback, [
+        'Content-Type' => 'application/x-shockwave-flash',
+        'Cache-Control' => 'public, max-age=86400',
+    ]);
+});
+
 Route::get('/up', function () {
     $health = [
         'status' => 'ok',
