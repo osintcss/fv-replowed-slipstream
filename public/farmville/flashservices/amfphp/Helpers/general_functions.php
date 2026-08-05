@@ -1264,14 +1264,19 @@
                 WorldObject::where('world_id', $worldId)->delete();
 
                 if (!empty($objects)) {
-                    $records = [];
-                    $now = now();
-                    foreach ($objects as $obj) {
-                        $data = WorldObject::fromFlashObject($obj, $worldId);
-                        $data['created_at'] = $now;
-                        $data['updated_at'] = $now;
-                        $records[] = $data;
-                    }
+                $recordsByObjectId = [];
+                $now = now();
+                foreach ($objects as $obj) {
+                    $data = WorldObject::fromFlashObject($obj, $worldId);
+                    $data['created_at'] = $now;
+                    $data['updated_at'] = $now;
+
+                    // A stale Flash retry can put the same client identity
+                    // into the full-world payload twice. Keep its last state
+                    // so the database identity constraint remains valid.
+                    $recordsByObjectId[(int) $data['object_id']] = $data;
+                }
+                $records = array_values($recordsByObjectId);
 
                     foreach (array_chunk($records, 100) as $chunk) {
                         WorldObject::insert($chunk);
@@ -1367,15 +1372,16 @@
             $data = WorldObject::fromFlashObject($obj, $worldId);
 
             // A Flash retry can resend a placement after the first request
-            // has already committed. World object IDs are the stable client
-            // identity within a world, so inserting a second row for that
-            // identity creates overlapping crops on every later load.
-            WorldObject::updateOrCreate(
-                [
-                    'world_id' => $worldId,
-                    'object_id' => (int) $data['object_id'],
-                ],
-                $data
+            // has already committed. The database enforces this identity as
+            // (world_id, object_id); use an atomic upsert rather than a
+            // read-then-insert sequence that races under concurrent retries.
+            $now = now();
+            $data['created_at'] = $now;
+            $data['updated_at'] = $now;
+            WorldObject::query()->upsert(
+                [$data],
+                ['world_id', 'object_id'],
+                array_values(array_diff(array_keys($data), ['world_id', 'object_id', 'created_at']))
             );
 
             Logger::debug('World', "insertWorldObject: worldId=$worldId pos=({$data['position_x']},{$data['position_y']})");

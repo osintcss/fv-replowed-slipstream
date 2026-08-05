@@ -290,56 +290,55 @@ class Player {
         $delActions = [ACTION_SELL, ACTION_CLEAR];
         $exists = "";
         $usedIds = [];
-        $existsAtPosition = [];
         $operationType = null;
         $newId = 0;
 
         $newPosX = isset($newObj->position) ? ($newObj->position->x ?? null) : null;
         $newPosY = isset($newObj->position) ? ($newObj->position->y ?? null) : null;
+        $incomingObjectId = isset($newObj->id) && is_numeric($newObj->id)
+            ? (int) $newObj->id
+            : null;
 
         foreach ($currWorld["objectsArray"] as $key => $tile){
-            if ($newObj->id == $tile->id){
+            $tileObjectId = isset($tile->id) && is_numeric($tile->id)
+                ? (int) $tile->id
+                : null;
+
+            // Flash may serialize IDs as strings or numbers. Normalize first,
+            // then use strict identity; loose equality makes empty and numeric
+            // values alias one another and can update the wrong world object.
+            if ($incomingObjectId !== null && $tileObjectId !== null && $incomingObjectId === $tileObjectId){
                 $exists = $key;
             }
 
-            if (isset($tile->id) && $tile->id > 0 && $tile->id < TEMP_ID_THRESHOLD) {
-                $usedIds[$tile->id] = true;
-            }
-
-            if ($newPosX !== null && $newPosY !== null && isset($tile->position)) {
-                $tilePosX = $tile->position->x ?? null;
-                $tilePosY = $tile->position->y ?? null;
-                if ($tilePosX === $newPosX && $tilePosY === $newPosY && $key !== $exists) {
-                    $existsAtPosition[] = $key;
-                }
+            if ($tileObjectId !== null && $tileObjectId > 0 && $tileObjectId < TEMP_ID_THRESHOLD) {
+                $usedIds[$tileObjectId] = true;
             }
         }
 
-        if (!empty($existsAtPosition)) {
-            foreach ($existsAtPosition as $dupKey) {
-                $dupObj = $currWorld["objectsArray"][$dupKey];
-                $dupPosX = $dupObj->position->x ?? ($dupObj->position['x'] ?? null);
-                $dupPosY = $dupObj->position->y ?? ($dupObj->position['y'] ?? null);
-                if ($dupPosX !== null && $dupPosY !== null) {
-                    deleteWorldObjectByPosition($worldId, (int)$dupPosX, (int)$dupPosY);
-                }
-                unset($currWorld["objectsArray"][$dupKey]);
-            }
-            $currWorld["objectsArray"] = array_values($currWorld["objectsArray"]);
-            $exists = "";
-            foreach ($currWorld["objectsArray"] as $key => $tile) {
-                if ($newObj->id == $tile->id) {
-                    $exists = $key;
-                    break;
-                }
-            }
-        }
-
-        if (($action == ACTION_PLOW || $action == ACTION_PLANT) && $newObj->id >= TEMP_ID_THRESHOLD){
+        if (($action == ACTION_PLOW || $action == ACTION_PLANT) && $incomingObjectId !== null && $incomingObjectId >= TEMP_ID_THRESHOLD){
             $placement = CollisionDetector::validatePlacement($newObj, $currWorld["objectsArray"], $action);
             
             if ($placement['existingKey'] !== null) {
-                $newObj->id = $currWorld["objectsArray"][$placement['existingKey']]->id;
+                $existingObject = $currWorld["objectsArray"][$placement['existingKey']];
+                $newClassName = (string) ($newObj->className ?? '');
+                $existingClassName = (string) ($existingObject->className ?? '');
+                $newItemName = (string) ($newObj->itemName ?? '');
+                $existingItemName = (string) ($existingObject->itemName ?? '');
+                $isPlotUpdate = stripos($newClassName, 'Plot') !== false
+                    && stripos($existingClassName, 'Plot') !== false;
+                $isIdempotentPlacement = $newClassName === $existingClassName
+                    && $newItemName === $existingItemName;
+
+                // A retried placement of the same tree/garden may reuse the
+                // existing object. A different item at the same anchor is a
+                // real collision and must never overwrite or delete it.
+                if (!$isPlotUpdate && !$isIdempotentPlacement) {
+                    $this->db->destroy();
+                    return false;
+                }
+
+                $newObj->id = $existingObject->id;
                 $exists = $placement['existingKey'];
             } elseif ($placement['reason'] === 'collision_detected') {
                 $this->db->destroy();
