@@ -351,12 +351,16 @@ class WorldObject extends Model
             'message_timestamp' => isset($obj->timestamp) ? $obj->timestamp : null,
         ];
 
-        // The Crafting Silo's item definition starts at expansion level one,
-        // which grants its initial ten ingredient slots. The placement object
-        // sent by Flash can omit that field (or send zero), and persisting it
-        // verbatim makes CraftingSiloWindow calculate a capacity of zero.
+        // The Crafting Silo is a completed FeatureBuilding in this client.
+        // A market placement can arrive as the generic "bare" object, which
+        // lets it render but makes Craftshop treat it as absent. Normalize it
+        // to the completed state when persisting, and retain level one so its
+        // initial ten ingredient slots are available.
         if ($data['item_name'] === 'craftingsilo') {
             $data['expansion_level'] = max(1, (int) $data['expansion_level']);
+            if ($data['state'] === null || $data['state'] === '' || $data['state'] === 'bare') {
+                $data['state'] = 'grown';
+            }
         }
 
         return $data;

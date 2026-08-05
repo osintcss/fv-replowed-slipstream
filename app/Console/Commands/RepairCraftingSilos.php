@@ -9,7 +9,7 @@ class RepairCraftingSilos extends Command
 {
     protected $signature = 'crafting:repair-silos {--dry-run : List affected silos without changing them}';
 
-    protected $description = 'Restore the required initial expansion level for placed Crafting Silos';
+    protected $description = 'Restore the completed state and initial capacity for placed Crafting Silos';
 
     public function handle(): int
     {
@@ -18,7 +18,10 @@ class RepairCraftingSilos extends Command
             ->where('item_name', 'craftingsilo')
             ->where(function ($query) {
                 $query->whereNull('expansion_level')
-                    ->orWhere('expansion_level', '<', 1);
+                    ->orWhere('expansion_level', '<', 1)
+                    ->orWhereNull('state')
+                    ->orWhere('state', '')
+                    ->orWhere('state', 'bare');
             })
             ->orderBy('world_id')
             ->orderBy('object_id')
@@ -26,14 +29,18 @@ class RepairCraftingSilos extends Command
 
         foreach ($silos as $silo) {
             $this->line(sprintf(
-                'world=%d object=%d expansionLevel=%s -> 1',
+                'world=%d object=%d state=%s -> grown, expansionLevel=%s -> 1',
                 $silo->world_id,
                 $silo->object_id,
+                $silo->state === null ? 'null' : $silo->state,
                 $silo->expansion_level === null ? 'null' : (string) $silo->expansion_level,
             ));
 
             if (! $this->option('dry-run')) {
-                $silo->forceFill(['expansion_level' => 1])->save();
+                $silo->forceFill([
+                    'state' => 'grown',
+                    'expansion_level' => max(1, (int) $silo->expansion_level),
+                ])->save();
             }
         }
 

@@ -206,6 +206,18 @@ by Flash.
 and Flash world objects. New special fields should be stored in `components`
 when appropriate, then emitted at the top-level expected by the client.
 
+### Crafting Silo
+
+**Verified/implemented.** `craftingsilo` is a completed `FeatureBuilding`.
+The market placement can serialize it with the generic `bare` state, but the
+Craftshop checks for a completed silo and otherwise displays “place a crafting
+silo” even when its world row exists. Persist it as `grown` with an
+`expansionLevel` of at least one; level one provides the initial ten ingredient
+slots. `crafting:repair-silos` repairs older `bare` records.
+
+Regression test: place or load a Crafting Silo, reload, open the Craftshop,
+and begin a recipe without receiving the missing-silo prompt.
+
 ### Animal pens and Pet Runs
 
 **Verified/implemented.** A Pet Run identifies itself as `FeatureBuilding`
