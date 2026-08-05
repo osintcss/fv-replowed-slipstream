@@ -76,4 +76,8 @@ RUN cp .env.example .env \
     && php artisan key:generate --force \
     && mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
     && chown -R www-data:www-data storage bootstrap/cache \
-    && if [ -d public/farmville/flashservices ]; then touch public/farmville/flashservices/amfphplog.log; chown www-data:www-data public/farmville/flashservices/amfphplog.log; chmod 664 public/farmville/flashservices/amfphplog.log; fi
+    && if [ -d public/farmville/flashservices/amfphp/Plugins/AmfphpLogger ]; then \
+        touch public/farmville/flashservices/amfphp/Plugins/AmfphpLogger/amfphplog.log; \
+        chown www-data:www-data public/farmville/flashservices/amfphp/Plugins/AmfphpLogger/amfphplog.log; \
+        chmod 664 public/farmville/flashservices/amfphp/Plugins/AmfphpLogger/amfphplog.log; \
+    fi
