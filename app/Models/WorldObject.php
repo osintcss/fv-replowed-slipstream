@@ -141,7 +141,11 @@ class WorldObject extends Model
             'z' => $this->position_z,
         ];
         $obj->direction = $this->direction;
-        $obj->state = $this->state;
+        $obj->state = self::normalizeLegacyAnimalBreedingState(
+            $this->item_name,
+            $this->state,
+            $this->components,
+        );
         $obj->deleted = $this->deleted;
         $obj->tempId = $this->temp_id;
         $obj->instanceDataStoreKey = $this->instance_data_store_key;
@@ -320,6 +324,7 @@ class WorldObject extends Model
     public static function fromFlashObject(\stdClass $obj, int $worldId): array
     {
         [$posX, $posY, $posZ] = ObjectHelper::getPosition($obj);
+        $components = $obj->components ?? null;
 
         $data = [
             'world_id' => $worldId,
@@ -330,11 +335,15 @@ class WorldObject extends Model
             'position_y' => $posY,
             'position_z' => $posZ,
             'direction' => $obj->direction ?? 0,
-            'state' => $obj->state ?? null,
+            'state' => self::normalizeLegacyAnimalBreedingState(
+                $obj->itemName ?? null,
+                $obj->state ?? null,
+                $components,
+            ),
             'deleted' => $obj->deleted ?? false,
             'temp_id' => $obj->tempId ?? -1,
             'instance_data_store_key' => $obj->instanceDataStoreKey ?? null,
-            'components' => JsonHelper::safeEncode($obj->components ?? null),
+            'components' => JsonHelper::safeEncode($components),
             'plant_time' => $obj->plantTime ?? 0,
             'build_time' => $obj->buildTime ?? 0,
             'is_big_plot' => $obj->isBigPlot ?? false,
@@ -364,5 +373,41 @@ class WorldObject extends Model
         }
 
         return $data;
+    }
+
+    /**
+     * Older saves can represent completed Animal Breeding buildings as a
+     * crop-style "grown" object with no FeaturedRender component data. The
+     * preserved client has no matching grown visual state for these buildings
+     * and renders only their ground shadow. Modern placements use "bare";
+     * preserve a genuine grown state whenever featured item data exists.
+     */
+    private static function normalizeLegacyAnimalBreedingState(
+        ?string $itemName,
+        ?string $state,
+        mixed $components,
+    ): ?string {
+        if (
+            ! is_string($itemName)
+            || ! str_starts_with($itemName, 'animal_breeding_')
+            || ! str_ends_with($itemName, '_finished')
+            || $state !== 'grown'
+        ) {
+            return $state;
+        }
+
+        $featuredItems = is_object($components)
+            ? ($components->featuredItems ?? null)
+            : (is_array($components) ? ($components['featuredItems'] ?? null) : null);
+
+        if (is_object($featuredItems) && get_object_vars($featuredItems) !== []) {
+            return $state;
+        }
+
+        if (is_array($featuredItems) && $featuredItems !== []) {
+            return $state;
+        }
+
+        return 'bare';
     }
 }
