@@ -1,6 +1,5 @@
 <?php
 
-require_once AMFPHP_ROOTPATH . "Helpers/globals.php";
 require_once AMFPHP_ROOTPATH . "Helpers/player.php";
 require_once AMFPHP_ROOTPATH . "Helpers/market_transactions.php";
 require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
@@ -128,8 +127,6 @@ class UserService{
     }
 
     public static function getBalance($playerObj = null, $request = null, $market = null){
-        global $db;
-
         $gold = 100000;
         $cash = 10;
 

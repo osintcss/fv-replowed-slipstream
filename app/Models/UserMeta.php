@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\Database;
 use Illuminate\Database\Eloquent\Model;
 
 class UserMeta extends Model
@@ -38,7 +39,10 @@ class UserMeta extends Model
             return self::$resourceCache[$uid];
         }
 
-        $meta = static::where('uid', $uid)->first(['gold', 'cash', 'xp']);
+        $meta = Database::run(
+            'load player resources',
+            static fn () => static::where('uid', $uid)->first(['gold', 'cash', 'xp']),
+        );
 
         if (!$meta) {
             $data = ['gold' => 0, 'cash' => 0, 'xp' => 0];
@@ -62,10 +66,13 @@ class UserMeta extends Model
             return $amount === 0;
         }
 
-        $affected = static::where('uid', $uid)
-            ->update([
-                $field => \DB::raw("LEAST({$field} + {$amount}, {$max})")
-            ]);
+        $affected = Database::run(
+            'add player resource',
+            static fn () => static::where('uid', $uid)
+                ->update([
+                    $field => \DB::raw("LEAST({$field} + {$amount}, {$max})")
+                ]),
+        );
 
         static::invalidateCache($uid);
         return $affected > 0;
@@ -77,11 +84,14 @@ class UserMeta extends Model
             return $amount === 0;
         }
 
-        $affected = static::where('uid', $uid)
-            ->where($field, '>=', $amount)
-            ->update([
-                $field => \DB::raw("{$field} - {$amount}")
-            ]);
+        $affected = Database::run(
+            'remove player resource',
+            static fn () => static::where('uid', $uid)
+                ->where($field, '>=', $amount)
+                ->update([
+                    $field => \DB::raw("{$field} - {$amount}")
+                ]),
+        );
 
         if ($affected > 0) {
             static::invalidateCache($uid);
@@ -99,12 +109,15 @@ class UserMeta extends Model
         $xpMax = self::XP_MAX;
         $cashMax = self::CASH_MAX;
 
-        $affected = static::where('uid', $uid)
-            ->update([
-                'gold' => \DB::raw("GREATEST(0, LEAST(gold + {$goldDelta}, {$goldMax}))"),
-                'xp' => \DB::raw("GREATEST(0, LEAST(xp + {$xpDelta}, {$xpMax}))"),
-                'cash' => \DB::raw("GREATEST(0, LEAST(cash + {$cashDelta}, {$cashMax}))"),
-            ]);
+        $affected = Database::run(
+            'batch update player resources',
+            static fn () => static::where('uid', $uid)
+                ->update([
+                    'gold' => \DB::raw("GREATEST(0, LEAST(gold + {$goldDelta}, {$goldMax}))"),
+                    'xp' => \DB::raw("GREATEST(0, LEAST(xp + {$xpDelta}, {$xpMax}))"),
+                    'cash' => \DB::raw("GREATEST(0, LEAST(cash + {$cashDelta}, {$cashMax}))"),
+                ]),
+        );
 
         static::invalidateCache($uid);
         return $affected >= 0;

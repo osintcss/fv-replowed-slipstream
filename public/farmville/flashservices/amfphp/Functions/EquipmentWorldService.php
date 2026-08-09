@@ -291,8 +291,6 @@ class EquipmentWorldService
             }
         }
 
-        global $db;
-
         $worldPersisted = true;
 
         if (!empty($modifiedObjects)) {
@@ -343,8 +341,6 @@ class EquipmentWorldService
                 Logger::debug('EquipmentWorldService', 'Quest progress saved: ' . json_encode($questUpdates));
             }
         }
-
-        $db->destroy();
 
         $totalGoldDelta = 0;
         $totalXpDelta = 0;

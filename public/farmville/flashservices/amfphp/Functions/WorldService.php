@@ -475,12 +475,9 @@ class WorldService
                     }
 
                     if ($modified) {
-                        global $db;
                         if (!saveWorld($uid, $currentWorldType, $world)) {
                             throw new \Exception("Failed to save world (instant grow) for uid=$uid");
                         }
-                        $db->destroy();
-
                         if ($totalCost > 0) {
                             UserResources::removeCash($uid, $totalCost);
                         }
@@ -640,11 +637,9 @@ class WorldService
                                 }
 
                                 $currWorld["objectsArray"][$buildingKey] = $building;
-                                global $db;
                                 if (!saveWorld($uid, $currentWorldType, $currWorld)) {
                                     throw new \Exception("Failed to save world (store expansion) for uid=$uid");
                                 }
-                                $db->destroy();
                             }
                         }
                     }
@@ -789,11 +784,9 @@ class WorldService
                             }
 
                             if ($modified) {
-                                global $db;
                                 if (!saveWorld($hostId, $hostWorldType, $hostWorld)) {
                                     throw new \Exception("Failed to save host world (neighbor action) for hostId=$hostId");
                                 }
-                                $db->destroy();
                             }
                         }
                     }
@@ -883,9 +876,7 @@ class WorldService
                 ];
 
                 $newSign->messageId = (int) $newMessageId;
-                global $db;
                 saveWorldWithMessages($hostId, $hostWorldType, $hostWorld, $messageManager);
-                $db->destroy();
 
                 $data["id"] = $newSignId;
                 $data["data"] = array(
@@ -951,9 +942,7 @@ class WorldService
                     $messageManager["messages"] = array_values($messageManager["messages"]);
                 }
 
-                global $db;
                 saveWorldWithMessages($hostId, $hostWorldType, $hostWorld, $messageManager);
-                $db->destroy();
                 $data["data"] = array("success" => $found);
                 break;
 
@@ -993,11 +982,9 @@ class WorldService
                     break;
                 }
 
-                global $db;
                 if (!saveWorld($uid, $worldType, $world)) {
                     throw new \Exception("Failed to save world (expand with currency) for uid=$uid");
                 }
-                $db->destroy();
                 $data["data"] = array("success" => true);
                 break;
 
@@ -1082,11 +1069,9 @@ class WorldService
                 $world["objectsArray"][$buildingKey]->expansionLevel = $currentLevel + 1;
                 $world["objectsArray"][$buildingKey]->expansionParts = new \stdClass();
 
-                global $db;
                 if (!saveWorld($uid, $worldType, $world)) {
                     throw new \Exception("Failed to save world (complete now) for uid=$uid");
                 }
-                $db->destroy();
                 $data["data"] = array("success" => true);
                 break;
 

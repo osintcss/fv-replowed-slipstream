@@ -1,5 +1,4 @@
 <?php
-require_once AMFPHP_ROOTPATH . "Helpers/database.php";
 require_once AMFPHP_ROOTPATH . "Helpers/general_functions.php";
 require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
 require_once AMFPHP_ROOTPATH . "Helpers/constants.php";
@@ -18,12 +17,9 @@ class Player {
     private $pData = array();
     private $worldData = array();
     private $avatarData = array();
-    private $db = null;
 
     public function __construct($id) {
-        global $db;
         $this->uid = $id;
-        $this->db = $db;
     }
 
     public function getUid(){
@@ -288,7 +284,6 @@ class Player {
         $worldId = getWorldId($this->uid, $currentWorldType);
         if ($worldId === null) {
             Logger::error('World', "setWorld: no world found for uid={$this->uid} type=$currentWorldType");
-            $this->db->destroy();
             return false;
         }
 
@@ -339,14 +334,12 @@ class Player {
                 // existing object. A different item at the same anchor is a
                 // real collision and must never overwrite or delete it.
                 if (!$isPlotUpdate && !$isIdempotentPlacement) {
-                    $this->db->destroy();
                     return false;
                 }
 
                 $newObj->id = $existingObject->id;
                 $exists = $placement['existingKey'];
             } elseif ($placement['reason'] === 'collision_detected') {
-                $this->db->destroy();
                 return false;
             } else {
                 $newId = null;
@@ -438,7 +431,6 @@ class Player {
             
             $collision = CollisionDetector::checkCollision($newObj, $currWorld["objectsArray"]);
             if ($collision['collides']) {
-                $this->db->destroy();
                 return false;
             }
             
@@ -473,7 +465,6 @@ class Player {
             }
             $this->worldData = $currWorld;
             $saveResult = saveWorld($this->uid, $currentWorldType, $currWorld);
-            $this->db->destroy();
             if (!$saveResult) {
                 throw new \Exception("Failed to save world data for uid={$this->uid}");
             }
@@ -499,8 +490,6 @@ class Player {
         }
 
         invalidateWorldCache($this->uid, $currentWorldType);
-
-        $this->db->destroy();
 
         if (!$dbResult) {
             throw new \Exception("Failed to perform $operationType on world object for uid={$this->uid}");
@@ -625,8 +614,6 @@ class Player {
 
         $this->worldData = $currWorld;
         $saveResult = saveWorld($this->uid, $currentWorldType, $currWorld);
-        $this->db->destroy();
-
         if (!$saveResult) {
             throw new \Exception("Failed to save world data (storeItem) for uid={$this->uid}");
         }
@@ -697,8 +684,6 @@ class Player {
                 throw new \Exception("Failed to save world data (storeInHomeInventory) for uid={$this->uid}");
             }
         }
-
-        $this->db->destroy();
 
         return [
             'success' => true,
@@ -786,7 +771,6 @@ class Player {
                 throw new \Exception("Failed to save building storage for uid={$this->uid} buildingId={$buildingId}");
             }
 
-            $this->db->destroy();
             return true;
         }
 

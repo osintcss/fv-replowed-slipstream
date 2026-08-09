@@ -1,10 +1,9 @@
 <?php
-require_once AMFPHP_ROOTPATH . "Helpers/globals.php";
-require_once AMFPHP_ROOTPATH . "Helpers/database.php";
 require_once AMFPHP_ROOTPATH . "Helpers/user_resources.php";
 require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
 
 use App\Models\FriendSet;
+use App\Support\Database;
 use App\Helpers\JsonHelper;
 
 function getFriendSet($uid, $code) {
@@ -172,51 +171,54 @@ function recordFriendHelp($hostUid, $helperUid, $code = "FS06", $totalRequired =
     if (!is_numeric($hostUid) || !is_numeric($helperUid)) return false;
     if ($hostUid == $helperUid) return false;
 
-    $fs = FriendSet::where('uid', $hostUid)
-        ->where('code', $code)
-        ->where('progress_state', '<', 2)
-        ->orderByDesc('fs_index')
-        ->first();
+    return Database::transaction('record friend-set help', static function () use ($hostUid, $helperUid, $code, $totalRequired) {
+        $fs = FriendSet::where('uid', $hostUid)
+            ->where('code', $code)
+            ->where('progress_state', '<', 2)
+            ->orderByDesc('fs_index')
+            ->lockForUpdate()
+            ->first();
 
-    if (!$fs) return false;
+        if (!$fs) return false;
 
-    $friends = JsonHelper::safeDecode($fs->friends, true, []);
-    $boughtCount = (int) $fs->bought_count;
-    $helperKey = "_" . $helperUid;
+        $friends = JsonHelper::safeDecode($fs->friends, true, []);
+        $boughtCount = (int) $fs->bought_count;
+        $helperKey = "_" . $helperUid;
 
-    if (isset($friends[$helperKey]) && (int) $friends[$helperKey] > 0) {
-        return false;
-    }
+        if (isset($friends[$helperKey]) && (int) $friends[$helperKey] > 0) {
+            return false;
+        }
 
-    $helpedCount = 0;
-    foreach ($friends as $val) {
-        if ((int) $val > 0) $helpedCount++;
-    }
+        $helpedCount = 0;
+        foreach ($friends as $val) {
+            if ((int) $val > 0) $helpedCount++;
+        }
 
-    $totalCompleted = $helpedCount + $boughtCount;
-    if ($totalCompleted >= $totalRequired) {
-        return false;
-    }
+        $totalCompleted = $helpedCount + $boughtCount;
+        if ($totalCompleted >= $totalRequired) {
+            return false;
+        }
 
-    $friends[$helperKey] = "1";
-    $helpedCount++;
-    $totalCompleted++;
+        $friends[$helperKey] = "1";
+        $helpedCount++;
+        $totalCompleted++;
 
-    $fs->friends = JsonHelper::safeEncode($friends);
+        $fs->friends = JsonHelper::safeEncode($friends);
 
-    if ($totalCompleted >= $totalRequired) {
-        $fs->progress_state = 2;
-        $fs->save();
+        if ($totalCompleted >= $totalRequired) {
+            $fs->progress_state = 2;
+            $fs->save();
 
-        $worldCode = $fs->world_code ?? "2dvd";
-        addGiftByCode($hostUid, $worldCode);
+            $worldCode = $fs->world_code ?? "2dvd";
+            addGiftByCode($hostUid, $worldCode);
 
-        Logger::debug('FriendSet', "Friend set completed by neighbor help: hostUid=$hostUid, helperUid=$helperUid, worldCode=$worldCode");
-    } else {
-        $fs->save();
-    }
+            Logger::debug('FriendSet', "Friend set completed by neighbor help: hostUid=$hostUid, helperUid=$helperUid, worldCode=$worldCode");
+        } else {
+            $fs->save();
+        }
 
-    Logger::debug('FriendSet', "Friend help recorded: hostUid=$hostUid, helperUid=$helperUid, code=$code, fsIndex={$fs->fs_index}, progress=$totalCompleted/$totalRequired");
+        Logger::debug('FriendSet', "Friend help recorded: hostUid=$hostUid, helperUid=$helperUid, code=$code, fsIndex={$fs->fs_index}, progress=$totalCompleted/$totalRequired");
 
-    return true;
+        return true;
+    });
 }

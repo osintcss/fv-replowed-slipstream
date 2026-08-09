@@ -115,8 +115,6 @@ class FarmService
     
     public static function buyFuel($playerObj, $request, $market)
     {
-        global $db;
-
         $data = array();
         $itemName = $request->params[0] ?? null;
         $isGift = $request->params[1] ?? false;

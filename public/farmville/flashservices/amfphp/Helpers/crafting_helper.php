@@ -1,5 +1,4 @@
 <?php
-require_once AMFPHP_ROOTPATH . "Helpers/globals.php";
 
 use App\Models\CraftingInventory;
 use App\Models\CraftingQueue;

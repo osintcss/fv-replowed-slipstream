@@ -1,6 +1,5 @@
 <?php
 
-require_once AMFPHP_ROOTPATH . "Helpers/globals.php";
 require_once AMFPHP_ROOTPATH . "Helpers/user_resources.php";
 require_once AMFPHP_ROOTPATH . "Helpers/general_functions.php";
 require_once AMFPHP_ROOTPATH . "Helpers/logger.php";

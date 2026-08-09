@@ -1,5 +1,4 @@
 <?php
-    require_once AMFPHP_ROOTPATH . "Helpers/globals.php";
     require_once AMFPHP_ROOTPATH . "Helpers/constants.php";
     require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
     require_once AMFPHP_ROOTPATH . "Helpers/friend_set_helper.php";
@@ -805,8 +804,6 @@
     }
 
     function createWorldByType($uid, $type = "farm" ){
-        global $db;
-
         $size = 50;
         $messageManager = serialize(['messages' => [], 'allowSendEmails' => true]);
 

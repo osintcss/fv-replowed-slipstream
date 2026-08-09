@@ -1,8 +1,6 @@
 <?php
 
-require_once AMFPHP_ROOTPATH . "Helpers/database.php";
 require_once AMFPHP_ROOTPATH . "Helpers/user_resources.php";
-require_once AMFPHP_ROOTPATH . "Helpers/globals.php";
 
 use App\Models\AvatarUnlock;
 

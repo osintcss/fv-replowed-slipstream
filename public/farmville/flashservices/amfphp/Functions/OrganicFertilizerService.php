@@ -23,11 +23,9 @@ class OrganicFertilizerService
             unset($obj);
 
             if ($modified) {
-                global $db;
                 if (!saveWorld($uid, $currentWorldType, $world)) {
                     throw new \Exception("Failed to save world (organic fertilizer) for uid=$uid");
                 }
-                $db->destroy();
             }
         }
 

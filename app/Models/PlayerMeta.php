@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\Database;
 use Illuminate\Database\Eloquent\Model;
 
 class PlayerMeta extends Model
@@ -29,9 +30,12 @@ class PlayerMeta extends Model
             return $GLOBALS['_meta_cache'][$cacheKey];
         }
 
-        $meta = static::where('uid', $uid)
-            ->where('meta_key', $metaKey)
-            ->first();
+        $meta = Database::run(
+            'find player metadata',
+            static fn () => static::where('uid', $uid)
+                ->where('meta_key', $metaKey)
+                ->first(),
+        );
 
         $value = $meta ? $meta->meta_value : false;
         $GLOBALS['_meta_cache'][$cacheKey] = $value;
@@ -45,9 +49,12 @@ class PlayerMeta extends Model
             return false;
         }
 
-        static::updateOrCreate(
-            ['uid' => $uid, 'meta_key' => $metaKey],
-            ['meta_value' => $metaValue]
+        Database::run(
+            'save player metadata',
+            static fn () => static::updateOrCreate(
+                ['uid' => $uid, 'meta_key' => $metaKey],
+                ['meta_value' => $metaValue],
+            ),
         );
 
         if (!isset($GLOBALS['_meta_cache'])) {

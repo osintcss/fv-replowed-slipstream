@@ -1,6 +1,4 @@
 <?php 
-require_once AMFPHP_ROOTPATH . "Helpers/globals.php";
-require_once AMFPHP_ROOTPATH . "Helpers/database.php";
 require_once AMFPHP_ROOTPATH . "Helpers/user_resources.php";
 require_once AMFPHP_ROOTPATH . "Helpers/general_functions.php";
 require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
@@ -10,12 +8,8 @@ class MarketTransactions {
     private const BUY_XP_GAIN_MIN = 0;
 
     private $uid = null;
-    private $db = null;
-
     public function __construct($pid) {
-        global $db;
         $this->uid = $pid;
-        $this->db = $db;
     }
 
     public function newTransaction(string $type, object $data, ?string $currency = null){
