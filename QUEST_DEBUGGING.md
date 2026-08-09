@@ -228,3 +228,38 @@ This applies to Pet Runs and other feature-based animal pens using the same
 storage protocol. It does not retroactively move animals that were already
 stranded in generic inventory before this change; recover those deliberately,
 after inspecting the affected user's storage and pen contents.
+
+## Animal-breeding buildings rendered only as shadows
+
+### Symptom
+
+Legacy Dino Labs, Horse Paddocks, Pet Runs, and Livestock buildings could load
+as a dark oval ground shadow with no building art. New purchases of the same
+building could work normally on the same farm, which initially made this look
+like an incomplete asset archive.
+
+### Root cause
+
+The affected database rows were completed `FeatureBuilding` objects named
+`animal_breeding_*_finished`, saved with `state = "grown"` but without a
+non-empty `components.featuredItems` map. The shipped Flash client did not
+rehydrate a normal visual for that legacy state combination. The building
+assets were therefore not missing; the client was receiving an incompatible
+saved-object state.
+
+### Implemented repair
+
+`app/Models/WorldObject.php` now normalizes only that legacy combination to
+`bare` when serializing a world object to Flash and when accepting a Flash
+world-object save. The normalization keeps positions, IDs, `contents`, and
+all unrelated component data intact. This protects old records immediately
+and prevents a later client save from restoring the bad state.
+
+A one-time live data repair applied the same condition to existing rows. It
+changed six matching records from `grown` to `bare`; it did not delete, replace,
+or re-download any assets.
+
+When investigating a similar report, compare a working new record with an old
+one's `item_name`, `state`, `components`, and `contents` before concluding an
+asset file is absent. Then reload the farm and verify both the visual and the
+building's stored contents.

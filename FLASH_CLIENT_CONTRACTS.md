@@ -245,6 +245,38 @@ Regression test: harvest an animal, put it in a Pet Run, reload, remove it
 from the Pet Run, reload, then repeat. At every stage verify there is one and
 only one animal.
 
+### Legacy completed animal-breeding buildings
+
+**Verified/implemented.** This is a reload/render-state compatibility rule for
+completed `FeatureBuilding` records whose item name matches
+`animal_breeding_*_finished`. It is deliberately separate from the animal-pen
+storage contract above.
+
+Older saved records can have `state = "grown"` and no populated
+`components.featuredItems`. The current Flash client does not restore a normal
+building visual for that combination: it shows only the dark placement
+footprint/shadow. This can look exactly like a missing SWF or bitmap asset, but
+the asset is not the cause. A newly placed Dino Lab showed the same building
+working with the normal `bare` state.
+
+`WorldObject` is the compatibility boundary. On both read and write it changes
+only this narrow legacy combination from `grown` to `bare`:
+
+- item name begins with `animal_breeding_` and ends with `_finished`;
+- `components.featuredItems` is absent or empty.
+
+It preserves the object ID, location, contents, other components, and all
+upgrade/storage fields. Do not apply this rule to arbitrary `grown` objects or
+to an animal pen with a non-empty featured-item map. Existing malformed rows
+are safe to repair with the same rule in a one-time data migration; on the
+live repair this updated six records and left every other field untouched.
+
+Regression test: place or load each affected building type (Dino Lab, Horse
+Paddock, Pet Run, Livestock building), reload the farm, and confirm that the
+building art remains visible and that opening it still preserves its contents.
+Do not begin an asset re-extraction merely because a world object appears as a
+shadow; inspect its persisted state and components first.
+
 ## Quest contracts
 
 The detailed history and implementation notes are in
