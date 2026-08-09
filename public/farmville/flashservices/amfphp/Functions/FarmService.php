@@ -28,7 +28,22 @@ class FarmService
         }
 
         if ($currency === "cash") {
-            $cost = (int) ($item["cash"] ?? 0);
+            // Farm expansions are represented by paired catalog entries: for
+            // example, farm14 is the coin option and farm14_cash is the Farm
+            // Cash option. Some client revisions send the base item along
+            // with the selected currency, so resolve that paired entry here.
+            $cashItem = $item;
+            if ((int) ($cashItem["cash"] ?? 0) <= 0) {
+                $cashItem = getItemByName($itemName . "_cash", "db") ?: $cashItem;
+            }
+
+            // A paired entry must describe the same expansion, not merely
+            // provide a cash price for an unrelated catalog item.
+            if ((int) ($cashItem["squares"] ?? 0) !== $newSize) {
+                return self::expandFarmError($uid, $itemName, $currency, 'Expansion cash option is invalid.');
+            }
+
+            $cost = (int) ($cashItem["cash"] ?? 0);
             if ($cost <= 0) {
                 return self::expandFarmError($uid, $itemName, $currency, 'Expansion item has no cash price.');
             }
