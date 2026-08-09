@@ -171,7 +171,16 @@ class WorldObject extends Model
             $this->enrichCraftingCottageData($obj, $uid);
         }
 
-        if ($this->class_name === 'FeatureBuilding') {
+        // Animal-breeding pens use their own construction-building class,
+        // rather than FeatureBuilding, even after they are built. They still
+        // inherit Flash's storage contract: `contents`, `storageMetadata`,
+        // and `featuredItems` must be present at the top level on reload.
+        // Leaving those values nested only in components makes a Dino Lab
+        // appear empty after a refresh even though the dinosaur was saved.
+        if (
+            $this->class_name === 'FeatureBuilding'
+            || str_starts_with((string) $this->item_name, 'animal_breeding_')
+        ) {
             $this->enrichFeatureBuildingStorageData($obj);
         }
 
