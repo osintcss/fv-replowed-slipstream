@@ -6,6 +6,11 @@ use App\Models\UserMeta;
 
 class FarmService
 {
+    // The preserved client currently advertises every cash farm expansion as
+    // a 1 Farm Cash sale. Keep the transaction price in sync with that live
+    // market display rather than the historical catalog cash values.
+    private const ACTIVE_CASH_EXPANSION_SALE_PRICE = 1;
+
     
     public static function expandFarm($playerObj, $request, $market)
     {
@@ -43,10 +48,11 @@ class FarmService
                 return self::expandFarmError($uid, $itemName, $currency, 'Expansion cash option is invalid.');
             }
 
-            $cost = (int) ($cashItem["cash"] ?? 0);
-            if ($cost <= 0) {
+            $catalogCost = (int) ($cashItem["cash"] ?? 0);
+            if ($catalogCost <= 0) {
                 return self::expandFarmError($uid, $itemName, $currency, 'Expansion item has no cash price.');
             }
+            $cost = self::ACTIVE_CASH_EXPANSION_SALE_PRICE;
             if (!UserResources::removeCash($uid, $cost)) {
                 return self::expandFarmError($uid, $itemName, $currency, 'Not enough cash to expand the farm.');
             }
