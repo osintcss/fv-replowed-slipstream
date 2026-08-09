@@ -12,6 +12,7 @@ use App\Http\Controllers\AdminController;
 use App\Http\Controllers\DailyGiftController;
 use App\Http\Controllers\WorldShopController;
 use App\Http\Controllers\ChatController;
+use App\Http\Controllers\HomeWorldController;
 use App\Http\Controllers\PlayerExportController;
 use App\Http\Controllers\AdminPlayerImportController;
 use Illuminate\Http\Request;
@@ -160,6 +161,12 @@ Route::middleware('auth')->group(function () {
     // Daily Gift routes
     Route::get('/daily-gift/status', [DailyGiftController::class, 'checkStatus'])->name('daily-gift.status');
     Route::post('/daily-gift/claim', [DailyGiftController::class, 'claim'])->name('daily-gift.claim');
+
+    // Recovery path for a broken or unavailable travel world. The player must
+    // choose it themselves; only their selected current world is changed.
+    Route::post('/api/worlds/return-home', [HomeWorldController::class, 'returnHome'])
+        ->name('worlds.return-home')
+        ->middleware('throttle:6,1');
 
     // World Shop routes
     Route::get('/api/world-shop/status', [WorldShopController::class, 'status'])->name('world-shop.status');
