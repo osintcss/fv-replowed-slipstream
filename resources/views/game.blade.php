@@ -101,7 +101,6 @@ $baseUrl = rtrim((string) config('app.url'), '/');
             cursor: pointer; font-size: 12px; font-weight: 600;
         }
         .btn-return-home:hover { background: linear-gradient(180deg, #14b8a6, #0f766e); }
-        .btn-return-home:disabled { cursor: wait; opacity: 0.7; }
 
         
         .chat-dropdown {
@@ -654,7 +653,10 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                 <button type="button" class="btn-world-shop" onclick="openWorldShop()">🌍 World Shop</button>
                 <button type="button" class="btn-neighbors" onclick="openNeighborModal()">Add Neighbors</button>
                 <button type="button" class="btn-market" onclick="openMarket()">Open Market</button>
-                <button type="button" id="returnHomeBtn" class="btn-return-home" onclick="returnHome()" title="Return to your home farm if travel gets stuck">Return Home</button>
+                <form method="POST" action="{{ route('worlds.return-home') }}" style="margin: 0;">
+                    @csrf
+                    <button type="submit" class="btn-return-home" title="Return to your home farm if travel gets stuck">Return Home</button>
+                </form>
                 <button type="button" class="btn-reload" onclick="window.location.reload()">Reload Game</button>
                 <div class="chat-dropdown">
                     <button type="button" class="btn-chat" onclick="toggleChatDropdown(event)">
@@ -690,35 +692,6 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                 }
                 function closeAccountDropdown() {
                     document.getElementById('accountDropdown').classList.remove('show');
-                }
-                async function returnHome() {
-                    const button = document.getElementById('returnHomeBtn');
-                    if (!button || button.disabled) return;
-
-                    button.disabled = true;
-                    button.textContent = 'Returning…';
-
-                    try {
-                        const response = await fetch('{{ route('worlds.return-home') }}', {
-                            method: 'POST',
-                            headers: {
-                                'Accept': 'application/json',
-                                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
-                            }
-                        });
-                        const data = await response.json();
-
-                        if (!response.ok || !data.success) {
-                            throw new Error(data.message || 'Unable to return to your home farm.');
-                        }
-
-                        window.location.reload();
-                    } catch (error) {
-                        console.error('Unable to return home:', error);
-                        alert(error.message || 'Unable to return to your home farm. Please try again.');
-                        button.disabled = false;
-                        button.textContent = 'Return Home';
-                    }
                 }
                 document.addEventListener('click', function(e) {
                     if (!e.target.closest('.user-dropdown')) closeAccountDropdown();
