@@ -80,6 +80,10 @@ class FarmService
         Logger::error('FarmService', "expandFarm rejected: uid={$uid}, item={$itemName}, currency={$currency}, reason={$reason}");
 
         return [
+            // TFarmTransaction expects every AMF result to contain data,
+            // including a rejected purchase. Without this envelope, older
+            // clients leave their modal progress screen open indefinitely.
+            'data' => [],
             'errorType' => 1,
             'errorData' => $reason,
         ];
