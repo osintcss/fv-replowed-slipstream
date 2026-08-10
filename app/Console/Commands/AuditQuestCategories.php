@@ -2,10 +2,10 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Item;
 use App\Models\Quest;
 use App\Support\QuestCategoryResolver;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 
 class AuditQuestCategories extends Command
 {
@@ -40,9 +40,15 @@ class AuditQuestCategories extends Command
 
         $this->line('Reading imported item category producers...');
         $producers = [];
-        foreach (Item::query()->select(['name', 'data'])->cursor() as $item) {
-            $data = $item->itemData;
-            $categories = array_merge([$item->name], QuestCategoryResolver::categories($item->name, is_array($data) ? $data : []));
+        foreach (DB::table('items')->select(['name', 'data'])->orderBy('id')->cursor() as $item) {
+            // Do not hydrate the Item model for this bulk inspection. Apart
+            // from avoiding model overhead, this keeps malformed legacy data
+            // from invoking object deserialization behavior during an audit.
+            $data = is_string($item->data ?? null)
+                ? @unserialize($item->data, ['allowed_classes' => false])
+                : null;
+            $itemName = (string) ($item->name ?? '');
+            $categories = array_merge([$itemName], QuestCategoryResolver::categories($itemName, is_array($data) ? $data : []));
             foreach ($categories as $category) {
                 $key = QuestCategoryResolver::normalized($category);
                 if ($key !== '') {
