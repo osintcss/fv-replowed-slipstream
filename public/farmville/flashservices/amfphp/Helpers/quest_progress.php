@@ -186,6 +186,10 @@ function getQuestItemCategories($itemName, $itemData = []) {
     // harvest category `AloeVera` (for example `allAloeVera`).
     $itemCategoryAliases = [
         'aloe' => ['AloeVera'],
+        // The crop key is `peanuts`, but the quest definition uses the
+        // singular client category `allPeanut`. Its imported subtype is only
+        // `misc`, so the key alone cannot satisfy that category.
+        'peanuts' => ['Peanut'],
     ];
 
     $normalizedItemName = strtolower((string) $itemName);
