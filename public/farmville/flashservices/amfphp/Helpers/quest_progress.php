@@ -2,6 +2,8 @@
 
 require_once AMFPHP_ROOTPATH . "Helpers/quest_helper.php";
 
+use App\Support\QuestCategoryResolver;
+
 function trackQuestProgress($uid, $action, $type, $amount = 1, $extraData = []) {
     $activeQuests = getActiveQuests($uid);
     $updatedQuests = [];
@@ -152,7 +154,7 @@ function matchesTaskType($taskAction, $taskType, $playerType, $extraData = []) {
 }
 
 function normalizeQuestIdentifier($value) {
-    return strtolower(preg_replace('/[^a-z0-9]/i', '', (string) $value));
+    return QuestCategoryResolver::normalized((string) $value);
 }
 
 /**
@@ -161,73 +163,10 @@ function normalizeQuestIdentifier($value) {
  * aliases for names that differ from the internal item key.
  */
 function getQuestItemCategories($itemName, $itemData = []) {
-    $categories = [];
-
-    // `subtype` is the normal category source in the imported FarmVille item
-    // definitions (for example `fruit`, `grain`, `vegetable`, or `flowers`).
-    foreach (['categories', 'category', 'subtype'] as $field) {
-        if (!isset($itemData[$field])) {
-            continue;
-        }
-
-        $value = $itemData[$field];
-        if (is_string($value)) {
-            $categories[] = $value;
-        } elseif (is_array($value)) {
-            foreach ($value as $category) {
-                if (is_string($category)) {
-                    $categories[] = $category;
-                }
-            }
-        }
-    }
-
-    // `aloe` is the item key, while FarmQuest settings use the client-facing
-    // harvest category `AloeVera` (for example `allAloeVera`).
-    $itemCategoryAliases = [
-        'aloe' => ['AloeVera'],
-        // The crop key is `peanuts`, but the quest definition uses the
-        // singular client category `allPeanut`. Its imported subtype is only
-        // `misc`, so the key alone cannot satisfy that category.
-        'peanuts' => ['Peanut'],
-    ];
-
-    $normalizedItemName = strtolower((string) $itemName);
-    foreach ($itemCategoryAliases[$normalizedItemName] ?? [] as $category) {
-        $categories[] = $category;
-    }
-
-    // FarmQuest uses habitat categories while world objects use their full
-    // building key, for example `animal_breeding_petrun_finished`.  Map the
-    // stable item-name family once, rather than hard-coding every finished
-    // Pet Run variant.
-    if (str_contains($normalizedItemName, 'petrun')) {
-        $categories[] = 'petRunHabitat';
-    }
-
-    // The same finished-building naming convention is used by livestock
-    // breeding pens. Quest definitions refer to the family as a habitat.
-    if (str_contains($normalizedItemName, 'livestock')) {
-        $categories[] = 'livestockHabitat';
-    }
-
-    // Horse paddocks use the same finished-building key convention. Quest
-    // settings call this family paddockHabitat rather than the internal
-    // animal_breeding_horsepaddock_finished item name.
-    if (str_contains($normalizedItemName, 'paddock')) {
-        $categories[] = 'paddockHabitat';
-    }
-
-    // Dino Lab quest tasks use the client-facing `dinoLab` category, while
-    // the persisted world object is named
-    // `animal_breeding_dinolab_finished`. Without this alias Flash can show
-    // local harvest progress, but the server records none and the task resets
-    // to 0 after a reload.
-    if (str_contains($normalizedItemName, 'dinolab')) {
-        $categories[] = 'dinoLab';
-    }
-
-    return array_values(array_unique($categories));
+    return QuestCategoryResolver::categories(
+        (string) $itemName,
+        is_array($itemData) ? $itemData : [],
+    );
 }
 
 function trackHarvestProgress($uid, $obj, $itemName, $itemData = [], $amount = 1) {

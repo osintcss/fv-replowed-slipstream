@@ -35,6 +35,16 @@ make items
 make migrate
 ```
 
+After the game data has been loaded, run the read-only quest contract audit:
+
+```bash
+docker compose exec -T fv-replowed-slipstream php artisan quest:audit-categories
+```
+
+It reports quest category requirements which no imported item can produce;
+`--strict` makes those findings fail a CI or release check. It never creates
+category aliases automatically.
+
 `make tools` installs the MEGA downloader dependency. `make assets` downloads
 and extracts the game files, then downloads `farmvilledb_trimmed.sql` from the
 configured public MEGA folder into `.cache/fv-assets`. The four Internet
