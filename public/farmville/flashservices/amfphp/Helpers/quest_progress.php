@@ -170,13 +170,20 @@ function getQuestItemCategories($itemName, $itemData = []) {
 }
 
 function trackHarvestProgress($uid, $obj, $itemName, $itemData = [], $amount = 1) {
+    // Quest definitions use the compact item code for `harvestByCode` tasks
+    // (for example Cluck Rogers is `6V5`), while category tasks must still
+    // receive the stable internal item name. Sending the name to both made
+    // code-based harvest progress look correct locally, then reset on reload.
+    $itemCode = is_array($itemData) && !empty($itemData['code'])
+        ? (string) $itemData['code']
+        : (string) $itemName;
     $extraData = [
-        'itemCode' => $itemName,
+        'itemCode' => $itemCode,
         'categories' => getQuestItemCategories($itemName, $itemData),
         'objState' => $obj['state'] ?? null,
     ];
 
-    $updates1 = trackQuestProgress($uid, 'harvestByCode', $itemName, $amount, $extraData);
+    $updates1 = trackQuestProgress($uid, 'harvestByCode', $itemCode, $amount, $extraData);
 
     $updates2 = trackQuestProgress($uid, 'harvestByCategory', $itemName, $amount, $extraData);
 
