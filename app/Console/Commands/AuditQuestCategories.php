@@ -40,7 +40,8 @@ class AuditQuestCategories extends Command
 
         $this->line('Reading imported item category producers...');
         $producers = [];
-        foreach (DB::table('items')->select(['name', 'data'])->orderBy('id')->cursor() as $item) {
+        DB::table('items')->select(['id', 'name', 'data'])->orderBy('id')->chunkById(1000, function ($items) use (&$producers): void {
+            foreach ($items as $item) {
             $itemName = (string) ($item->name ?? '');
             // Item definitions are legacy PHP-serialized blobs. This audit
             // must tolerate any historical blob, so it extracts the scalar
@@ -67,7 +68,8 @@ class AuditQuestCategories extends Command
                     $producers[$key] = true;
                 }
             }
-        }
+            }
+        });
 
         $missing = [];
         foreach ($required as $key => $contract) {
