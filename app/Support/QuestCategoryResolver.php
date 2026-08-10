@@ -40,6 +40,13 @@ final class QuestCategoryResolver
             'blueberry' => ['Blueberries'],
             'blueberrychandler' => ['ChandlerBlueberry'],
             'blackberriesdarrow' => ['DarrowBlackberry'],
+            'bluemorningglory' => ['MorningGlory'],
+            'grapes' => ['Grape'],
+            'pineapples' => ['Pineapple'],
+            'sunflowers' => ['Sunflower'],
+            'tulipred' => ['RedTulips'],
+            'startree' => ['startrees'],
+            'mustard' => ['mustardCategory'],
         ];
         $normalizedItemName = strtolower($itemName);
         foreach ($aliases[$normalizedItemName] ?? [] as $category) {
