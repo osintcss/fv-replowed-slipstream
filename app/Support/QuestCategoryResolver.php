@@ -25,7 +25,22 @@ final class QuestCategoryResolver
             }
         }
 
-        $aliases = ['aloe' => ['AloeVera'], 'peanuts' => ['Peanut']];
+        $aliases = [
+            'aloe' => ['AloeVera'],
+            'peanuts' => ['Peanut'],
+            // Verified against the imported item table. These FarmQuest
+            // labels predate (or differ from) the internal crop keys.
+            'licoriceplant' => ['Licorice'],
+            'daffodils' => ['Daffodil'],
+            'bellpepperyellow' => ['BellPeppers'],
+            'strawberry' => ['Strawberries'],
+            'bluebean' => ['BlueBeans'],
+            'maracassflower' => ['MaracasFlowers'],
+            'squirtingsunsflower' => ['SquirtingSunflower'],
+            'blueberry' => ['Blueberries'],
+            'blueberrychandler' => ['ChandlerBlueberry'],
+            'blackberriesdarrow' => ['DarrowBlackberry'],
+        ];
         $normalizedItemName = strtolower($itemName);
         foreach ($aliases[$normalizedItemName] ?? [] as $category) {
             $categories[] = $category;
@@ -41,6 +56,21 @@ final class QuestCategoryResolver
         }
         if (str_contains($normalizedItemName, 'dinolab')) {
             $categories[] = 'dinoLab';
+        }
+        if (str_contains($normalizedItemName, 'animal_breeding_')) {
+            $categories[] = 'animalBreedingAll';
+            foreach ([
+                'aviary' => 'aviaryHabitat',
+                'wildlife' => 'wildlifeHabitat',
+                'pasture' => 'pastureHabitat',
+                'playpen' => 'playpenHabitat',
+                'swimpond' => 'swimpondHabitat',
+                'zoo' => 'zooHabitat',
+            ] as $needle => $category) {
+                if (str_contains($normalizedItemName, $needle)) {
+                    $categories[] = $category;
+                }
+            }
         }
 
         return array_values(array_unique($categories));
