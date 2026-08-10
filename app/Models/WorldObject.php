@@ -131,10 +131,15 @@ class WorldObject extends Model
     public function toFlashObject(?int $uid = null): \stdClass
     {
         $obj = new \stdClass();
+        [$itemName, $className, $state] = self::normalizeLegacyAnimalBreedingBuilding(
+            $this->item_name,
+            $this->class_name,
+            $this->state,
+        );
 
         $obj->id = $this->object_id;
-        $obj->className = $this->class_name;
-        $obj->itemName = $this->item_name;
+        $obj->className = $className;
+        $obj->itemName = $itemName;
         $obj->position = (object)[
             'x' => $this->position_x,
             'y' => $this->position_y,
@@ -142,8 +147,8 @@ class WorldObject extends Model
         ];
         $obj->direction = $this->direction;
         $obj->state = self::normalizeLegacyAnimalBreedingState(
-            $this->item_name,
-            $this->state,
+            $itemName,
+            $state,
             $this->components,
         );
         $obj->deleted = $this->deleted;
@@ -167,7 +172,7 @@ class WorldObject extends Model
         $obj->hostId = $this->host_id;
         $obj->timestamp = $this->message_timestamp;
 
-        if ($this->class_name === 'CraftingCottageBuilding') {
+        if ($className === 'CraftingCottageBuilding') {
             $this->enrichCraftingCottageData($obj, $uid);
         }
 
@@ -178,13 +183,13 @@ class WorldObject extends Model
         // Leaving those values nested only in components makes a Dino Lab
         // appear empty after a refresh even though the dinosaur was saved.
         if (
-            $this->class_name === 'FeatureBuilding'
-            || str_starts_with((string) $this->item_name, 'animal_breeding_')
+            $className === 'FeatureBuilding'
+            || str_starts_with((string) $itemName, 'animal_breeding_')
         ) {
             $this->enrichFeatureBuildingStorageData($obj);
         }
 
-        if ($this->class_name === 'StorageBuilding' || $this->class_name === 'InventoryCellar') {
+        if ($className === 'StorageBuilding' || $className === 'InventoryCellar') {
             $this->enrichStorageBuildingData($obj);
         }
 
@@ -334,19 +339,24 @@ class WorldObject extends Model
     {
         [$posX, $posY, $posZ] = ObjectHelper::getPosition($obj);
         $components = $obj->components ?? null;
+        [$itemName, $className, $state] = self::normalizeLegacyAnimalBreedingBuilding(
+            $obj->itemName ?? null,
+            $obj->className ?? 'Unknown',
+            $obj->state ?? null,
+        );
 
         $data = [
             'world_id' => $worldId,
             'object_id' => $obj->id ?? 0,
-            'class_name' => $obj->className ?? 'Unknown',
-            'item_name' => $obj->itemName ?? null,
+            'class_name' => $className,
+            'item_name' => $itemName,
             'position_x' => $posX,
             'position_y' => $posY,
             'position_z' => $posZ,
             'direction' => $obj->direction ?? 0,
             'state' => self::normalizeLegacyAnimalBreedingState(
-                $obj->itemName ?? null,
-                $obj->state ?? null,
+                $itemName,
+                $state,
                 $components,
             ),
             'deleted' => $obj->deleted ?? false,
@@ -418,5 +428,29 @@ class WorldObject extends Model
         }
 
         return 'bare';
+    }
+
+    /**
+     * A completed animal-breeding pen must become its finished FeatureBuilding
+     * resource. Older saves could retain the construction resource in its
+     * terminal `built` state; it renders an enclosure, but its construction
+     * class cannot restore the dinosaurs stored in the completed lab/pen.
+     */
+    private static function normalizeLegacyAnimalBreedingBuilding(
+        ?string $itemName,
+        ?string $className,
+        ?string $state,
+    ): array {
+        if (
+            ! is_string($itemName)
+            || ! str_starts_with($itemName, 'animal_breeding_')
+            || str_ends_with($itemName, '_finished')
+            || $className !== 'AnimalBreedingPenConstructionBuilding'
+            || $state !== 'built'
+        ) {
+            return [$itemName, $className, $state];
+        }
+
+        return ["{$itemName}_finished", 'FeatureBuilding', 'bare'];
     }
 }
