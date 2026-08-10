@@ -15,7 +15,9 @@ class AuditQuestCategories extends Command
 
     public function handle(): int
     {
-        $required = [];
+        try {
+            $this->line('Reading quest category contracts...');
+            $required = [];
         foreach (Quest::query()->select(['name', 'tasks'])->cursor() as $quest) {
             $tasks = json_decode($quest->tasks ?: '[]', true);
             if (! is_array($tasks)) {
@@ -36,6 +38,7 @@ class AuditQuestCategories extends Command
             }
         }
 
+        $this->line('Reading imported item category producers...');
         $producers = [];
         foreach (Item::query()->select(['name', 'data'])->cursor() as $item) {
             $data = $item->itemData;
@@ -63,6 +66,12 @@ class AuditQuestCategories extends Command
 
         $this->table(['Missing category', 'Quest actions', 'Example quests'], $missing);
         $this->warn(count($missing).' category requirement(s) need review. No aliases were created automatically.');
-        return $this->option('strict') ? self::FAILURE : self::SUCCESS;
+            return $this->option('strict') ? self::FAILURE : self::SUCCESS;
+        } catch (\Throwable $exception) {
+            $this->error('Quest category audit failed: '.$exception->getMessage());
+            report($exception);
+
+            return self::FAILURE;
+        }
     }
 }
