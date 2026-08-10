@@ -208,12 +208,18 @@ function trackPlowProgress($uid, $count = 1) {
 }
 
 function trackRecipeProgress($uid, $recipeCode, $recipeData = []) {
+    $recipeName = is_array($recipeData) && !empty($recipeData['name'])
+        ? (string) $recipeData['name']
+        : (string) $recipeCode;
     $extraData = [
         'recipeCode' => $recipeCode,
-        'categories' => $recipeData['categories'] ?? [],
+        'categories' => getQuestItemCategories($recipeName, is_array($recipeData) ? $recipeData : []),
     ];
 
-    return trackQuestProgress($uid, 'makeRecipeByCode', $recipeCode, 1, $extraData);
+    $updatesByCode = trackQuestProgress($uid, 'makeRecipeByCode', $recipeCode, 1, $extraData);
+    $updatesByCategory = trackQuestProgress($uid, 'makeRecipeByCategory', $recipeName, 1, $extraData);
+
+    return array_merge($updatesByCode, $updatesByCategory);
 }
 
 function trackBuyItemProgress($uid, $itemCode, $quantity = 1) {
