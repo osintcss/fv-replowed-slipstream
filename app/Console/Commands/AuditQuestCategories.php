@@ -41,14 +41,26 @@ class AuditQuestCategories extends Command
         $this->line('Reading imported item category producers...');
         $producers = [];
         foreach (DB::table('items')->select(['name', 'data'])->orderBy('id')->cursor() as $item) {
-            // Do not hydrate the Item model for this bulk inspection. Apart
-            // from avoiding model overhead, this keeps malformed legacy data
-            // from invoking object deserialization behavior during an audit.
-            $data = is_string($item->data ?? null)
-                ? @unserialize($item->data, ['allowed_classes' => false])
-                : null;
             $itemName = (string) ($item->name ?? '');
-            $categories = array_merge([$itemName], QuestCategoryResolver::categories($itemName, is_array($data) ? $data : []));
+            // Item definitions are legacy PHP-serialized blobs. This audit
+            // must tolerate any historical blob, so it extracts the scalar
+            // category fields without executing a deserializer. Runtime
+            // category aliases still come from the shared resolver below.
+            $serializedCategories = [];
+            $rawData = $item->data ?? null;
+            if (is_string($rawData)) {
+                preg_match_all(
+                    '/s:\\d+:"(?:categories|category|subtype)";s:\\d+:"([^"]*)";/',
+                    $rawData,
+                    $matches,
+                );
+                $serializedCategories = $matches[1] ?? [];
+            }
+            $categories = array_merge(
+                [$itemName],
+                $serializedCategories,
+                QuestCategoryResolver::categories($itemName),
+            );
             foreach ($categories as $category) {
                 $key = QuestCategoryResolver::normalized($category);
                 if ($key !== '') {
