@@ -214,6 +214,15 @@ function getQuestItemCategories($itemName, $itemData = []) {
         $categories[] = 'paddockHabitat';
     }
 
+    // Dino Lab quest tasks use the client-facing `dinoLab` category, while
+    // the persisted world object is named
+    // `animal_breeding_dinolab_finished`. Without this alias Flash can show
+    // local harvest progress, but the server records none and the task resets
+    // to 0 after a reload.
+    if (str_contains($normalizedItemName, 'dinolab')) {
+        $categories[] = 'dinoLab';
+    }
+
     return array_values(array_unique($categories));
 }
 
