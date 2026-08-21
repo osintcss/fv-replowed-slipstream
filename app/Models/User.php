@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class User extends Authenticatable
 {
@@ -34,5 +35,10 @@ class User extends Authenticatable
     public function userMeta()
     {
         return $this->hasOne(UserMeta::class, 'uid' , 'uid');
+    }
+
+    public function discordIdentity(): HasOne
+    {
+        return $this->hasOne(DiscordIdentity::class);
     }
 }

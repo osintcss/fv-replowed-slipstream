@@ -2,6 +2,16 @@
     <!-- Session Status -->
     <x-auth-session-status class="mb-4" :status="session('status')" />
 
+    <a href="{{ route('discord.redirect') }}" class="mb-6 flex w-full items-center justify-center rounded-md px-4 py-2 font-semibold" style="background-color: #5865F2; color: #ffffff; text-decoration: none;">
+        Sign in with Discord
+    </a>
+    <x-input-error :messages="$errors->get('discord')" class="mb-4" />
+
+    <div class="relative mb-6">
+        <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-gray-300"></div></div>
+        <div class="relative flex justify-center"><span class="bg-white px-2 text-sm text-gray-500">Legacy sign-in during account linking</span></div>
+    </div>
+
     <form method="POST" action="{{ route('login') }}">
         @csrf
 

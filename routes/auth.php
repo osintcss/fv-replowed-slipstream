@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
+use App\Http\Controllers\Auth\DiscordAuthenticatedSessionController;
+use App\Http\Controllers\Auth\DiscordRegistrationController;
 use App\Http\Controllers\Auth\ConfirmablePasswordController;
 use App\Http\Controllers\Auth\EmailVerificationNotificationController;
 use App\Http\Controllers\Auth\EmailVerificationPromptController;
@@ -16,7 +18,12 @@ Route::middleware('guest')->group(function () {
         ->name('register')
         ->middleware('maintenance');
 
-    Route::post('register', [RegisteredUserController::class, 'store'])
+    Route::get('register/name', [DiscordRegistrationController::class, 'create'])
+        ->name('discord.register.name')
+        ->middleware('maintenance');
+
+    Route::post('register/name', [DiscordRegistrationController::class, 'store'])
+        ->name('discord.register.store')
         ->middleware('maintenance');
 
     Route::get('login', [AuthenticatedSessionController::class, 'create'])
@@ -24,6 +31,14 @@ Route::middleware('guest')->group(function () {
         ->middleware('maintenance');
 
     Route::post('login', [AuthenticatedSessionController::class, 'store'])
+        ->middleware('maintenance');
+
+    Route::get('auth/discord', [DiscordAuthenticatedSessionController::class, 'redirect'])
+        ->name('discord.redirect')
+        ->middleware('maintenance');
+
+    Route::get('auth/discord/callback', [DiscordAuthenticatedSessionController::class, 'callback'])
+        ->name('discord.callback')
         ->middleware('maintenance');
 
     Route::get('forgot-password', [PasswordResetLinkController::class, 'create'])

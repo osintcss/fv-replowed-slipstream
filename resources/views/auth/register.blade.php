@@ -1,64 +1,13 @@
 <x-guest-layout>
-    <form method="POST" action="{{ route('register') }}">
-        @csrf
+    <p class="mb-6 text-sm text-gray-600">Create an account with Discord, then choose the name shown on your farm.</p>
 
-        <!-- Email Address -->
-        <div>
-            <x-input-label for="email" :value="__('Email')" />
-            <x-text-input id="email" class="block mt-1 w-full" type="email" name="email" :value="old('email')" required autocomplete="username" />
-            <x-input-error :messages="$errors->get('email')" class="mt-2" />
-        </div>
+    <a href="{{ route('discord.redirect', ['intent' => 'register']) }}" class="flex w-full items-center justify-center rounded-md px-4 py-2 font-semibold" style="background-color: #5865F2; color: #ffffff; text-decoration: none;">
+        Continue with Discord
+    </a>
+    <x-input-error :messages="$errors->get('discord')" class="mt-4" />
 
-        <!-- Password -->
-        <div class="mt-4">
-            <x-input-label for="password" :value="__('Password')" />
-
-            <x-text-input id="password" class="block mt-1 w-full"
-                            type="password"
-                            name="password"
-                            required autocomplete="new-password" />
-
-            <x-input-error :messages="$errors->get('password')" class="mt-2" />
-        </div>
-
-        <!-- Confirm Password -->
-        <div class="mt-4">
-            <x-input-label for="password_confirmation" :value="__('Confirm Password')" />
-
-            <x-text-input id="password_confirmation" class="block mt-1 w-full"
-                            type="password"
-                            name="password_confirmation" required autocomplete="new-password" />
-
-            <x-input-error :messages="$errors->get('password_confirmation')" class="mt-2" />
-        </div>
-
-        <!-- In-Game Name -->
-        <div class="mt-4 p-3 bg-amber-100 dark:bg-amber-500/20  rounded-md">
-            <p class="block font-medium text-sm text-gray-700 dark:text-gray-300">
-                This name will be displayed in-game. Using a nickname instead of your real name is recommended.
-            </p>
-        </div>
-
-        <div class="mt-4">
-            <x-input-label for="firstName" :value="__('First Name')" />
-            <x-text-input id="firstName" class="block mt-1 w-full" type="text" name="firstName" :value="old('firstName')" required autofocus autocomplete="given-name" />
-            <x-input-error :messages="$errors->get('firstName')" class="mt-2" />
-        </div>
-
-        <div class="mt-4">
-            <x-input-label for="lastName" :value="__('Last Name')" />
-            <x-text-input id="lastName" class="block mt-1 w-full" type="text" name="lastName" :value="old('lastName')" required autocomplete="family-name" />
-            <x-input-error :messages="$errors->get('lastName')" class="mt-2" />
-        </div>
-
-        <div class="flex items-center justify-end mt-4">
-            <a class="underline text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:focus:ring-offset-gray-800" href="{{ route('login') }}">
-                {{ __('Already registered?') }}
-            </a>
-
-            <x-primary-button class="ms-4">
-                {{ __('Register') }}
-            </x-primary-button>
-        </div>
-    </form>
+    <p class="mt-6 text-center text-sm text-gray-600">
+        Already registered?
+        <a href="{{ route('login') }}" class="text-indigo-600 hover:underline">Sign in</a>
+    </p>
 </x-guest-layout>
