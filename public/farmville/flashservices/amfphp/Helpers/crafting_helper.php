@@ -118,6 +118,10 @@ function getRecipeById($recipeId) {
                         'itemCode' => (string) ($reward->OnFinish['itemCode'] ?? ''),
                         'sellQty' => (int) ($reward->OnFinish['sellQty'] ?? 0),
                         'giftQty' => (int) ($reward->OnFinish['giftQty'] ?? 0),
+                        // Keep this distinction: legacy Craftshop recipes
+                        // with a share loot table omit both quantities and
+                        // imply one finished consumable.
+                        'hasGiftQty' => isset($reward->OnFinish['giftQty']),
                     );
                 }
                 if (isset($reward->OnSell)) {
@@ -272,6 +276,35 @@ function getCraftingInventory($uid, $storageType = null) {
     }
 
     return $items;
+}
+
+/**
+ * Serialize completed cottage products for FarmGameWorld.CRAFTEDGOODS_ID.
+ * The Flash client constructs CraftedItem instances from this storage data,
+ * whose keys include the recipe level (for example, "cheese:2").
+ */
+function getCraftedGoodsStorageData($uid): array {
+    if (!is_numeric($uid)) {
+        return [];
+    }
+
+    $storage = [];
+    foreach (CraftingInventory::where('uid', $uid)
+        ->where('storage_type', 'crafted')
+        ->where('quantity', '>', 0)
+        ->get() as $item) {
+        $storage[(string) $item->item_code] = [(int) $item->quantity, [], []];
+    }
+
+    return $storage;
+}
+
+function addCraftedGood($uid, string $itemCode, int $recipeLevel, int $quantity): bool {
+    if ($itemCode === '' || $quantity <= 0) {
+        return false;
+    }
+
+    return addToInventory($uid, $itemCode . ':' . max(1, $recipeLevel), $quantity, 'crafted');
 }
 
 /**

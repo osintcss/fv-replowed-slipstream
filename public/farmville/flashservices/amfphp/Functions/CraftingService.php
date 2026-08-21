@@ -85,19 +85,67 @@ class CraftingService
         $finishedRecipes = CraftingQueue::getFinished($uid, $recipeId, $now);
 
         $claimedByCraftType = [];
+        // TClaimFinishedRecipes forwards data directly to
+        // CraftingRecipeQueueManager.endFinishedRecipesClaimed(), which
+        // iterates this array to remove the completed slot and add the
+        // crafted product to the live client inventory.
+        $completedRecipes = [];
 
         foreach ($finishedRecipes as $queueItem) {
             $recipe = getRecipeById($queueItem->recipe_id);
             if ($recipe && isset($recipe['OnFinish']) && $recipe['OnFinish']['itemCode']) {
-                $qty = max(1, $recipe['OnFinish']['sellQty'] + $recipe['OnFinish']['giftQty']);
-                addToInventory($uid, $recipe['OnFinish']['itemCode'], $qty, "stall");
+                $productItemCode = (string) $recipe['OnFinish']['itemCode'];
+                $sellQty = max(0, (int) ($recipe['OnFinish']['sellQty'] ?? 0));
+                // Older Craftshop recipes such as eA (Fertilize All) use a
+                // share loot table and omit both quantities. The client
+                // still expects one crafted consumable on completion.
+                $giftQty = !empty($recipe['OnFinish']['hasGiftQty'])
+                    ? max(0, (int) $recipe['OnFinish']['giftQty'])
+                    : (($sellQty === 0) ? 1 : 0);
+                $recipeState = CraftingRecipeState::where('uid', $uid)
+                    ->where('recipe_id', $queueItem->recipe_id)
+                    ->first();
+                $recipeLevel = max(1, (int) ($recipeState->level ?? $recipe['InitialRecipeLevel'] ?? 1));
 
-                $itemData = getItemByName($recipe['OnFinish']['itemCode'], "db");
+                $isCraftshopRecipe = ($queueItem->craft_type === 'craftshop');
+                if ($isCraftshopRecipe) {
+                    // CraftshopRecipeQueueManager grants its response product
+                    // with Global.player.addGift(). Persist in that same
+                    // inventory so the reward survives a reload.
+                    addGiftByCode($uid, $productItemCode, $giftQty, '0');
+                } else {
+                    // Finished cottage recipes belong to FarmGameWorld's
+                    // CRAFTEDGOODS storage (-7), not the market-stall
+                    // inventory. Its item key includes the recipe level.
+                    addCraftedGood($uid, $productItemCode, $recipeLevel, $giftQty);
+                }
+
+                $itemData = getItemByName($productItemCode, "db");
                 if (!$itemData) {
-                    $itemData = getItemByCode($recipe['OnFinish']['itemCode']);
+                    $itemData = getItemByCode($productItemCode);
                 }
                 if ($itemData) {
-                    processMastery($uid, $itemData, $qty);
+                    processMastery($uid, $itemData, $giftQty);
+                }
+
+                if ($isCraftshopRecipe) {
+                    // Do not include rewardLink: the Craftshop client treats
+                    // its *presence* as a request to start a feed flow.
+                    $completedRecipes[] = [
+                        // handleFinishFeed() uses recipeId to invoke the
+                        // completion callback that removes the loading mask.
+                        'recipeId' => (string) $queueItem->recipe_id,
+                        'productItemCode' => $productItemCode,
+                        'numGiftProducts' => $giftQty,
+                    ];
+                } else {
+                    $completedRecipes[] = [
+                        'recipeId' => (string) $queueItem->recipe_id,
+                        'productItemCode' => $productItemCode,
+                        'numGiftProducts' => $giftQty,
+                        'recipeLevel' => $recipeLevel,
+                        'quantity' => $sellQty,
+                    ];
                 }
 
                 $craftType = $queueItem->craft_type;
@@ -107,8 +155,8 @@ class CraftingService
                 $claimedByCraftType[$craftType][] = [
                     'recipeId' => $queueItem->recipe_id,
                     'recipeName' => $recipe['name'] ?? $queueItem->recipe_id,
-                    'itemCode' => $recipe['OnFinish']['itemCode'],
-                    'quantity' => $qty,
+                    'itemCode' => $productItemCode,
+                    'quantity' => $giftQty,
                     'timestamp' => (int) (microtime(true) * 1000),
                 ];
             }
@@ -124,7 +172,7 @@ class CraftingService
             self::updateCottageHistory($worldId, $claimedByCraftType, $uid, $worldType);
         }
 
-        $data["data"] = array();
+        $data["data"] = $completedRecipes;
         return $data;
     }
 
@@ -231,7 +279,26 @@ class CraftingService
         }
 
         $now = time();
-        CraftingQueue::rushRecipe($uid, $recipeId, $serverStartTS, $now);
+        $updated = CraftingQueue::rushRecipe($uid, $recipeId, $serverStartTS, $now);
+
+        // The Craft Shop client can retain a locally reconstructed start
+        // timestamp after a reload. It still sends the recipe and oven slot,
+        // which uniquely identify its queue entry. If its timestamp no longer
+        // matches ours, use those stable fields instead of reporting success
+        // while leaving the server recipe unfinished.
+        if ($updated === 0) {
+            $queueQuery = CraftingQueue::where('uid', $uid)
+                ->where('recipe_id', $recipeId)
+                ->where('status', 'active');
+            if ($ovenSlot >= 0) {
+                $queueQuery->where('oven_slot', $ovenSlot);
+            }
+            $queueItem = $queueQuery->orderBy('start_ts')->first();
+            if ($queueItem) {
+                $queueItem->finish_ts = $now;
+                $queueItem->save();
+            }
+        }
 
         $data["data"] = array();
         return $data;
@@ -269,16 +336,26 @@ class CraftingService
             }
         }
 
+        $productItemCode = '';
+        $giftQty = 0;
         if (isset($recipe['OnFinish']) && $recipe['OnFinish']['itemCode']) {
-            $qty = max(1, $recipe['OnFinish']['sellQty'] + $recipe['OnFinish']['giftQty']);
-            addToInventory($uid, $recipe['OnFinish']['itemCode'], $qty, "stall");
+            $productItemCode = (string) $recipe['OnFinish']['itemCode'];
+            $sellQty = max(0, (int) ($recipe['OnFinish']['sellQty'] ?? 0));
+            $giftQty = !empty($recipe['OnFinish']['hasGiftQty'])
+                ? max(0, (int) $recipe['OnFinish']['giftQty'])
+                : (($sellQty === 0) ? 1 : 0);
+            // TCraftInstantRecipe calls Global.player.addGift() from these
+            // response fields, so persist in the matching giftbox as well.
+            if ($giftQty > 0) {
+                addGiftByCode($uid, $productItemCode, $giftQty, '0');
+            }
 
-            $itemData = getItemByName($recipe['OnFinish']['itemCode'], "db");
+            $itemData = getItemByName($productItemCode, "db");
             if (!$itemData) {
-                $itemData = getItemByCode($recipe['OnFinish']['itemCode']);
+                $itemData = getItemByCode($productItemCode);
             }
             if ($itemData) {
-                processMastery($uid, $itemData, $qty);
+                processMastery($uid, $itemData, $giftQty);
             }
         }
 
@@ -293,7 +370,10 @@ class CraftingService
             UserResources::addXp($uid, $playerXp);
         }
 
-        $data["data"] = array();
+        $data["data"] = array(
+            'productItemCode' => $productItemCode,
+            'numGiftProducts' => $giftQty,
+        );
         return $data;
     }
 
@@ -536,7 +616,7 @@ class CraftingService
 
         if ($itemKey) {
             $uid = $playerObj->getUid();
-            removeFromInventory($uid, $itemKey, 1, "stall");
+            removeFromInventory($uid, $itemKey, 1, "crafted");
         }
 
         $data["data"] = array();

@@ -150,7 +150,8 @@ class Player {
                     "options" => $playerOptions,
                     "storageData" => [
                         GIFTBOX_STORAGE_KEY => buildGiftBoxStorageData($this->uid),
-                        INVENTORY_STORAGE_KEY => buildInventoryStorageData($this->uid)
+                        INVENTORY_STORAGE_KEY => buildInventoryStorageData($this->uid),
+                        CRAFTED_GOODS_STORAGE_KEY => getCraftedGoodsStorageData($this->uid),
                         ],
                     "hasVisitFriend" => false,
                     "achievements" => array(),
