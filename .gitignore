@@ -33,6 +33,16 @@ bootstrap/cache/*
 _ide_helper*.php
 .phpstorm.meta.php
 
+# Local recovery and analysis artifacts
+/backups
+/.tmp-*
+/tools
+/scripts/__pycache__
+/public/ruffle
+/*.bundle
+/*.patch
+/hs_err_pid*.log
+
 # Storage 
 storage/framework/cache/*
 storage/framework/sessions/*
