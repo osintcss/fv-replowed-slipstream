@@ -27,7 +27,13 @@ function trackQuestProgress($uid, $action, $type, $amount = 1, $extraData = []) 
                 'total' => $task['total'] ?? 1,
             ];
 
-            if (!matchesTaskAction($taskAction, $action, $taskType, $type, $extraData)) {
+            // A few legacy harvestBySubtype tasks use `type="seed"` as the
+            // action family and keep the actual category (fruit, vegetables,
+            // flowers, etc.) in a separate subtype attribute.
+            $matchType = ($taskAction === 'harvestBySubtype' && !empty($task['subtype']))
+                ? (string) $task['subtype']
+                : $taskType;
+            if (!matchesTaskAction($taskAction, $action, $matchType, $type, $extraData)) {
                 continue;
             }
 
@@ -95,6 +101,7 @@ function matchesTaskAction($taskAction, $playerAction, $taskType, $playerType, $
             'storeItemByAnySpecificInventoryStorage' => ['storeItemByCode', 'store'],
             'useItemByCode' => ['useItem', 'use'],
             'getMasteryLevelByCode' => ['mastery', 'getMastery'],
+            'getMasteryLevelByCategory' => ['mastery', 'getMastery'],
         ];
 
         $allowedActions = $actionMappings[$taskAction] ?? [];
@@ -187,7 +194,13 @@ function trackHarvestProgress($uid, $obj, $itemName, $itemData = [], $amount = 1
 
     $updates2 = trackQuestProgress($uid, 'harvestByCategory', $itemName, $amount, $extraData);
 
-    return array_merge($updates1, $updates2);
+    $updates3 = [];
+    $subtype = is_array($itemData) ? (string) ($itemData['subtype'] ?? '') : '';
+    if ($subtype !== '') {
+        $updates3 = trackQuestProgress($uid, 'harvestBySubtype', $subtype, $amount, $extraData);
+    }
+
+    return array_merge($updates1, $updates2, $updates3);
 }
 
 function trackPlantProgress($uid, $itemName, $itemData = [], $amount = 1) {
@@ -211,15 +224,20 @@ function trackRecipeProgress($uid, $recipeCode, $recipeData = []) {
     $recipeName = is_array($recipeData) && !empty($recipeData['name'])
         ? (string) $recipeData['name']
         : (string) $recipeCode;
+    $recipeCategories = array_merge(
+        getQuestItemCategories($recipeName, is_array($recipeData) ? $recipeData : []),
+        \App\Support\QuestCategoryResolver::recipeCategories($recipeName),
+    );
     $extraData = [
         'recipeCode' => $recipeCode,
-        'categories' => getQuestItemCategories($recipeName, is_array($recipeData) ? $recipeData : []),
+        'categories' => array_values(array_unique($recipeCategories)),
     ];
 
     $updatesByCode = trackQuestProgress($uid, 'makeRecipeByCode', $recipeCode, 1, $extraData);
     $updatesByCategory = trackQuestProgress($uid, 'makeRecipeByCategory', $recipeName, 1, $extraData);
+    $updatesAnyRecipe = trackQuestProgress($uid, 'makeRecipeAny', 'any', 1, $extraData);
 
-    return array_merge($updatesByCode, $updatesByCategory);
+    return array_merge($updatesByCode, $updatesByCategory, $updatesAnyRecipe);
 }
 
 function trackBuyItemProgress($uid, $itemCode, $quantity = 1) {
@@ -230,16 +248,104 @@ function trackUseItemProgress($uid, $itemCode, $quantity = 1) {
     return trackQuestProgress($uid, 'useItemByCode', $itemCode, $quantity);
 }
 
-function trackMasteryProgress($uid, $itemCode, $newLevel) {
+function trackMasteryProgress($uid, $itemCode, $newLevel, $itemData = []) {
+    $itemName = is_array($itemData) && !empty($itemData['name'])
+        ? (string) $itemData['name']
+        : (string) $itemCode;
     $extraData = [
         'masteryLevel' => $newLevel,
+        'itemCode' => $itemCode,
+        'itemName' => $itemName,
+        'categories' => getQuestItemCategories($itemName, is_array($itemData) ? $itemData : []),
     ];
 
-    return trackQuestProgress($uid, 'getMasteryLevelByCode', $itemCode, 1, $extraData);
+    // Mastery objectives describe a level, not a number of harvest events.
+    // A quest can become active after the player has already earned a star,
+    // so reconcile the saved level rather than only incrementing on the
+    // next level-up event.
+    return syncMasteryQuestProgress($uid, $itemCode, $newLevel, $extraData);
+}
+
+/**
+ * Bring active mastery tasks up to the player's saved star level.
+ * Flash and the stored mastery component use zero-based levels, while quest
+ * task totals count stars, hence the `+ 1`.
+ */
+function syncMasteryQuestProgress($uid, $itemCode, $masteryLevel, $extraData = []) {
+    if (empty($extraData['itemName']) && function_exists('getItemByCode')) {
+        $itemData = getItemByCode((string) $itemCode);
+        if (is_array($itemData)) {
+            $extraData['itemName'] = (string) ($itemData['name'] ?? $itemCode);
+            $extraData['categories'] = getQuestItemCategories($extraData['itemName'], $itemData);
+        }
+    }
+    $activeQuests = getActiveQuests($uid);
+    $updatedQuests = [];
+    $achievedStars = max(0, (int) $masteryLevel + 1);
+
+    foreach ($activeQuests as $questName => &$questState) {
+        $quest = getQuestByName($questName);
+        if (!$quest || empty($quest['tasks'])) {
+            continue;
+        }
+
+        foreach ($quest['tasks'] as $taskIndex => $task) {
+            $taskAction = $task['action'] ?? '';
+            if (!in_array($taskAction, ['getMasteryLevelByCode', 'getMasteryLevelByCategory'], true)) {
+                continue;
+            }
+
+            $playerType = $taskAction === 'getMasteryLevelByCode'
+                ? (string) $itemCode
+                : (string) ($extraData['itemName'] ?? $itemCode);
+            if (!matchesTaskAction($taskAction, $taskAction, (string) ($task['type'] ?? ''), $playerType, $extraData)) {
+                continue;
+            }
+
+            $total = max(1, (int) ($task['total'] ?? 1));
+            $current = (int) ($questState['progress'][$taskIndex] ?? 0);
+            $reconciled = min($achievedStars, $total);
+            if ($reconciled > $current) {
+                $questState['progress'][$taskIndex] = $reconciled;
+                $updatedQuests[$questName] = true;
+            }
+        }
+    }
+    unset($questState);
+
+    if ($updatedQuests === []) {
+        return [];
+    }
+
+    setActiveQuests($uid, $activeQuests);
+    foreach (array_keys($updatedQuests) as $questName) {
+        if (checkAndCompleteQuest($uid, $questName)) {
+            completeQuest($uid, $questName);
+        }
+    }
+
+    Logger::debug('QuestProgress', sprintf(
+        'Reconciled mastery uid=%s code=%s level=%d updates=%s',
+        $uid,
+        $itemCode,
+        $masteryLevel,
+        json_encode(array_keys($updatedQuests))
+    ));
+
+    return $updatedQuests;
 }
 
 function trackStoreProgress($uid, $itemCode, $quantity = 1) {
     return trackQuestProgress($uid, 'storeItemByCode', $itemCode, $quantity);
+}
+
+function trackStorageBuildingExpansionProgress($uid, $itemData): array {
+    $itemCode = is_array($itemData) ? (string) ($itemData['code'] ?? '') : '';
+    if ($itemCode === '') {
+        return [];
+    }
+
+    return trackQuestProgress($uid, 'expandStorageBuildingToLevelByCode', $itemCode, 1);
 }
 
 function trackDialogView($uid, $dialogId) {

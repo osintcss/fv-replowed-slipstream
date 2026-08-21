@@ -1612,8 +1612,8 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             // server-tracked actions use the AMF QuestComponent snapshot. Keep a
                             // revision in the URL: Flash otherwise reuses a previously cached,
                             // unpatched archive even after the server image has been rebuilt.
-                            "quest_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/questSettings.xml.gz?revision=server-progress-4",
-                            "quest_min_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/questSettings_0.xml.gz?revision=server-progress-4",
+                            "quest_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/questSettings.xml.gz?revision=server-progress-6",
+                            "quest_min_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/questSettings_0.xml.gz?revision=server-progress-6",
                             "OPS_TRACK_MEMORY_TRENDING": true,
                             "OPS_MEMORY_TRACKING_TIMEINTERVAL_MINUTES": 2,
                             "OPS_FLASH_CRASH_TRACKING_SECONDS": 4000,

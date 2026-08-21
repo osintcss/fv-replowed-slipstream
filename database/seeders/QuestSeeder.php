@@ -103,23 +103,18 @@ class QuestSeeder extends Seeder
         if (isset($quest->tasks)) {
             foreach ($quest->tasks->task as $task) {
                 $taskAttrs = $task->attributes();
-                $taskData = [
-                    'action' => (string) $taskAttrs['action'],
-                    'type' => (string) $taskAttrs['type'],
-                    'total' => (int) $taskAttrs['total'] ?: 1,
-                ];
-
-                if (isset($taskAttrs['cashValue'])) {
-                    $taskData['cashValue'] = (int) $taskAttrs['cashValue'];
+                // Keep every task attribute.  Legacy `harvestBySubtype`
+                // tasks store their real category in `subtype`, not `type`.
+                $taskData = [];
+                foreach ($taskAttrs as $key => $value) {
+                    $taskData[(string) $key] = (string) $value;
                 }
-                if (isset($taskAttrs['helper'])) {
-                    $taskData['helper'] = (string) $taskAttrs['helper'];
+                $taskData['total'] = (int) ($taskData['total'] ?? 1) ?: 1;
+                if (isset($taskData['cashValue'])) {
+                    $taskData['cashValue'] = (int) $taskData['cashValue'];
                 }
-                if (isset($taskAttrs['sticky'])) {
-                    $taskData['sticky'] = ((string) $taskAttrs['sticky']) === 'true';
-                }
-                if (isset($taskAttrs['filter'])) {
-                    $taskData['filter'] = (string) $taskAttrs['filter'];
+                if (isset($taskData['sticky'])) {
+                    $taskData['sticky'] = $taskData['sticky'] === 'true';
                 }
 
                 $tasks[] = $taskData;

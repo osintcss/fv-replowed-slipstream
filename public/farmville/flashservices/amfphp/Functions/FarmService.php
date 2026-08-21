@@ -1,6 +1,7 @@
 <?php
 require_once AMFPHP_ROOTPATH . "Helpers/user_resources.php";
 require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
+require_once AMFPHP_ROOTPATH . "Helpers/quest_progress.php";
 
 use App\Models\UserMeta;
 
@@ -31,7 +32,6 @@ class FarmService
         if ($newSize <= 0) {
             return self::expandFarmError($uid, $itemName, $currency, 'Expansion item has an invalid farm size.');
         }
-
         if ($currency === "cash") {
             // Farm expansions are represented by paired catalog entries: for
             // example, farm14 is the coin option and farm14_cash is the Farm
@@ -77,6 +77,8 @@ class FarmService
 
             return self::expandFarmError($uid, $itemName, $currency, 'Failed to save the farm expansion.');
         }
+
+        trackQuestProgress($uid, 'expandFarm', $itemName, 1);
 
         return ["data" => $world];
     }

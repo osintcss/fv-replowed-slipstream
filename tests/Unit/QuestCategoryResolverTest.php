@@ -15,7 +15,15 @@ final class QuestCategoryResolverTest extends TestCase
         self::assertContains('BellPeppers', QuestCategoryResolver::categories('bellpepperyellow'));
         self::assertContains('DarrowBlackberry', QuestCategoryResolver::categories('blackberriesdarrow'));
         self::assertContains('Pineapple', QuestCategoryResolver::categories('pineapples'));
+        self::assertContains('GreenStrawberry', QuestCategoryResolver::categories('greenstrawberries'));
         self::assertContains('RedTulips', QuestCategoryResolver::categories('tulipred'));
+        self::assertContains('startrees', QuestCategoryResolver::categories('shootingstartree'));
+        self::assertContains('PinkRoses', QuestCategoryResolver::categories('rosepink'));
+        self::assertContains('PetiPanSquash', QuestCategoryResolver::categories('squashpetitpan'));
+        self::assertContains('cornerGasStations', QuestCategoryResolver::categories('cornergasstation'));
+        self::assertContains('swimpondHabitat', QuestCategoryResolver::categories('animal_breeding_swimhole_finished'));
+        self::assertContains('Coop', QuestCategoryResolver::categories('chickencoop'));
+        self::assertContains('Coop', QuestCategoryResolver::categories('xwa_wildwestchickencoop3'));
         self::assertContains('aviaryHabitat', QuestCategoryResolver::categories('animal_breeding_aviary_finished'));
         self::assertContains('animalBreedingAll', QuestCategoryResolver::categories('animal_breeding_aviary_finished'));
     }

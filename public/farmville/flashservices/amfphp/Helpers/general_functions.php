@@ -1159,10 +1159,96 @@
         set_meta($uid, 'mastery_data', serialize($masteryData));
     }
 
+    /**
+     * Return the extra mastery multipliers supplied by permanent mastery
+     * decorations currently placed on any of the player's farms.
+     *
+     * Flash applies a PermanentBuffDecoration on first placement and keeps
+     * one player buff per backing buff item.  The AMF server does not receive
+     * that client-only application step, so derive the same durable state
+     * from the placed decoration and its imported `buff` / `masteryTypes`
+     * metadata.  A distinct backing buff contributes one extra multiplier.
+     */
+    function getPermanentMasteryBuffMultiplier($uid, $itemData): int {
+        if (is_object($itemData)) {
+            $itemData = (array) $itemData;
+        }
+        $masteryType = is_array($itemData) ? (string) ($itemData['type'] ?? '') : '';
+        if ($masteryType === '') {
+            return 0;
+        }
+
+        static $permanentDecorations = null;
+        if ($permanentDecorations === null) {
+            $permanentDecorations = [];
+            foreach (Item::query()->where('data', 'like', '%PermanentBuffDecoration%')->get() as $decoration) {
+                $data = $decoration->itemData;
+                if (is_object($data)) {
+                    $data = (array) $data;
+                }
+                $buffName = is_array($data) ? (string) ($data['buff'] ?? '') : '';
+                if ($buffName !== '') {
+                    $permanentDecorations[(string) $decoration->name] = $buffName;
+                }
+            }
+        }
+
+        if ($permanentDecorations === []) {
+            return 0;
+        }
+
+        $worldIds = UserWorld::query()->where('uid', $uid)->pluck('id');
+        if ($worldIds->isEmpty()) {
+            return 0;
+        }
+
+        $placedDecorations = WorldObject::query()
+            ->whereIn('world_id', $worldIds)
+            ->where('deleted', false)
+            ->whereIn('item_name', array_keys($permanentDecorations))
+            ->pluck('item_name')
+            ->unique();
+
+        $matchingBuffs = [];
+        foreach ($placedDecorations as $decorationName) {
+            $buffName = $permanentDecorations[$decorationName] ?? null;
+            $buffData = $buffName ? Item::findByName($buffName) : null;
+            if (is_object($buffData)) {
+                $buffData = (array) $buffData;
+            }
+            $masteryTypeData = is_array($buffData) ? ($buffData['masteryTypes'] ?? []) : [];
+            if (is_object($masteryTypeData)) {
+                $masteryTypeData = (array) $masteryTypeData;
+            }
+            $masteryTypes = is_array($masteryTypeData) ? ($masteryTypeData['masteryType'] ?? []) : [];
+            if (is_object($masteryTypes)) {
+                $masteryTypes = (array) $masteryTypes;
+            }
+            if (isset($masteryTypes['type'])) {
+                $masteryTypes = [$masteryTypes];
+            }
+
+            foreach ((array) $masteryTypes as $typeData) {
+                if (is_object($typeData)) {
+                    $typeData = (array) $typeData;
+                }
+                $buffType = is_array($typeData) ? (string) ($typeData['type'] ?? '') : '';
+                if ($buffType === $masteryType) {
+                    $matchingBuffs[$buffName] = true;
+                }
+            }
+        }
+
+        return count($matchingBuffs);
+    }
+
     
     function processMastery($uid, $itemData, $harvestCount = 1) {
         if (!$itemData) {
             return null;
+        }
+        if (is_object($itemData)) {
+            $itemData = (array) $itemData;
         }
 
         $itemCode = $itemData['code'] ?? null;
@@ -1196,7 +1282,12 @@
         $currentLevel = isset($mastery[$itemCode]) ? (int)$mastery[$itemCode] : -1;
         $currentCount = $counters[$itemCode] ?? 0;
 
-        $newCount = $currentCount + $harvestCount;
+        // Mastery calculates its normal yield first, then adds one multiplier
+        // for each distinct applicable permanent buff.  The Flash client caps
+        // the final yield at five; apply the same ceiling server-side.
+        $permanentBuffMultiplier = getPermanentMasteryBuffMultiplier($uid, $itemData);
+        $masteryYield = max(0, min(5, (int) $harvestCount * (1 + $permanentBuffMultiplier)));
+        $newCount = $currentCount + $masteryYield;
         $counters[$itemCode] = $newCount;
 
         $newLevel = $currentLevel;
@@ -1214,11 +1305,20 @@
         saveMasteryData($uid, ['mastery' => $mastery, 'masteryCounters' => $counters]);
 
         if ($newLevel > $currentLevel) {
+            // All harvest and crafting paths converge here. Notify the quest
+            // tracker only after the new mastery state is persisted, so a
+            // level-up objective cannot be displayed and then disappear on
+            // reload.
+            if (function_exists('trackMasteryProgress')) {
+                trackMasteryProgress($uid, $itemCode, $newLevel, $itemData);
+            }
             return [
                 'itemCode' => $itemCode,
                 'oldLevel' => $currentLevel,
                 'newLevel' => $newLevel,
-                'harvestCount' => $newCount
+                'harvestCount' => $newCount,
+                'masteryYield' => $masteryYield,
+                'permanentBuffMultiplier' => $permanentBuffMultiplier,
             ];
         }
 

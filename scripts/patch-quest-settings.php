@@ -24,6 +24,12 @@ if ($xml === false) {
 $serverTrackedActions = [
     'harvestByCode',
     'harvestByCategory',
+    'harvestBySubtype',
+    'makeRecipeByCode',
+    'makeRecipeByCategory',
+    'makeRecipeAny',
+    'getMasteryLevelByCode',
+    'getMasteryLevelByCategory',
     'plantCropByCode',
     'plantCropByCategory',
     'plowPlot',

@@ -172,6 +172,18 @@ function startQuest($uid, $questName) {
     $activeQuests[$questName] = $questState;
     setActiveQuests($uid, $activeQuests);
 
+    // A mastery requirement may be introduced after its star was earned.
+    // Reconcile the new quest against saved mastery immediately instead of
+    // making the player earn an additional level.
+    if (function_exists('getMasteryData') && function_exists('syncMasteryQuestProgress')) {
+        $masteryData = getMasteryData($uid);
+        foreach (($masteryData['mastery'] ?? []) as $itemCode => $masteryLevel) {
+            syncMasteryQuestProgress($uid, (string) $itemCode, (int) $masteryLevel, [
+                'itemCode' => (string) $itemCode,
+            ]);
+        }
+    }
+
     return $questState;
 }
 

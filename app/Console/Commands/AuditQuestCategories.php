@@ -71,6 +71,25 @@ class AuditQuestCategories extends Command
             }
         });
 
+        // Crafting recipes are producers too: their XML names do not appear
+        // in the items table, but category quests such as Farmhands and
+        // Fertilize All are completed by making those recipes.
+        $craftingPath = public_path('farmville/xml/gz/v855038/crafting.xml');
+        if (is_file($craftingPath)) {
+            $craftingXml = simplexml_load_file($craftingPath);
+            foreach ($craftingXml?->recipes?->CraftingRecipe ?? [] as $recipe) {
+                $recipeName = (string) ($recipe->name ?? '');
+                foreach (QuestCategoryResolver::recipeCategories($recipeName) as $category) {
+                    $key = QuestCategoryResolver::normalized($category);
+                    if ($key !== '') {
+                        $producers[$key] = true;
+                    }
+                }
+            }
+        } else {
+            $this->warn('Crafting configuration was unavailable; recipe category producers were not audited.');
+        }
+
         $missing = [];
         foreach ($required as $key => $contract) {
             if (! isset($producers[$key])) {

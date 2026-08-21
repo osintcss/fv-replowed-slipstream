@@ -55,4 +55,15 @@ return [
         // this fixture still ensures the AMF dispatcher can load the method.
         'registered_only' => true,
     ],
+    'CraftingService.onClaimFinishedRecipes' => [
+        // The database-backed crafting lifecycle verifies the completion
+        // records. Keep this fixture focused on dispatcher registration.
+        'registered_only' => true,
+    ],
+    'CraftingService.onCraftInstantRecipe' => [
+        'registered_only' => true,
+    ],
+    'InGameConsoleService.adminCall' => [
+        'registered_only' => true,
+    ],
 ];
