@@ -294,7 +294,7 @@ class EquipmentWorldService
         $worldPersisted = true;
 
         if (!empty($modifiedObjects)) {
-            if (!updateWorldObjectsByPosition($worldId, $modifiedObjects)) {
+            if (!self::persistModifiedObjects($worldId, $modifiedObjects)) {
                 Logger::error('EquipmentWorldService', "Failed to update world objects for uid=$uid");
                 $worldPersisted = false;
             }
@@ -309,6 +309,26 @@ class EquipmentWorldService
 
         if (!empty($modifiedObjects) || !empty($newObjects)) {
             invalidateWorldCache($uid, $currentWorldType);
+        }
+
+        // Flash optimistically removes every plot included in its equipment
+        // animation. If the authoritative write failed, acknowledge none of
+        // them and do not award the corresponding resources or quest events.
+        // A later reload must never be the first indication that a harvest
+        // was rejected by the server.
+        if (!$worldPersisted) {
+            $plowCount = 0;
+            $plantCount = 0;
+            $harvestedItems = [];
+
+            if ($action === ACTION_COMBINE) {
+                $emptyResults = array_fill(0, $plotCount, null);
+                $combineHarvestResults = $emptyResults;
+                $combinePlowResults = $emptyResults;
+                $combinePlaceResults = $emptyResults;
+            } else {
+                $results = array_fill(0, $plotCount, null);
+            }
         }
 
         // Bulk equipment actions take a different server route than individual
@@ -431,5 +451,52 @@ class EquipmentWorldService
         }
 
         return $plotObj;
+    }
+
+    /**
+     * Persist a bulk equipment operation atomically.  A successful Flash
+     * response is only valid if every object which was changed in memory has
+     * a live database row at the same position.  The former helper treated a
+     * zero-row update as success, which let Flash remove crops that the next
+     * farm load would restore.
+     */
+    private static function persistModifiedObjects($worldId, array $objects): bool
+    {
+        try {
+            \Illuminate\Support\Facades\DB::transaction(function () use ($worldId, $objects) {
+                foreach ($objects as $obj) {
+                    [$posX, $posY] = \App\Helpers\ObjectHelper::getPosition($obj);
+
+                    if ($posX === null || $posY === null) {
+                        throw new \RuntimeException('Equipment object has no position');
+                    }
+
+                    $updated = \App\Models\WorldObject::where('world_id', $worldId)
+                        ->where('position_x', (int) $posX)
+                        ->where('position_y', (int) $posY)
+                        ->where('deleted', false)
+                        ->update([
+                            'state' => $obj->state ?? null,
+                            'item_name' => $obj->itemName ?? null,
+                            'plant_time' => sanitizeNumericValue($obj->plantTime ?? 0),
+                            'is_jumbo' => (bool) ($obj->isJumbo ?? false),
+                        ]);
+
+                    if ($updated !== 1) {
+                        throw new \RuntimeException(sprintf(
+                            'Equipment update affected %d rows at (%d,%d)',
+                            $updated,
+                            $posX,
+                            $posY
+                        ));
+                    }
+                }
+            });
+
+            return true;
+        } catch (\Throwable $e) {
+            Logger::error('EquipmentWorldService', 'Bulk world persistence rejected: ' . $e->getMessage());
+            return false;
+        }
     }
 }
