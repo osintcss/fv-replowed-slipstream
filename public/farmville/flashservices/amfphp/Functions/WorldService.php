@@ -397,6 +397,7 @@ class WorldService
                 $world = getWorldByType($uid, $currentWorldType);
                 $modified = false;
                 $modifiedCount = 0;
+                $instantGrowQuestEvents = [];
 
                 $typeCounts = [
                     'Plot' => 0,
@@ -458,6 +459,15 @@ class WorldService
                         $modified = true;
                         $modifiedCount++;
                         $typeCounts[$typeMatched]++;
+                        // Quest settings explicitly register instantGrow as a
+                        // harvest transaction for harvestByCategory tasks.
+                        // Defer progress until after the authoritative world
+                        // write succeeds, then mirror that client behaviour.
+                        $instantGrowQuestEvents[] = [
+                            'object' => (array) $world["objectsArray"][$key],
+                            'itemName' => $itemName,
+                            'itemData' => $itemData,
+                        ];
                     }
 
                     $totalCost = 0;
@@ -477,6 +487,14 @@ class WorldService
                     if ($modified) {
                         if (!saveWorld($uid, $currentWorldType, $world)) {
                             throw new \Exception("Failed to save world (instant grow) for uid=$uid");
+                        }
+                        foreach ($instantGrowQuestEvents as $event) {
+                            trackHarvestProgress(
+                                $uid,
+                                $event['object'],
+                                $event['itemName'],
+                                $event['itemData'] ?: [],
+                            );
                         }
                         if ($totalCost > 0) {
                             UserResources::removeCash($uid, $totalCost);
@@ -985,6 +1003,10 @@ class WorldService
                 if (!saveWorld($uid, $worldType, $world)) {
                     throw new \Exception("Failed to save world (expand with currency) for uid=$uid");
                 }
+                $expandedItemData = getItemByName($itemName, "db");
+                if ($expandedItemData) {
+                    trackStorageBuildingExpansionProgress($uid, $expandedItemData);
+                }
                 $data["data"] = array("success" => true);
                 break;
 
@@ -1072,6 +1094,7 @@ class WorldService
                 if (!saveWorld($uid, $worldType, $world)) {
                     throw new \Exception("Failed to save world (complete now) for uid=$uid");
                 }
+                trackStorageBuildingExpansionProgress($uid, $buildingItemData);
                 $data["data"] = array("success" => true);
                 break;
 
@@ -1259,6 +1282,10 @@ class WorldService
                 $building->expansion_level = $newLevel;
                 $building->expansion_parts = null;
                 $building->save();
+
+                if ($itemData) {
+                    trackStorageBuildingExpansionProgress($uid, $itemData);
+                }
 
                 set_meta($uid, 'upgradeStatus', '');
 

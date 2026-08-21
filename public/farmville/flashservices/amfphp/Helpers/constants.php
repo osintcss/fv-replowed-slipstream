@@ -101,6 +101,13 @@ function getInstantGrowState($className, $currentState) {
         }
     } else {
         if ($currentState === HARVESTABLE_STATE_BARE) {
+            // FFDec: FeatureBuilding has its own state vocabulary. Its
+            // harvest-ready state is `ripe`, while `grown` is undefined and
+            // renders only a footprint after reload.
+            if ($className === 'FeatureBuilding') {
+                return 'ripe';
+            }
+
             return PLOT_STATE_GROWN;
         }
     }
@@ -115,6 +122,11 @@ define('GIFTBOX_STORAGE_KEY', '-6');
 
 define('HOME_INVENTORY_ID', -2);
 define('INVENTORY_STORAGE_KEY', '-2');
+
+// FarmGameWorld.CRAFTEDGOODS_ID. Crafted goods are a separate client storage
+// collection: they are keyed as "itemCode:recipeLevel", not normal inventory
+// or crafting-silo items.
+define('CRAFTED_GOODS_STORAGE_KEY', '-7');
 
 define('VALID_PURCHASABLE_WORLDS', [
     'england', 'fisherman', 'winterwonderland', 'australia',

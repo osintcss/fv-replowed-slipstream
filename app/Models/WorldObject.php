@@ -146,11 +146,12 @@ class WorldObject extends Model
             'z' => $this->position_z,
         ];
         $obj->direction = $this->direction;
-        $obj->state = self::normalizeLegacyAnimalBreedingState(
+        $state = self::normalizeLegacyAnimalBreedingState(
             $itemName,
+            $className,
             $state,
-            $this->components,
         );
+        $obj->state = self::normalizeLegacyTreeState($className, $state);
         $obj->deleted = $this->deleted;
         $obj->tempId = $this->temp_id;
         $obj->instanceDataStoreKey = $this->instance_data_store_key;
@@ -189,7 +190,12 @@ class WorldObject extends Model
             $this->enrichFeatureBuildingStorageData($obj);
         }
 
-        if ($className === 'StorageBuilding' || $className === 'InventoryCellar') {
+        // Ordinary orchards retain their OrchardConstructionBuilding class
+        // after construction.  Like storage and crafting buildings, it
+        // inherits the construction renderer and needs an explicit completed
+        // flag on world reload; otherwise Flash draws only its placement
+        // shadow despite state="built".
+        if (in_array($className, ['StorageBuilding', 'InventoryCellar', 'OrchardConstructionBuilding'], true)) {
             $this->enrichStorageBuildingData($obj);
         }
 
@@ -345,6 +351,22 @@ class WorldObject extends Model
             $obj->state ?? null,
         );
 
+        // FeatureBuilding reload data keeps storage fields at the object top
+        // level. A subsequent world update can echo those fields without a
+        // nested components object; retain them when persisting so a harvest
+        // or instant-grow cannot erase featured animals from a completed pen.
+        if ($className === 'FeatureBuilding' || str_starts_with((string) $itemName, 'animal_breeding_')) {
+            if (!is_object($components)) {
+                $components = is_array($components) ? (object) $components : new \stdClass();
+            }
+
+            foreach (['featuredItems', 'storageMetadata', 'paintColor'] as $field) {
+                if (property_exists($obj, $field) && !property_exists($components, $field)) {
+                    $components->{$field} = $obj->{$field};
+                }
+            }
+        }
+
         $data = [
             'world_id' => $worldId,
             'object_id' => $obj->id ?? 0,
@@ -354,10 +376,13 @@ class WorldObject extends Model
             'position_y' => $posY,
             'position_z' => $posZ,
             'direction' => $obj->direction ?? 0,
-            'state' => self::normalizeLegacyAnimalBreedingState(
-                $itemName,
-                $state,
-                $components,
+            'state' => self::normalizeLegacyTreeState(
+                $className,
+                self::normalizeLegacyAnimalBreedingState(
+                    $itemName,
+                    $className,
+                    $state,
+                ),
             ),
             'deleted' => $obj->deleted ?? false,
             'temp_id' => $obj->tempId ?? -1,
@@ -396,38 +421,52 @@ class WorldObject extends Model
 
     /**
      * Older saves can represent completed Animal Breeding buildings as a
-     * crop-style "grown" object with no FeaturedRender component data. The
-     * preserved client has no matching grown visual state for these buildings
-     * and renders only their ground shadow. Modern placements use "bare";
-     * preserve a genuine grown state whenever featured item data exists.
+     * crop-style "grown" object. The preserved FeatureBuilding client has no
+     * matching grown visual state, even when featured items are populated,
+     * and renders only its ground shadow. Modern placements use "bare".
      */
     private static function normalizeLegacyAnimalBreedingState(
         ?string $itemName,
+        ?string $className,
         ?string $state,
-        mixed $components,
     ): ?string {
         if (
             ! is_string($itemName)
-            || ! str_starts_with($itemName, 'animal_breeding_')
-            || ! str_ends_with($itemName, '_finished')
+            || ! self::isLegacyCompletedAnimalBreedingBuilding($itemName)
+            || $className !== 'FeatureBuilding'
             || $state !== 'grown'
         ) {
             return $state;
         }
 
-        $featuredItems = is_object($components)
-            ? ($components->featuredItems ?? null)
-            : (is_array($components) ? ($components['featuredItems'] ?? null) : null);
-
-        if (is_object($featuredItems) && get_object_vars($featuredItems) !== []) {
-            return $state;
-        }
-
-        if (is_array($featuredItems) && $featuredItems !== []) {
-            return $state;
-        }
-
         return 'bare';
+    }
+
+    /**
+     * These item names predate the common `animal_breeding_` naming family,
+     * but use the same completed FeatureBuilding and storage contract.
+     */
+    private static function isLegacyCompletedAnimalBreedingBuilding(string $itemName): bool
+    {
+        return (str_starts_with($itemName, 'animal_breeding_') && str_ends_with($itemName, '_finished'))
+            || in_array($itemName, [
+                'babybunnyhutch_finished',
+                'flower_garden_finished',
+                'xhworchard_featurebuilding_finished',
+                'xuk_sheep_pen_finished',
+            ], true);
+    }
+
+    /**
+     * Trees use the harvestable-resource lifecycle states `bare` and `ripe`.
+     * Earlier generic saves wrote the crop-style `grown` value, for which the
+     * Flash Tree class cannot select an image and therefore displays only its
+     * placement shadow. Limit the repair to actual Tree objects; buildings
+     * intentionally use different state vocabularies.
+     */
+    private static function normalizeLegacyTreeState(?string $className, ?string $state): ?string
+    {
+        return $className === 'Tree' && $state === 'grown' ? 'ripe' : $state;
     }
 
     /**

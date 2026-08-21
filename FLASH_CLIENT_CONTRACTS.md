@@ -224,6 +224,42 @@ same prompt even when the object was successfully loaded.
 Regression test: place or load a Crafting Silo, reload, open the Craftshop,
 and begin a recipe without receiving the missing-silo prompt.
 
+### In-game console player attributes
+
+**Verified/implemented.** `ConsoleStandardCommandsModule.setCash`, `setGold`,
+and `setXp` first update Flash's local player object, then call
+`InGameConsoleService.adminCall` with the JSON payload
+`{ adminController: "CPanelUserStatsController", adminCommand:
+"setPlayerAttributes", cash|gold|xp: "<integer>" }`. The server persists
+the supplied supported attributes within their normal caps and returns the
+canonical balances. Without this handler, a console cash value disappears on
+reload and server-authoritative purchases—including instant crafting—reject
+the client-only balance.
+
+Regression test: use `std.setCash 1000`, reload, and confirm the balance is
+still 1,000; immediately buy an instant recipe costing less than 1,000 cash.
+
+### Crafting recipe completion
+
+**Verified/implemented.** `TClaimFinishedRecipes` forwards `data` directly
+to `CraftingRecipeQueueManager.endFinishedRecipesClaimed()`, which iterates an
+array of records. Each completed record needs `recipeId`, `productItemCode`,
+`numGiftProducts`, and `recipeLevel`; the client removes the finished queue
+entry and adds the crafted item to its live inventory from those values. An
+empty success object deletes the server queue row but leaves the client flow
+without its completion result.
+
+Completed goods persist in `FarmGameWorld.CRAFTEDGOODS_ID` (`-7`), not the
+crafting-silo or market-stall inventory. Their storage key is
+`itemCode:recipeLevel`, and `initUser.player.storageData[-7]` must restore
+that same shape after reload. `TCraftInstantRecipe` has a separate contract:
+it reads `productItemCode` and `numGiftProducts` then calls `player.addGift`,
+so instant-recipe rewards must be saved to the giftbox.
+
+Regression test: complete one timed recipe and one instant recipe. In both
+cases, the completion UI must close, the reward must appear immediately, and
+it must still be present after a reload.
+
 ### Animal pens and Pet Runs
 
 **Verified/implemented.** A Pet Run identifies itself as `FeatureBuilding`
@@ -240,36 +276,138 @@ but inherits Flash storage behaviour:
 The implementation persists `contents` plus featured items in the building's
 components and re-emits them at the required top level. Positive storage IDs
 withdraw from that exact building before an animal is placed back on the farm.
+When Flash sends a later full-world update, it may return those storage fields
+only at the top level; the server must merge them back into components rather
+than replacing a featured-animal map with an empty component object.
 
 Regression test: harvest an animal, put it in a Pet Run, reload, remove it
 from the Pet Run, reload, then repeat. At every stage verify there is one and
 only one animal.
 
+### Chicken Coops
+
+**Verified/implemented.** `ChickenCoopBuilding` extends Flash's
+`HarvestableStorageBuilding`. A Coop containing chickens is harvestable only
+when its state is `grown` (ripe), or when its `bare` timer has elapsed; a
+`built` state is a capacity-only state and cannot be clicked to harvest. On a
+successful harvest, Flash sends the ordinary
+`WorldService.performAction("harvest", worldObject, ...)` request and expects
+the server to reset the building to `bare` with a fresh `plantTime`.
+
+Older server records could retain `contents` while remaining `built`, leaving
+an apparently permanent but uncollectible Coop. The one-time migration marks
+those populated records `grown` so they can be collected immediately; the
+normal harvest path then starts the next timer. Quest category resolution maps
+Chicken Coop variants to `Coop`, so `harvestByCategory allCoop` objectives
+persist on that same harvest.
+
+Regression test: load an existing populated Coop, collect it once, reload and
+confirm it is `bare` with a timer; instant-grow or wait for readiness, collect
+again, reload, and verify an `allCoop` task remains at 2/2.
+
+### Star Tree quest variants
+
+**Verified/implemented.** FarmQuest's `harvestByCategory allstartrees`
+objective applies to the Star Tree family, not only the base `startree` item.
+The server therefore recognizes normalized item keys containing `startree`,
+including `shootingstartree`, when recording quest progress. This keeps the
+counter authoritative across a reload.
+
+Regression test: harvest a `shootingstartree`, reload, and confirm an active
+`allstartrees` task retains the increment.
+
+### Legacy Tree render state
+
+**Verified/implemented.** Flash's `Tree` class recognizes `bare` and `ripe`
+states. Earlier generic saves could serialize a mature Tree as `grown`; that
+is not a Tree state, so Flash leaves only the placement shadow visible after a
+reload. `WorldObject` normalizes only `className = Tree` plus `state = grown`
+to `ripe` when reading and writing. A one-time migration repairs existing
+records. Do not apply this mapping to other object classes: their `grown`
+state may be valid.
+
+### Pink Rose quest category
+
+**Verified/implemented.** The pink rose crop is stored as `rosepink`, while
+FarmQuest names its shared harvest category `allPinkRoses`. The server maps
+that crop key to `PinkRoses`, so its harvest counter is saved across reloads.
+
+### Quest category coverage audit
+
+`php artisan quest:audit-categories --strict` compares every category-based
+quest objective with the imported item catalog, habitat families, and crafting
+recipes. Run it after importing new game data and before deployment. The
+command reports unresolved contracts without guessing at aliases; once the
+catalog identifies an unambiguous internal key, add and regression-test that
+mapping in `QuestCategoryResolver`. This caught the legacy keys
+`greenstrawberries`, `squashpetitpan`, `cornergasstation`, and the Swim Hole
+habitat before their objectives were tested by players.
+
+### Server-authoritative recipe and mastery quests
+
+Quest settings mark every action with a durable server implementation as
+`requireServerReponse="true"`. This includes recipe and mastery objectives as
+well as world actions: `makeRecipeByCode`, `makeRecipeByCategory`,
+`makeRecipeAny`, `getMasteryLevelByCode`, and `getMasteryLevelByCategory`.
+Without that setting Flash can paint local task progress, but discard it when
+the next initialization reconciles with the server.
+
+### Permanent mastery statues
+
+**Verified/implemented from `Mastery.calculateMasteryYield` and
+`PermanentBuffDecoration`.** A placed permanent-mastery decoration exposes a
+backing buff through its item `buff` field. Each distinct backing buff whose
+`masteryTypes` includes the harvested item's type adds one extra mastery
+multiplier. Thus the Bronze Animal Mastery Statue (`dmstatuebronze`) activates
+`buff_permanent_mastery_animal` and changes an animal's normal yield of one to
+two. The server derives active permanent buffs from the player's undeleted
+world objects, so existing placed statues work after deployment and duplicate
+copies of the same buff do not stack. The final mastery yield is capped at five
+to match Flash.
+
 ### Legacy completed animal-breeding buildings
 
 **Verified/implemented.** This is a reload/render-state compatibility rule for
 completed `FeatureBuilding` records whose item name matches
-`animal_breeding_*_finished`. It is deliberately separate from the animal-pen
-storage contract above.
+`animal_breeding_*_finished`, including the legacy equivalents
+`xuk_sheep_pen_finished`, `babybunnyhutch_finished`, and
+`flower_garden_finished`. The Halloween Orchard
+`xhworchard_featurebuilding_finished` uses the same incompatible saved
+`grown` state, although its client class is `OrchardFeatureBuilding`. It is
+deliberately separate from the animal-pen storage contract above.
 
-Older saved records can have `state = "grown"` and no populated
-`components.featuredItems`. The current Flash client does not restore a normal
-building visual for that combination: it shows only the dark placement
-footprint/shadow. This can look exactly like a missing SWF or bitmap asset, but
-the asset is not the cause. A newly placed Dino Lab showed the same building
-working with the normal `bare` state.
+Older saved records can have `state = "grown"`, with or without populated
+`components.featuredItems`. The current Flash client does not define `grown`
+as a `FeatureBuilding` state and therefore does not restore a normal building
+visual: it shows only the dark placement footprint/shadow. This can look
+exactly like a missing SWF or bitmap asset, but the asset is not the cause. A
+newly placed Dino Lab showed the same building working with the normal `bare`
+state.
 
 `WorldObject` is the compatibility boundary. On both read and write it changes
 only this narrow legacy combination from `grown` to `bare`:
 
-- item name begins with `animal_breeding_` and ends with `_finished`;
-- `components.featuredItems` is absent or empty.
+- item name begins with `animal_breeding_` and ends with `_finished`, or is the
+  legacy regional Sheep Pen `xuk_sheep_pen_finished` or Baby Bunny Hutch
+  `babybunnyhutch_finished`, Bloom Garden `flower_garden_finished`, or
+  Halloween Orchard `xhworchard_featurebuilding_finished`;
+- class name is `FeatureBuilding` (the Halloween Orchard uses its own class and
+  is repaired separately).
 
 It preserves the object ID, location, contents, other components, and all
-upgrade/storage fields. Do not apply this rule to arbitrary `grown` objects or
-to an animal pen with a non-empty featured-item map. Existing malformed rows
-are safe to repair with the same rule in a one-time data migration; on the
-live repair this updated six records and left every other field untouched.
+upgrade/storage fields, including a non-empty featured-item map. Do not apply
+this rule to arbitrary `grown` objects. Existing malformed rows are safe to
+repair with the same rule in a one-time data migration.
+
+FeatureBuilding instant-grow uses `ripe`, not the crop state `grown`. The
+server must keep that distinction: writing `grown` makes Flash show a local
+ready animation but the compatibility layer restores `bare` on save, causing a
+later harvest attempt not to reach a server-persisted quest counter.
+
+Quest settings also register `instantGrow` as a transaction for
+`harvestByCategory`. When instant-growing eligible objects, the server records
+the corresponding category progress after its world write succeeds; otherwise
+Flash can show a completion popup that disappears on reload.
 
 Regression test: place or load each affected building type (Dino Lab, Horse
 Paddock, Pet Run, Livestock building), reload the farm, and confirm that the
