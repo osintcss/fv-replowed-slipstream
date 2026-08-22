@@ -195,7 +195,15 @@ class WorldObject extends Model
         // inherits the construction renderer and needs an explicit completed
         // flag on world reload; otherwise Flash draws only its placement
         // shadow despite state="built".
-        if (in_array($className, ['StorageBuilding', 'InventoryCellar', 'OrchardConstructionBuilding'], true)) {
+        if (in_array($className, [
+            'StorageBuilding',
+            'InventoryCellar',
+            'OrchardConstructionBuilding',
+            // Chicken Coops inherit HarvestableStorageBuilding's construction
+            // renderer. A fully populated coop can otherwise be serialized
+            // as an unfinished footprint/shadow after a reload.
+            'ChickenCoopBuilding',
+        ], true)) {
             $this->enrichStorageBuildingData($obj);
         }
 
