@@ -406,7 +406,9 @@ class Player {
                     $postHarvest = getPostHarvestState($className);
                     $newObj->state = $postHarvest['state'];
                     $newObj->plantTime = $postHarvest['plantTime'];
-                    if (isset($postHarvest['itemName'])) {
+                    // A null itemName is intentional for ordinary plots: it
+                    // removes the crop sprite after harvest.
+                    if (array_key_exists('itemName', $postHarvest)) {
                         $newObj->itemName = $postHarvest['itemName'];
                     }
                     if (isset($postHarvest['isJumbo'])) {
