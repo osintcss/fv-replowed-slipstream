@@ -288,15 +288,15 @@ only one animal.
 
 **Verified/implemented.** `ChickenCoopBuilding` extends Flash's
 `HarvestableStorageBuilding`. A Coop containing chickens is harvestable only
-when its state is `grown` (ripe), or when its `bare` timer has elapsed; a
+when its state is `ripe`, or when its `bare` timer has elapsed; a
 `built` state is a capacity-only state and cannot be clicked to harvest. On a
 successful harvest, Flash sends the ordinary
 `WorldService.performAction("harvest", worldObject, ...)` request and expects
 the server to reset the building to `bare` with a fresh `plantTime`.
 
 Older server records could retain `contents` while remaining `built`, leaving
-an apparently permanent but uncollectible Coop. The one-time migration marks
-those populated records `grown` so they can be collected immediately; the
+an apparently permanent but uncollectible Coop. The repair migration marks
+those populated records `ripe` so they can be collected immediately; the
 normal harvest path then starts the next timer. Quest category resolution maps
 Chicken Coop variants to `Coop`, so `harvestByCategory allCoop` objectives
 persist on that same harvest.

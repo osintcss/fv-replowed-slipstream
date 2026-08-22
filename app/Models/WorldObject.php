@@ -466,15 +466,17 @@ class WorldObject extends Model
     }
 
     /**
-     * Trees use the harvestable-resource lifecycle states `bare` and `ripe`.
-     * Earlier generic saves wrote the crop-style `grown` value, for which the
-     * Flash Tree class cannot select an image and therefore displays only its
-     * placement shadow. Limit the repair to actual Tree objects; buildings
-     * intentionally use different state vocabularies.
+     * Trees and Chicken Coops use the harvestable-resource lifecycle states
+     * `bare` and `ripe`. Earlier generic saves wrote the crop-style `grown`
+     * value, for which their Flash renderers cannot select an image and show
+     * only the placement shadow. Limit the repair to those exact classes;
+     * other buildings intentionally use different state vocabularies.
      */
     private static function normalizeLegacyTreeState(?string $className, ?string $state): ?string
     {
-        return $className === 'Tree' && $state === 'grown' ? 'ripe' : $state;
+        return in_array($className, ['Tree', 'ChickenCoopBuilding'], true) && $state === 'grown'
+            ? 'ripe'
+            : $state;
     }
 
     /**
