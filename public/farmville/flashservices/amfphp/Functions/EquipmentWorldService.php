@@ -62,6 +62,7 @@ class EquipmentWorldService
 
         $modifiedObjects = [];
         $newObjects = [];
+        $skippedPositions = [];
 
         foreach ($plotBundle as $key => $plotData) {
             if (is_array($plotData)) {
@@ -271,13 +272,21 @@ class EquipmentWorldService
 
                     if ($wasModified) {
                         $modifiedObjects[] = $world["objectsArray"][$foundKey];
-                    }
-
-                    if ($action !== ACTION_COMBINE) {
                         $results[] = array(
                             "id" => $foundPlot->id,
                             "data" => array("id" => $foundPlot->id)
                         );
+                    } elseif ($action !== ACTION_COMBINE) {
+                        // Flash removes a plot for every truthy response entry.
+                        // Never acknowledge an action which the authoritative
+                        // state rejected (for example an immature or stale
+                        // crop), otherwise it appears harvested until reload.
+                        $results[] = null;
+                        $skippedPositions[] = [
+                            'x' => $posX,
+                            'y' => $posY,
+                            'state' => $foundPlot->state ?? null,
+                        ];
                     }
                 } else {
                     if ($action === ACTION_COMBINE) {
@@ -310,6 +319,19 @@ class EquipmentWorldService
         if (!empty($modifiedObjects) || !empty($newObjects)) {
             invalidateWorldCache($uid, $currentWorldType);
         }
+
+        Logger::debug(
+            'EquipmentWorldService',
+            sprintf(
+                'Bulk action uid=%s action=%s requested=%d accepted=%d skipped=%d',
+                $uid,
+                $action,
+                $plotCount,
+                count($modifiedObjects) + count($newObjects),
+                count($skippedPositions),
+            ),
+            $skippedPositions === [] ? null : ['skippedPositions' => $skippedPositions],
+        );
 
         // Flash optimistically removes every plot included in its equipment
         // animation. If the authoritative write failed, acknowledge none of
