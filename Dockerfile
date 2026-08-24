@@ -5,10 +5,15 @@ FROM php:8.4-apache
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
+    libfreetype6-dev \
+    libjpeg62-turbo-dev \
+    libpng-dev \
+    libwebp-dev \
     libzip-dev \
     zip \
-    && docker-php-ext-install pdo_mysql mysqli pcntl zip \
-    && a2enmod rewrite \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
+    && docker-php-ext-install pdo_mysql mysqli pcntl zip gd \
+    && a2enmod rewrite headers \
     && rm -rf /var/lib/apt/lists/*
 
 # Vite requires Node during the image build. NodeSource provides a current
@@ -24,8 +29,27 @@ RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-av
 
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 
+# Hashed game assets are content-addressed: a changed file receives a new
+# URL. Let browsers and the legacy Flash runtime keep those icons locally,
+# while leaving dynamic PHP/AMF endpoints uncached.
+COPY apache2-config/hashed-assets-cache.conf /etc/apache2/conf-available/hashed-assets-cache.conf
+RUN a2enconf hashed-assets-cache
+
 WORKDIR /var/www/html
-COPY . .
+
+# Keep the image self-contained for PHP dependencies and application code,
+# but only send files it needs at runtime. The 20 GB FarmVille asset archive
+# is mounted from the host by Docker Compose and is intentionally excluded
+# from the build context.
+COPY app ./app
+COPY bootstrap ./bootstrap
+COPY config ./config
+COPY database ./database
+COPY public ./public
+COPY resources ./resources
+COPY routes ./routes
+COPY scripts ./scripts
+COPY artisan composer.json composer.lock package.json package-lock.json phpunit.xml postcss.config.js tailwind.config.js vite.config.js .env.example ./
 
 # The archived quest settings let Flash predict crop/harvest progress. Our
 # server already persists these actions, so make the client consume the
@@ -68,13 +92,13 @@ RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/
         ln -s v855038 public/farmville/xml/gz/v855038-expansions-v1; \
     fi
 
-RUN cp .env.example .env \
+RUN mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
+    && cp .env.example .env \
     && composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader \
     && npm ci \
     && npm run build \
     && rm -rf node_modules \
     && php artisan key:generate --force \
-    && mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
     && chown -R www-data:www-data storage bootstrap/cache \
     && if [ -d public/farmville/flashservices/amfphp/Plugins/AmfphpLogger ]; then \
         touch public/farmville/flashservices/amfphp/Plugins/AmfphpLogger/amfphplog.log; \
