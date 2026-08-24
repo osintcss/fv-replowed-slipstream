@@ -40,6 +40,10 @@
 
     RewriteEngine On
 
+    # A distinct filename gives the legacy Flash preloader and browser cache a
+    # real client-build revision while serving the tracked patched SWF.
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-plowdispatch1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+
     RewriteRule ^farmville/xml/gz/v855038-locale-v3/en_US\.swf$ farmville/locale-contract.php [L]
 
     # Handle Authorization Header
