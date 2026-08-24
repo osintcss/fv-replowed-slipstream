@@ -13,7 +13,6 @@ use App\Models\User;
 use App\Models\PlayerMeta;
 use App\Models\WorldObject;
 use App\Support\WorldPersistence;
-use Illuminate\Support\Facades\DB;
 
 class Player {
 
@@ -860,12 +859,6 @@ class Player {
             return false;
         }
 
-        $worldId = getWorldId($this->uid, $currentWorldType);
-        if ($worldId === null) {
-            Logger::error('World', "storeItem: no world found uid={$this->uid}");
-            return false;
-        }
-
         // TStoreItem can follow a TPlace before Flash has replaced its
         // temporary object ID with the server ID. Resolve only the placing
         // player's recent mapping; the resource is still locked and its item
@@ -887,8 +880,7 @@ class Player {
         // its later delete/reinsert used to erase the pen contents that had
         // just appeared client-side. Lock and update only the pen and the
         // animal being moved.
-        $contents = [];
-        DB::transaction(function () use ($worldId, $buildingId, $resourceId, $itemCode, $storedItemName, $numToStore, &$contents) {
+        $contents = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $resourceId, $itemCode, $storedItemName, $numToStore) {
             $storedBuilding = WorldObject::query()
                 ->where('world_id', $worldId)
                 ->where('object_id', (int) $buildingId)
@@ -944,7 +936,13 @@ class Player {
             $storedBuilding->contents = $contents;
             $this->synchronizeFeatureStorageSlots($storedBuilding, $contents);
             $storedBuilding->save();
+
+            return $contents;
         });
+
+        if ($contents === false) {
+            return false;
+        }
 
         $building = $currWorld["objectsArray"][$buildingKey];
         $building->contents = $contents;
@@ -962,7 +960,6 @@ class Player {
         }
 
         $this->worldData = $currWorld;
-        invalidateWorldCache($this->uid, $currentWorldType);
 
         if ($requestedResourceId !== $resourceId) {
             $this->forgetTemporaryObjectId($requestedResourceId);
@@ -1070,12 +1067,7 @@ class Player {
         $currWorld = empty($this->worldData)
             ? getWorldByType($this->uid, $currentWorldType)
             : $this->worldData;
-        $worldId = getWorldId($this->uid, $currentWorldType);
-        if ($worldId === null) {
-            return false;
-        }
-
-        $contents = DB::transaction(function () use ($worldId, $buildingId, $itemCode, $delta) {
+        $contents = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $itemCode, $delta) {
             $building = WorldObject::query()
                 ->where('world_id', $worldId)
                 ->where('object_id', (int) $buildingId)
@@ -1138,7 +1130,6 @@ class Player {
                 $building->contents = $contents;
                 $currWorld['objectsArray'][$buildingKey] = $building;
                 $this->worldData = $currWorld;
-                invalidateWorldCache($this->uid, $currentWorldType);
                 return true;
             }
         }

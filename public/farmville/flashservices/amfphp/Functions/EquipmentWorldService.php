@@ -8,6 +8,8 @@ require_once AMFPHP_ROOTPATH . "Helpers/market_transactions.php";
 require_once AMFPHP_ROOTPATH . "Helpers/quest_progress.php";
 require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
 
+use App\Support\WorldPersistence;
+
 class EquipmentWorldService
 {
 
@@ -315,22 +317,16 @@ class EquipmentWorldService
 
         $worldPersisted = true;
 
-        if (!empty($modifiedObjects)) {
-            if (!self::persistModifiedObjects($worldId, $modifiedObjects)) {
-                Logger::error('EquipmentWorldService', "Failed to update world objects for uid=$uid");
-                $worldPersisted = false;
-            }
-        }
-
-        if (!empty($newObjects)) {
-            if (!insertWorldObjects($worldId, $newObjects)) {
-                Logger::error('EquipmentWorldService', "Failed to insert new world objects for uid=$uid");
-                $worldPersisted = false;
-            }
-        }
-
         if (!empty($modifiedObjects) || !empty($newObjects)) {
-            invalidateWorldCache($uid, $currentWorldType);
+            $worldPersisted = WorldPersistence::persistEquipmentChanges(
+                $uid,
+                $currentWorldType,
+                $modifiedObjects,
+                $newObjects,
+            );
+            if (!$worldPersisted) {
+                Logger::error('EquipmentWorldService', "Failed to persist equipment changes for uid=$uid");
+            }
         }
 
         Logger::debug(
@@ -498,50 +494,4 @@ class EquipmentWorldService
         return $plotObj;
     }
 
-    /**
-     * Persist a bulk equipment operation atomically.  A successful Flash
-     * response is only valid if every object which was changed in memory has
-     * a live database row at the same position.  The former helper treated a
-     * zero-row update as success, which let Flash remove crops that the next
-     * farm load would restore.
-     */
-    private static function persistModifiedObjects($worldId, array $objects): bool
-    {
-        try {
-            \Illuminate\Support\Facades\DB::transaction(function () use ($worldId, $objects) {
-                foreach ($objects as $obj) {
-                    [$posX, $posY] = \App\Helpers\ObjectHelper::getPosition($obj);
-
-                    if ($posX === null || $posY === null) {
-                        throw new \RuntimeException('Equipment object has no position');
-                    }
-
-                    $updated = \App\Models\WorldObject::where('world_id', $worldId)
-                        ->where('position_x', (int) $posX)
-                        ->where('position_y', (int) $posY)
-                        ->where('deleted', false)
-                        ->update([
-                            'state' => $obj->state ?? null,
-                            'item_name' => $obj->itemName ?? null,
-                            'plant_time' => sanitizeNumericValue($obj->plantTime ?? 0),
-                            'is_jumbo' => (bool) ($obj->isJumbo ?? false),
-                        ]);
-
-                    if ($updated !== 1) {
-                        throw new \RuntimeException(sprintf(
-                            'Equipment update affected %d rows at (%d,%d)',
-                            $updated,
-                            $posX,
-                            $posY
-                        ));
-                    }
-                }
-            });
-
-            return true;
-        } catch (\Throwable $e) {
-            Logger::error('EquipmentWorldService', 'Bulk world persistence rejected: ' . $e->getMessage());
-            return false;
-        }
-    }
 }

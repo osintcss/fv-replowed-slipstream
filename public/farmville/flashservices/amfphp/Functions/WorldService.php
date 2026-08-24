@@ -10,7 +10,6 @@ use App\Helpers\JsonHelper;
 use App\Models\WorldObject;
 use App\Support\CraftingCottages;
 use App\Support\WorldPersistence;
-use Illuminate\Support\Facades\DB;
 
 class WorldService
 {
@@ -273,10 +272,16 @@ class WorldService
                                                 $components->active = true;
                                             }
                                             
-                                            $placedObj->components = $components;
-                                            $placedObj->save();
+                                            WorldPersistence::mutateObject(
+                                                $uid,
+                                                $worldType,
+                                                $retId,
+                                                static function (WorldObject $lockedObject) use ($components): bool {
+                                                    $lockedObject->components = $components;
 
-                                            invalidateWorldCache($uid, $worldType);
+                                                    return true;
+                                                },
+                                            );
                                         }
                                     }
                                 }
@@ -333,10 +338,16 @@ class WorldService
                                 $components->pendingLevelUpFeed = null;
                             }
 
-                            $placedCottage->components = $components;
-                            $placedCottage->save();
+                            WorldPersistence::mutateObject(
+                                $uid,
+                                $worldType,
+                                $retId,
+                                static function (WorldObject $lockedObject) use ($components): bool {
+                                    $lockedObject->components = $components;
 
-                            invalidateWorldCache($uid, $worldType);
+                                    return true;
+                                },
+                            );
                         }
                     }
                 }
@@ -862,9 +873,10 @@ class WorldService
                     // that was just changed by its own atomic store action.
                     // Persist only this building, matching setFeaturedItem.
                     $worldType = getCurrentWorldType($uid);
-                    $worldId = getWorldId($uid, $worldType);
-                    if ($worldId !== null) {
-                        $featuredItems = DB::transaction(function () use ($worldId, $buildingId, $featuredItems) {
+                    $persistedFeaturedItems = WorldPersistence::transaction(
+                        $uid,
+                        $worldType,
+                        function (int $worldId) use ($buildingId, $featuredItems) {
                             $building = WorldObject::query()
                                 ->where('world_id', $worldId)
                                 ->where('object_id', $buildingId)
@@ -887,8 +899,10 @@ class WorldService
                             $building->save();
 
                             return $components->featuredItems;
-                        });
-                        invalidateWorldCache($uid, $worldType);
+                        },
+                    );
+                    if ($persistedFeaturedItems !== false) {
+                        $featuredItems = $persistedFeaturedItems;
                     }
                 }
 
@@ -916,11 +930,11 @@ class WorldService
                 $featuredItems = new \stdClass();
 
                 if ($buildingId > 0 && $slot !== null && $itemCode !== null) {
-                    $worldId = getWorldId($uid, getCurrentWorldType($uid));
-
-                    if ($worldId !== null) {
-                        $featuredItems = DB::transaction(function () use (
-                            $worldId,
+                    $worldType = getCurrentWorldType($uid);
+                    $persistedFeaturedItems = WorldPersistence::transaction(
+                        $uid,
+                        $worldType,
+                        function (int $worldId) use (
                             $buildingId,
                             $slot,
                             $itemCode,
@@ -960,8 +974,10 @@ class WorldService
                             $building->save();
 
                             return $featured;
-                        });
-                        invalidateWorldCache($uid, getCurrentWorldType($uid));
+                        },
+                    );
+                    if ($persistedFeaturedItems !== false) {
+                        $featuredItems = $persistedFeaturedItems;
                     }
                 }
 
@@ -1127,7 +1143,6 @@ class WorldService
                 $newSign->deleted = false;
                 $newSign->tempId = (int) -1;
 
-                $hostWorld["objectsArray"][] = $newSign;
                 $msgMgrObj = $hostWorld["messageManager"] ?? null;
                 $messageManager = ["messages" => [], "allowSendEmails" => true];
                 if (is_object($msgMgrObj)) {
@@ -1164,7 +1179,9 @@ class WorldService
                 ];
 
                 $newSign->messageId = (int) $newMessageId;
-                saveWorldWithMessages($hostId, $hostWorldType, $hostWorld, $messageManager);
+                if (!WorldPersistence::createMessageSign($hostId, $hostWorldType, $newSign, $messageManager)) {
+                    throw new \Exception("Failed to create message sign for hostId=$hostId");
+                }
 
                 $data["id"] = $newSignId;
                 $data["data"] = array(
@@ -1196,12 +1213,10 @@ class WorldService
                 $found = false;
                 foreach ($hostWorld["objectsArray"] as $key => $obj) {
                     if (isset($obj->id) && $obj->id == $signId && isset($obj->className) && $obj->className === 'MessageSign') {
-                        unset($hostWorld["objectsArray"][$key]);
                         $found = true;
                         break;
                     }
                 }
-                $hostWorld["objectsArray"] = array_values($hostWorld["objectsArray"]);
                 $msgMgrObj = $hostWorld["messageManager"] ?? null;
                 $messageManager = ["messages" => [], "allowSendEmails" => true];
                 if (is_object($msgMgrObj)) {
@@ -1230,8 +1245,13 @@ class WorldService
                     $messageManager["messages"] = array_values($messageManager["messages"]);
                 }
 
-                saveWorldWithMessages($hostId, $hostWorldType, $hostWorld, $messageManager);
-                $data["data"] = array("success" => $found);
+                $deleted = WorldPersistence::deleteMessageSign(
+                    $hostId,
+                    $hostWorldType,
+                    (int) $signId,
+                    $messageManager,
+                );
+                $data["data"] = array("success" => $found && $deleted);
                 break;
 
             case ACTION_EXPAND_WITH_CURRENCY:
@@ -1554,17 +1574,26 @@ class WorldService
                 UserResources::removeCash($uid, $upgradeCost);
 
                 $newLevel = $currentLevel + 1;
-                $building->expansion_level = $newLevel;
-                $building->expansion_parts = null;
-                $building->save();
+                $persisted = WorldPersistence::mutateObject(
+                    $uid,
+                    $worldType,
+                    $buildingId,
+                    static function (WorldObject $lockedBuilding) use ($newLevel): bool {
+                        $lockedBuilding->expansion_level = $newLevel;
+                        $lockedBuilding->expansion_parts = null;
+
+                        return true;
+                    },
+                );
+                if ($persisted === false) {
+                    throw new \Exception("Failed to purchase storage upgrade for uid=$uid");
+                }
 
                 if ($itemData) {
                     trackStorageBuildingExpansionProgress($uid, $itemData);
                 }
 
                 set_meta($uid, 'upgradeStatus', '');
-
-                invalidateWorldCache($uid, $worldType);
 
                 $data["data"] = [
                     "success" => true,
