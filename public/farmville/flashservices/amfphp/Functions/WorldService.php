@@ -364,7 +364,40 @@ class WorldService
                 break;
 
             case ACTION_PLOW:
-                $retId = $playerObj->setWorld($request->params[1], $action);
+                $plowObject = $request->params[1];
+                $position = is_object($plowObject) ? ($plowObject->position ?? null) : null;
+                $posX = is_object($position) ? ($position->x ?? null) : (is_array($position) ? ($position['x'] ?? null) : null);
+                $posY = is_object($position) ? ($position->y ?? null) : (is_array($position) ? ($position['y'] ?? null) : null);
+                $uid = $playerObj->getUid();
+
+                Logger::debug('PlowAudit', 'Single plow received', [
+                    'uid' => (string) $uid,
+                    'world_type' => getCurrentWorldType($uid),
+                    'x' => $posX,
+                    'y' => $posY,
+                    'object_id' => is_object($plowObject) ? ($plowObject->id ?? null) : null,
+                ]);
+
+                try {
+                    $retId = $playerObj->setWorld($plowObject, $action);
+                } catch (\Throwable $exception) {
+                    Logger::error('PlowAudit', 'Single plow persistence threw an exception', [
+                        'uid' => (string) $uid,
+                        'x' => $posX,
+                        'y' => $posY,
+                        'error' => $exception->getMessage(),
+                    ]);
+
+                    throw $exception;
+                }
+
+                Logger::debug('PlowAudit', $retId === false ? 'Single plow rejected' : 'Single plow committed', [
+                    'uid' => (string) $uid,
+                    'world_type' => getCurrentWorldType($uid),
+                    'x' => $posX,
+                    'y' => $posY,
+                    'object_id' => $retId,
+                ]);
 
                 try {
                     $currency = ($extraParams !== null && isset($extraParams->currency))

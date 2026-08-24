@@ -40,6 +40,14 @@ class EquipmentWorldService
 
         $uid = $playerObj->getUid();
 
+        if ($action === ACTION_PLOW) {
+            Logger::debug('PlowAudit', 'Equipment plow received', [
+                'uid' => (string) $uid,
+                'world_type' => getCurrentWorldType($uid),
+                'requested_plots' => $plotCount,
+            ]);
+        }
+
         if ($plotCount > 0) {
             UserResources::removeEnergy($uid, $plotCount);
         }
@@ -81,6 +89,7 @@ class EquipmentWorldService
                 $plotObj = self::createPlotObject($plotData);
                 if ($plotObj === null) {
                     $results[] = null;
+                    $skippedPositions[] = ['reason' => 'invalid_plot_payload'];
                     continue;
                 }
 
@@ -96,6 +105,12 @@ class EquipmentWorldService
                         $world["objectsArray"][$foundKey]->state = PLOT_STATE_PLOWED;
                         $modifiedObjects[] = $world["objectsArray"][$foundKey];
                         $plowCount++;
+                        $acceptedPositions[] = [
+                            'x' => $posX,
+                            'y' => $posY,
+                            'object_id' => $world["objectsArray"][$foundKey]->id,
+                            'operation' => 'update',
+                        ];
 
                         $results[] = array(
                             "id" => $world["objectsArray"][$foundKey]->id,
@@ -103,6 +118,12 @@ class EquipmentWorldService
                         );
                     } else {
                         $results[] = null;
+                        $skippedPositions[] = [
+                            'x' => $posX,
+                            'y' => $posY,
+                            'reason' => 'plot_not_plowable',
+                            'state' => $existingState,
+                        ];
                     }
                 } elseif ($plotObj->id >= TEMP_ID_THRESHOLD) {
                     $newId = null;
@@ -116,6 +137,7 @@ class EquipmentWorldService
 
                     if ($newId === null) {
                         $results[] = null;
+                        $skippedPositions[] = ['x' => $posX, 'y' => $posY, 'reason' => 'no_available_object_id'];
                         continue;
                     }
 
@@ -124,6 +146,12 @@ class EquipmentWorldService
                     $world["objectsArray"][] = $plotObj;
                     $newObjects[] = $plotObj;
                     $plowCount++;
+                    $acceptedPositions[] = [
+                        'x' => $posX,
+                        'y' => $posY,
+                        'object_id' => $plotObj->id,
+                        'operation' => 'insert',
+                    ];
 
                     $newKey = count($world["objectsArray"]) - 1;
                     $posKey = $posX . "," . $posY;
@@ -135,6 +163,7 @@ class EquipmentWorldService
                     );
                 } else {
                     $results[] = null;
+                    $skippedPositions[] = ['x' => $posX, 'y' => $posY, 'reason' => 'missing_world_plot'];
                 }
                 continue;
             }
@@ -327,6 +356,15 @@ class EquipmentWorldService
             if (!$worldPersisted) {
                 Logger::error('EquipmentWorldService', "Failed to persist equipment changes for uid=$uid");
             }
+        }
+
+        if ($action === ACTION_PLOW) {
+            Logger::debug('PlowAudit', $worldPersisted ? 'Equipment plow committed' : 'Equipment plow persistence failed', [
+                'uid' => (string) $uid,
+                'world_type' => $currentWorldType,
+                'accepted_positions' => $acceptedPositions,
+                'skipped_positions' => $skippedPositions,
+            ]);
         }
 
         Logger::debug(
