@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Models\DiscordIdentity;
+use App\Support\DiscordAvatar;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -67,29 +68,38 @@ class DiscordAuthenticatedSessionController extends Controller
                 ->throw()
                 ->json('access_token');
 
-            $discordId = Http::withToken((string) $token)
+            $discordUser = Http::withToken((string) $token)
                 ->timeout(10)
                 ->get(self::USER_URL)
                 ->throw()
-                ->json('id');
+                ->json();
         } catch (\Throwable) {
             return $this->loginError('Discord sign-in failed. Please try again.');
         }
 
+        $discordId = $discordUser['id'] ?? null;
         if (!is_string($discordId) || !preg_match('/^\d{15,25}$/', $discordId)) {
             return $this->loginError('Discord returned an invalid account identity.');
         }
+
+        $discordAvatarUrl = DiscordAvatar::url($discordId, is_string($discordUser['avatar'] ?? null) ? $discordUser['avatar'] : null);
 
         $identity = DiscordIdentity::with('user')->where('discord_id', $discordId)->first();
         if (!$identity?->user) {
             if ($intent === 'register') {
                 $request->session()->put('discord_registration_id', $discordId);
+                $request->session()->put('discord_registration_avatar_url', $discordAvatarUrl);
 
                 return redirect()->route('discord.register.name');
             }
 
             return $this->loginError('This Discord account has not been linked to a FarmVille account yet.');
         }
+
+        $identity->update(['avatar_url' => $discordAvatarUrl]);
+        $identity->user->userMeta()?->update([
+            'profile_picture' => url('/profile-pictures/discord/'.$identity->user->uid).'?v=2',
+        ]);
 
         Auth::login($identity->user);
         $request->session()->regenerate();

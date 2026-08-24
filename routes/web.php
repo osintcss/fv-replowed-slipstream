@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\DiscordAvatarController;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
@@ -136,15 +137,15 @@ Route::middleware(['auth', 'verified', 'admin'])->group(function () {
         ->middleware('throttle:5,1');
 });
 
+Route::get('/profile-pictures/discord/{uid}', [DiscordAvatarController::class, 'show'])
+    ->whereNumber('uid')
+    ->name('profile.discord-avatar');
+
 Route::middleware('auth')->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
     Route::post('/profile/settings', [ProfileController::class, 'updateSettings'])->name('profile.settings');
-    Route::post('/profile/picture', [ProfileController::class, 'uploadProfilePicture'])
-        ->name('profile.picture.upload')
-        ->middleware('throttle:5,1'); // 5 uploads per minute
-    Route::delete('/profile/picture', [ProfileController::class, 'deleteProfilePicture'])->name('profile.picture.delete');
     Route::get('/profile/export', [PlayerExportController::class, 'download'])
         ->name('profile.export')
         ->middleware('throttle:5,1');

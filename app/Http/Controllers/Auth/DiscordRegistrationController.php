@@ -46,7 +46,8 @@ class DiscordRegistrationController extends Controller
         }
 
         try {
-            $user = DB::transaction(function () use ($discordId, $name): User {
+            $avatarUrl = (string) $request->session()->get('discord_registration_avatar_url', '');
+            $user = DB::transaction(function () use ($discordId, $name, $avatarUrl): User {
                 if (DiscordIdentity::where('discord_id', $discordId)->exists()) {
                     throw new \RuntimeException('This Discord account is already linked to a FarmVille account.');
                 }
@@ -58,11 +59,13 @@ class DiscordRegistrationController extends Controller
                     'uid' => $user->uid,
                     'firstName' => $firstName,
                     'lastName' => $lastName,
+                    'profile_picture' => url('/profile-pictures/discord/'.$user->uid).'?v=2',
                 ]);
                 UserAvatar::create(['uid' => $user->uid]);
                 DiscordIdentity::create([
                     'user_id' => $user->id,
                     'discord_id' => $discordId,
+                    'avatar_url' => $avatarUrl !== '' ? $avatarUrl : null,
                     'linked_at' => now(),
                 ]);
 
@@ -72,7 +75,7 @@ class DiscordRegistrationController extends Controller
             return redirect()->route('login')->withErrors(['discord' => $exception->getMessage()]);
         }
 
-        $request->session()->forget('discord_registration_id');
+        $request->session()->forget(['discord_registration_id', 'discord_registration_avatar_url']);
         event(new Registered($user));
         Auth::login($user);
         $request->session()->regenerate();

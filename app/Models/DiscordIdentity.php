@@ -10,6 +10,7 @@ class DiscordIdentity extends Model
     protected $fillable = [
         'user_id',
         'discord_id',
+        'avatar_url',
         'linked_at',
         'linked_by_user_id',
     ];

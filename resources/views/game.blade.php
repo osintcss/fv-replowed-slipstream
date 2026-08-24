@@ -1981,31 +1981,6 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                                 <div style="padding: 25px;">
                                     <div id="settingsMessage" style="display: none; padding: 10px; margin-bottom: 15px; border-radius: 5px;"></div>
 
-                                    <!-- Profile Picture Section -->
-                                    <div style="margin-bottom: 20px; text-align: center;">
-                                        <label style="display: block; margin-bottom: 10px; font-weight: 600; color: #333;">Profile Picture</label>
-                                        <div style="display: flex; align-items: center; justify-content: center; gap: 15px;">
-                                            <img id="profilePicPreview"
-                                                 src="{{ auth()->user()->userMeta->profile_picture ?? '' }}"
-                                                 onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect fill=%22%23e5e7eb%22 width=%22100%22 height=%22100%22/><text x=%2250%22 y=%2258%22 text-anchor=%22middle%22 fill=%22%239CA3AF%22 font-size=%2236%22>?</text></svg>'"
-                                                 style="width: 80px; height: 80px; border-radius: 50%; object-fit: cover; border: 3px solid #ddd;">
-                                            <div style="display: flex; flex-direction: column; gap: 8px;">
-                                                <label for="profilePicInput" style="padding: 8px 16px; background: linear-gradient(180deg, #3b82f6, #2563eb); color: white; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600; text-align: center;">
-                                                    Choose Photo
-                                                </label>
-                                                <input type="file" id="profilePicInput" accept="image/jpeg,image/png,image/jpg,image/gif,image/webp" style="display: none;">
-                                                @if(auth()->user()->userMeta->profile_picture)
-                                                <button type="button" onclick="removeProfilePic()" style="padding: 8px 16px; background: linear-gradient(180deg, #ef4444, #dc2626); color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600;">
-                                                    Remove
-                                                </button>
-                                                @endif
-                                            </div>
-                                        </div>
-                                        <p id="profilePicStatus" style="font-size: 12px; color: #666; margin-top: 8px;"></p>
-                                    </div>
-
-                                    <hr style="margin: 20px 0; border: none; border-top: 1px solid #e5e7eb;">
-
                                     <form id="settingsForm">
                                         <div style="margin-bottom: 15px;">
                                             <label style="display: block; margin-bottom: 5px; font-weight: 600; color: #333;">First Name</label>
@@ -2046,82 +2021,6 @@ $baseUrl = rtrim((string) config('app.url'), '/');
 
                         function closeSettingsModal() {
                             document.getElementById('settingsModal').style.display = 'none';
-                        }
-
-                        document.getElementById('profilePicInput').addEventListener('change', async function(e) {
-                            const file = e.target.files[0];
-                            if (!file) return;
-
-                            const statusEl = document.getElementById('profilePicStatus');
-                            const preview = document.getElementById('profilePicPreview');
-
-                            if (file.size > 5 * 1024 * 1024) {
-                                statusEl.textContent = 'File must be less than 5MB';
-                                statusEl.style.color = '#dc2626';
-                                return;
-                            }
-
-                            const reader = new FileReader();
-                            reader.onload = (e) => preview.src = e.target.result;
-                            reader.readAsDataURL(file);
-
-                            statusEl.textContent = 'Uploading...';
-                            statusEl.style.color = '#666';
-
-                            const formData = new FormData();
-                            formData.append('profile_picture', file);
-
-                            try {
-                                const res = await fetch('{{ route("profile.picture.upload") }}', {
-                                    method: 'POST',
-                                    headers: { 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
-                                    body: formData
-                                });
-                                const data = await res.json();
-
-                                if (data.success) {
-                                    statusEl.textContent = 'Updated! Reloading...';
-                                    statusEl.style.color = '#059669';
-                                    setTimeout(() => location.reload(), 1000);
-                                } else {
-                                    statusEl.textContent = data.message || 'Upload failed';
-                                    statusEl.style.color = '#dc2626';
-                                }
-                            } catch (err) {
-                                statusEl.textContent = 'Upload failed';
-                                statusEl.style.color = '#dc2626';
-                            }
-                        });
-
-                        async function removeProfilePic() {
-                            if (!confirm('Remove your profile picture?')) return;
-
-                            const statusEl = document.getElementById('profilePicStatus');
-                            statusEl.textContent = 'Removing...';
-                            statusEl.style.color = '#666';
-
-                            try {
-                                const res = await fetch('{{ route("profile.picture.delete") }}', {
-                                    method: 'DELETE',
-                                    headers: {
-                                        'X-CSRF-TOKEN': '{{ csrf_token() }}',
-                                        'Content-Type': 'application/json'
-                                    }
-                                });
-                                const data = await res.json();
-
-                                if (data.success) {
-                                    statusEl.textContent = 'Removed! Reloading...';
-                                    statusEl.style.color = '#059669';
-                                    setTimeout(() => location.reload(), 1000);
-                                } else {
-                                    statusEl.textContent = data.message || 'Failed';
-                                    statusEl.style.color = '#dc2626';
-                                }
-                            } catch (err) {
-                                statusEl.textContent = 'Failed to remove';
-                                statusEl.style.color = '#dc2626';
-                            }
                         }
 
                         document.getElementById('settingsForm').addEventListener('submit', function(e) {

@@ -9,17 +9,12 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Redirect;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Facades\Log;
 use Illuminate\View\View;
 use Illuminate\Http\JsonResponse;
 use App\Models\UserMeta;
 use App\Models\UserAvatar;
 use App\Models\UserWorld;
 use App\Models\PlayerMeta;
-use Intervention\Image\ImageManager;
-use Intervention\Image\Drivers\Gd\Driver as GdDriver;
-use Intervention\Image\Encoders\JpegEncoder;
 
 class ProfileController extends Controller
 {
@@ -88,106 +83,6 @@ class ProfileController extends Controller
             'firstName' => $userMeta->firstName,
             'lastName' => $userMeta->lastName
         ]);
-    }
-
-    public function uploadProfilePicture(Request $request): JsonResponse
-    {
-        $request->validate([
-            'profile_picture' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:5120', // 5MB max
-        ]);
-
-        $user = $request->user();
-        $userMeta = $user->userMeta;
-
-        try {
-            $file = $request->file('profile_picture');
-
-            $manager = new ImageManager(new GdDriver());
-            $image = $manager->read($file)
-                ->cover(50, 50)
-                ->encode(new JpegEncoder(quality: 90));
-
-            $filename = 'profile-pictures/' . $user->uid . '_' . time() . '.jpg';
-
-            $disk = env('B2_ACCESS_KEY_ID') ? 'b2' : 'public';
-
-            /** @var \Illuminate\Filesystem\FilesystemAdapter $storage */
-            $storage = Storage::disk($disk);
-            $storage->put($filename, (string) $image, ['visibility' => 'public']);
-
-            $url = $storage->url($filename);
-
-            if ($userMeta->profile_picture) {
-                $this->deleteOldProfilePicture($userMeta->profile_picture, $disk, $user->uid);
-            }
-
-            $userMeta->profile_picture = $url;
-            $userMeta->save();
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Profile picture updated successfully',
-                'profile_picture' => $url
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('Profile picture upload failed', [
-                'user_id' => $user->uid,
-                'error' => $e->getMessage()
-            ]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to upload profile picture. Please try again.'
-            ], 500);
-        }
-    }
-
-    private function deleteOldProfilePicture(string $oldUrl, string $disk, string $uid): void
-    {
-        if (preg_match('#(profile-pictures/' . preg_quote($uid, '#') . '_[^/]+\.jpg)#', $oldUrl, $matches)) {
-            try {
-                Storage::disk($disk)->delete($matches[1]);
-            } catch (\Exception $e) {
-                Log::warning('Failed to delete old profile picture', [
-                    'user_id' => $uid,
-                    'path' => $matches[1],
-                    'error' => $e->getMessage()
-                ]);
-            }
-        }
-    }
-
-    public function deleteProfilePicture(Request $request): JsonResponse
-    {
-        $user = $request->user();
-        $userMeta = $user->userMeta;
-
-        try {
-            if ($userMeta->profile_picture) {
-                $disk = env('B2_ACCESS_KEY_ID') ? 'b2' : 'public';
-                $this->deleteOldProfilePicture($userMeta->profile_picture, $disk, $user->uid);
-
-                $userMeta->profile_picture = null;
-                $userMeta->save();
-            }
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Profile picture removed'
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('Profile picture deletion failed', [
-                'user_id' => $user->uid,
-                'error' => $e->getMessage()
-            ]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to remove profile picture. Please try again.'
-            ], 500);
-        }
     }
 
     public function destroy(Request $request): RedirectResponse
