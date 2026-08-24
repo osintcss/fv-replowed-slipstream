@@ -12,6 +12,7 @@ require_once AMFPHP_ROOTPATH . "Functions/FriendSetService.php";
 require_once AMFPHP_ROOTPATH . "Functions/LeaderboardService.php";
 require_once AMFPHP_ROOTPATH . "Functions/FarmService.php";
 require_once AMFPHP_ROOTPATH . "Functions/CraftingService.php";
+require_once AMFPHP_ROOTPATH . "Functions/CaptureFeatureService.php";
 require_once AMFPHP_ROOTPATH . "Functions/FleaMarketService.php";
 require_once AMFPHP_ROOTPATH . "Functions/UserService.php";
 require_once AMFPHP_ROOTPATH . "Functions/WorldService.php";
@@ -83,6 +84,15 @@ class FlashService {
                     $questComponentOverride = $result['_questComponentOverride'] ?? null;
                     unset($result['_questComponentOverride']);
                     $data[$key] = array_merge($data[$key], $result);
+                } elseif (preg_match('/^[A-Za-z0-9]+Service\\.unlock[A-Za-z0-9]+World$/', $requ->functionName)) {
+                    // The original client tries to unlock every historical
+                    // farm theme during initialization.  We do not implement
+                    // those retired theme services, but an error response for
+                    // each one floods the Flash transaction queue and can
+                    // interrupt the player actions queued immediately after
+                    // loading.  A successful empty response is the legacy
+                    // contract for an unavailable optional world.
+                    $data[$key]['data'] = [];
                 } else {
                     Logger::error("FlashService", "Method not found: " . $requ->functionName);
                     $data[$key]["errorType"] = 1;
@@ -96,9 +106,15 @@ class FlashService {
 
             // Quest actions can start, complete, or remove a quest. Build this
             // after the handler runs so the client receives the current state.
-            $data[$key]["metadata"] = array(
-                "QuestComponent" => $questComponentOverride ?? buildQuestComponent($player->getUid())
-            );
+            $metadata = $data[$key]['metadata'] ?? [];
+            if (is_object($metadata)) {
+                $metadata = (array) $metadata;
+            }
+            if (!is_array($metadata)) {
+                $metadata = [];
+            }
+            $metadata['QuestComponent'] = $questComponentOverride ?? buildQuestComponent($player->getUid());
+            $data[$key]['metadata'] = $metadata;
             
         } 
 

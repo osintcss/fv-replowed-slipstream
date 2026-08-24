@@ -4,19 +4,29 @@ require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
 require_once AMFPHP_ROOTPATH . "Helpers/constants.php";
 require_once AMFPHP_ROOTPATH . "Helpers/quest_helper.php";
 require_once AMFPHP_ROOTPATH . "Helpers/collision.php";
+require_once AMFPHP_ROOTPATH . "Helpers/capture_feature_helper.php";
 
 use App\Models\UserMeta;
 use App\Models\UserAvatar;
 use App\Models\UserWorld;
 use App\Models\User;
 use App\Models\PlayerMeta;
+use App\Models\WorldObject;
+use Illuminate\Support\Facades\DB;
 
 class Player {
+
+    private const TEMP_OBJECT_ID_MAP_META_KEY = 'flash_temp_object_id_map';
+    private const TEMP_OBJECT_ID_MAP_TTL_SECONDS = 600;
 
     private $uid = null;
     private $pData = array();
     private $worldData = array();
     private $avatarData = array();
+    // A Flash placement can be resent after the world object was already
+    // persisted.  Keep that fact available to WorldService so the retry is
+    // acknowledged without charging the market transaction a second time.
+    private $lastPlacementWasIdempotentRetry = false;
 
     public function __construct($id) {
         $this->uid = $id;
@@ -24,6 +34,154 @@ class Player {
 
     public function getUid(){
         return $this->uid;
+    }
+
+    public function lastPlacementWasIdempotentRetry(): bool {
+        return $this->lastPlacementWasIdempotentRetry;
+    }
+
+    /**
+     * Flash assigns a temporary object ID before a placement reaches the
+     * server.  Its next transaction can be a store action for that same
+     * object before the placement response has been applied locally.  Keep a
+     * short-lived, player-local reconciliation record so that action still
+     * addresses the object we actually persisted.
+     */
+    private function rememberTemporaryObjectId(
+        int $temporaryId,
+        int $objectId,
+        string $worldType,
+        ?string $itemName,
+        ?int $positionX,
+        ?int $positionY,
+    ): void {
+        if ($temporaryId < TEMP_ID_THRESHOLD || $objectId <= 0) {
+            return;
+        }
+
+        $now = time();
+        $raw = get_meta($this->uid, self::TEMP_OBJECT_ID_MAP_META_KEY);
+        $mappings = is_string($raw) ? (@unserialize($raw) ?: []) : [];
+        if (!is_array($mappings)) {
+            $mappings = [];
+        }
+
+        foreach ($mappings as $id => $mapping) {
+            if (!is_array($mapping) || (int) ($mapping['createdAt'] ?? 0) < $now - self::TEMP_OBJECT_ID_MAP_TTL_SECONDS) {
+                unset($mappings[$id]);
+            }
+        }
+
+        $mappings[(string) $temporaryId] = [
+            'objectId' => $objectId,
+            'worldType' => $worldType,
+            'itemName' => $itemName,
+            'positionX' => $positionX,
+            'positionY' => $positionY,
+            'createdAt' => $now,
+        ];
+        set_meta($this->uid, self::TEMP_OBJECT_ID_MAP_META_KEY, serialize($mappings));
+    }
+
+    private function resolveTemporaryObjectId(
+        int $temporaryId,
+        string $worldType,
+        ?string $expectedItemName = null,
+        ?int $expectedPositionX = null,
+        ?int $expectedPositionY = null,
+    ): ?int {
+        if ($temporaryId < TEMP_ID_THRESHOLD) {
+            return null;
+        }
+
+        $raw = get_meta($this->uid, self::TEMP_OBJECT_ID_MAP_META_KEY);
+        $mappings = is_string($raw) ? (@unserialize($raw) ?: []) : [];
+        $mapping = is_array($mappings) ? ($mappings[(string) $temporaryId] ?? null) : null;
+        if (!is_array($mapping)
+            || (int) ($mapping['createdAt'] ?? 0) < time() - self::TEMP_OBJECT_ID_MAP_TTL_SECONDS
+            || ($mapping['worldType'] ?? null) !== $worldType
+            || (int) ($mapping['objectId'] ?? 0) <= 0) {
+            return null;
+        }
+
+        // Flash's temporary IDs wrap during a long session. Bind a mapping
+        // to its original object so a delayed action cannot target a newer
+        // object that happens to reuse the numeric temporary ID.
+        if ($expectedItemName !== null && ($mapping['itemName'] ?? null) !== $expectedItemName) {
+            return null;
+        }
+        if (array_key_exists('positionX', $mapping)
+            && $expectedPositionX !== null
+            && (int) $mapping['positionX'] !== $expectedPositionX) {
+            return null;
+        }
+        if (array_key_exists('positionY', $mapping)
+            && $expectedPositionY !== null
+            && (int) $mapping['positionY'] !== $expectedPositionY) {
+            return null;
+        }
+
+        return (int) $mapping['objectId'];
+    }
+
+    /** Resolve a Flash object ID for any action following its placement. */
+    public function resolveFlashObjectId($object, ?string $worldType = null): ?int {
+        $objectId = isset($object->id) && is_numeric($object->id) ? (int) $object->id : null;
+        if ($objectId === null || $objectId < TEMP_ID_THRESHOLD) {
+            return $objectId;
+        }
+
+        $worldType = $worldType ?: (get_meta($this->uid, 'currentWorldType') ?: 'farm');
+        $positionX = isset($object->position) ? ($object->position->x ?? null) : null;
+        $positionY = isset($object->position) ? ($object->position->y ?? null) : null;
+
+        return $this->resolveTemporaryObjectId(
+            $objectId,
+            $worldType,
+            isset($object->itemName) ? (string) $object->itemName : null,
+            is_numeric($positionX) ? (int) $positionX : null,
+            is_numeric($positionY) ? (int) $positionY : null,
+        ) ?? $objectId;
+    }
+
+    private function forgetTemporaryObjectId(int $temporaryId): void {
+        if ($temporaryId < TEMP_ID_THRESHOLD) {
+            return;
+        }
+
+        $raw = get_meta($this->uid, self::TEMP_OBJECT_ID_MAP_META_KEY);
+        $mappings = is_string($raw) ? (@unserialize($raw) ?: []) : [];
+        if (!is_array($mappings) || !isset($mappings[(string) $temporaryId])) {
+            return;
+        }
+
+        unset($mappings[(string) $temporaryId]);
+        set_meta($this->uid, self::TEMP_OBJECT_ID_MAP_META_KEY, serialize($mappings));
+    }
+
+    /** Keep FeatureBuilding's visual slots in one-to-one correspondence with stored contents. */
+    private function synchronizeFeatureStorageSlots(WorldObject $building, array $contents): void {
+        if ($building->class_name !== 'FeatureBuilding'
+            && !str_starts_with((string) $building->item_name, 'animal_breeding_')) {
+            return;
+        }
+
+        $featuredItems = new \stdClass();
+        $slot = 0;
+        foreach ($contents as $content) {
+            $itemCode = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+            $count = is_object($content) ? (int) ($content->numItem ?? 0) : (int) ($content['numItem'] ?? 0);
+            for ($i = 0; is_string($itemCode) && $itemCode !== '' && $i < max(0, $count); $i++) {
+                $featuredItems->{(string) $slot++} = (object) [
+                    'itemCode' => $itemCode,
+                    'metaHash' => $itemCode . ':',
+                ];
+            }
+        }
+
+        $components = is_object($building->components) ? $building->components : new \stdClass();
+        $components->featuredItems = $featuredItems;
+        $building->components = $components;
     }
 
     public function getData($requ) {
@@ -48,6 +206,29 @@ class Player {
         $savedItemFlagsRaw = get_meta($this->uid, 'item_flags');
         $savedItemFlags = is_string($savedItemFlagsRaw) ? (@unserialize($savedItemFlagsRaw) ?: []) : [];
         $itemFlags = array_merge(['giftcard' => ''], is_array($savedItemFlags) ? $savedItemFlags : []);
+        $seenFlags = @unserialize($row['seenFlags']) ?: [];
+
+        // CraftingManager opens its first-stall purchase tutorial whenever
+        // its local world scan momentarily finds zero stalls.  A saved stall
+        // is authoritative, so suppress that one-time tutorial up front for
+        // existing owners rather than inviting them to buy a duplicate.
+        $hasPlacedMarketStall = false;
+        foreach (($currentWorld['objectsArray'] ?? []) as $worldObject) {
+            $className = is_object($worldObject) ? ($worldObject->className ?? '') : ($worldObject['className'] ?? '');
+            if ($className === 'MarketStallBuilding') {
+                $hasPlacedMarketStall = true;
+                break;
+            }
+        }
+        if ($hasPlacedMarketStall) {
+            $firstMarketStallFlag = 'FirstMarketStall' . ($currentWorldType === 'farm' ? '_farm' : '_' . $currentWorldType);
+            if (empty($seenFlags[$firstMarketStallFlag])) {
+                $seenFlags[$firstMarketStallFlag] = true;
+                $userMeta->seenFlags = serialize($seenFlags);
+                $userMeta->save();
+                $row['seenFlags'] = $userMeta->seenFlags;
+            }
+        }
 
         $this->pData = array(
             "sequenceNumber" => $requ->sequence,
@@ -88,6 +269,7 @@ class Player {
                 "wishImage" => null
             ),
             "energy" => $row['energy'],
+            "seedHarvestCountsSinceLastBushelDrop" => getBushelHarvestCounts($this->uid),
             "locale" => "en_US",
             "witherOn" => buildWitherOnObject($this->uid),
             "isFarmvilleFan" => false,
@@ -212,7 +394,7 @@ class Player {
                     'featureCredits' => getFeatureCreditsForClient($this->uid),
                     'incrementalFriendChecks' => array(),
                     'friendRewards' => null,
-                    'seenFlags' => @unserialize($row['seenFlags']) ?: [], //tutorial flag
+                    'seenFlags' => $seenFlags, // tutorial flags
                     'itemFlags' => $itemFlags,
                     'featureFrequency' => $this->getFeatureFrequencies(),
                     'externalLevels' => array(
@@ -259,6 +441,9 @@ class Player {
             ],
             "irrigation" => [
                 "irrigation" => $irrigationData
+            ],
+            "gophergarden" => [
+                "gophergarden" => getCaptureFeatureData($this->uid, "gophergarden")
             ]
         ];
     }
@@ -274,6 +459,7 @@ class Player {
     }
 
     public function setWorld($newObj, $action, $newSizeX = null, $newSizeY = null){
+        $this->lastPlacementWasIdempotentRetry = false;
         $currentWorldType = get_meta($this->uid, "currentWorldType") ?: "farm";
 
         if (empty($this->worldData)){
@@ -299,6 +485,27 @@ class Player {
         $incomingObjectId = isset($newObj->id) && is_numeric($newObj->id)
             ? (int) $newObj->id
             : null;
+
+        // Flash may place an object and immediately act on it in the same
+        // AMF batch.  The second request still carries Flash's temporary ID,
+        // while the placement has already been persisted with a server ID.
+        // Resolve that per-player mapping before actions such as sell search
+        // for the object; otherwise the client sees the sale succeed locally
+        // but the server silently rejects it as not found.
+        //
+        // Keep placement requests on their original temporary ID so the
+        // placement branch below can allocate and record the mapping.
+        if (
+            $action !== ACTION_PLANT
+            && $incomingObjectId !== null
+            && $incomingObjectId >= TEMP_ID_THRESHOLD
+        ) {
+            $resolvedObjectId = $this->resolveFlashObjectId($newObj, $currentWorldType);
+            if ($resolvedObjectId !== null && $resolvedObjectId !== $incomingObjectId) {
+                $newObj->id = $resolvedObjectId;
+                $incomingObjectId = $resolvedObjectId;
+            }
+        }
 
         foreach ($currWorld["objectsArray"] as $key => $tile){
             $tileObjectId = isset($tile->id) && is_numeric($tile->id)
@@ -336,6 +543,10 @@ class Player {
                 // real collision and must never overwrite or delete it.
                 if (!$isPlotUpdate && !$isIdempotentPlacement) {
                     return false;
+                }
+
+                if ($isIdempotentPlacement) {
+                    $this->lastPlacementWasIdempotentRetry = true;
                 }
 
                 $newObj->id = $existingObject->id;
@@ -380,7 +591,30 @@ class Player {
                 $itemName = $existingObj->itemName ?? null;
                 if ($plantTime !== null && $itemName !== null){
                     $itemData = getItemByName($itemName, "db");
-                    if ($itemData && isset($itemData["growTime"])){
+                    $isAnimalBreedingHarvester = false;
+                    if ($itemData && isset($itemData['features']) && is_object($itemData['features'])) {
+                        $features = $itemData['features']->feature ?? [];
+                        if (!is_array($features)) {
+                            $features = [$features];
+                        }
+                        foreach ($features as $feature) {
+                            if (is_object($feature)
+                                && ($feature->className ?? null) === 'AnimalBreedingHarvestFManager') {
+                                $isAnimalBreedingHarvester = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Paddocks are FeatureBuildings, but they are not normal
+                    // crops. Their AnimalBreedingHarvestFManager owns the
+                    // ready state and Instant Grow updates that state on the
+                    // client. Applying the item's generic growTime here
+                    // incorrectly imposed a one-day crop timer afterwards,
+                    // so a genuinely ripe paddock looked harvested locally
+                    // yet the server rejected it and quest progress vanished
+                    // on reload.
+                    if (!$isAnimalBreedingHarvester && $itemData && isset($itemData["growTime"])){
                         $growTimeDays = (float) $itemData["growTime"];
                         $growTimeMs = calculateGrowTimeMs($growTimeDays);
                         $nowMs = getCurrentTimeMs();
@@ -397,6 +631,28 @@ class Player {
             $existingObj = $currWorld["objectsArray"][$exists];
             if (isset($existingObj->contents) && is_array($existingObj->contents) && !empty($existingObj->contents)){
                 $newObj->contents = $existingObj->contents;
+            }
+
+            // Generic actions such as harvesting a Pet Run carry an empty
+            // `components` object. Those actions do not own storage or
+            // featured-slot state, so merging the existing component fields
+            // prevents a harvest from making stored animals invisible after a
+            // reload.
+            $existingComponents = isset($existingObj->components) && is_object($existingObj->components)
+                ? $existingObj->components : null;
+            if ($existingComponents !== null) {
+                $incomingComponents = isset($newObj->components) && is_object($newObj->components)
+                    ? $newObj->components : new \stdClass();
+                foreach (['featuredItems', 'storageMetadata', 'paintColor'] as $componentKey) {
+                    if (property_exists($newObj, $componentKey) && !property_exists($incomingComponents, $componentKey)) {
+                        $incomingComponents->{$componentKey} = $newObj->{$componentKey};
+                    }
+                    if (!property_exists($incomingComponents, $componentKey)
+                        && property_exists($existingComponents, $componentKey)) {
+                        $incomingComponents->{$componentKey} = $existingComponents->{$componentKey};
+                    }
+                }
+                $newObj->components = $incomingComponents;
             }
 
             $className = $newObj->className ?? "";
@@ -420,6 +676,21 @@ class Player {
                     $newObj->plantTime = null;
                     $newObj->itemName = null;
                     break;
+            }
+
+            // Flash finishes a normal orchard by sending its construction
+            // object in terminal `built` state. Persisting that object as-is
+            // leaves it as a placement shadow and without the orchard
+            // storage feature after reload. Store the completed resource
+            // contract instead, matching the market's finished item.
+            if (
+                ($newObj->itemName ?? null) === 'orchard_featurebuilding'
+                && ($newObj->className ?? null) === 'OrchardConstructionBuilding'
+                && ($newObj->state ?? null) === 'built'
+            ) {
+                $newObj->itemName = 'orchard_featurebuilding_finished';
+                $newObj->className = 'OrchardFeatureBuilding';
+                $newObj->state = 'bare';
             }
 
             $currWorld["objectsArray"][$exists] = $newObj;
@@ -499,6 +770,14 @@ class Player {
         }
 
         if ($newId > 0){
+            $this->rememberTemporaryObjectId(
+                (int) $incomingObjectId,
+                $newId,
+                $currentWorldType,
+                $newObj->itemName ?? null,
+                $newPosX !== null ? (int) $newPosX : null,
+                $newPosY !== null ? (int) $newPosY : null,
+            );
             return $newId;
         }
 
@@ -546,10 +825,18 @@ class Player {
 
         $buildingId = $buildingObj->id ?? null;
         $itemCode = $storeParams->storedItemCode ?? null;
-        $resourceId = (int) ($storeParams->resource ?? 0);
+        $storedItemName = $storeParams->storedItemName ?? null;
+        $requestedResourceId = (int) ($storeParams->resource ?? 0);
+        $resourceId = $requestedResourceId;
         $numToStore = (int) ($storeParams->numToStore ?? 1);
 
         if (!$buildingId || !$itemCode) return false;
+
+        $resolvedBuildingId = $this->resolveFlashObjectId($buildingObj, $currentWorldType);
+        if ($resolvedBuildingId !== null) {
+            $buildingId = $resolvedBuildingId;
+            $buildingObj->id = $buildingId;
+        }
 
         $buildingKey = null;
         foreach ($currWorld["objectsArray"] as $key => $obj) {
@@ -564,50 +851,100 @@ class Player {
             return false;
         }
 
-        $building = $currWorld["objectsArray"][$buildingKey];
-        $contents = isset($building->contents) && is_array($building->contents)
-            ? $building->contents : [];
+        $worldId = getWorldId($this->uid, $currentWorldType);
+        if ($worldId === null) {
+            Logger::error('World', "storeItem: no world found uid={$this->uid}");
+            return false;
+        }
 
-        // Flash keeps storage contents on the building itself. A Pet Run sends
-        // this action after an animal is harvested from the farm; storing it in
-        // the player's generic inventory instead made the client and server
-        // disagree after a reload, which is what caused disappearing/duplicate
-        // animals.
-        $contentIndex = null;
-        foreach ($contents as $key => $content) {
-            if (is_object($content) && ($content->itemCode ?? null) === $itemCode) {
-                $contentIndex = $key;
-                break;
-            }
-            if (is_array($content) && ($content['itemCode'] ?? null) === $itemCode) {
-                $contentIndex = $key;
-                break;
+        // TStoreItem can follow a TPlace before Flash has replaced its
+        // temporary object ID with the server ID. Resolve only the placing
+        // player's recent mapping; the resource is still locked and its item
+        // name verified below before anything is moved into storage.
+        if ($resourceId >= TEMP_ID_THRESHOLD) {
+            $resolvedResourceId = $this->resolveTemporaryObjectId(
+                $resourceId,
+                $currentWorldType,
+                $storedItemName,
+            );
+            if ($resolvedResourceId !== null) {
+                Logger::debug('World', "storeItem: resolved Flash temp resource uid={$this->uid} tempId={$resourceId} objectId={$resolvedResourceId}");
+                $resourceId = $resolvedResourceId;
             }
         }
 
-        if ($contentIndex === null) {
-            $contents[] = (object) [
-                'itemCode' => $itemCode,
-                'numItem' => max(1, $numToStore),
-            ];
-        } elseif (is_object($contents[$contentIndex])) {
-            $contents[$contentIndex]->numItem = (int) ($contents[$contentIndex]->numItem ?? 0) + max(1, $numToStore);
-        } else {
-            $contents[$contentIndex]['numItem'] = (int) ($contents[$contentIndex]['numItem'] ?? 0) + max(1, $numToStore);
-        }
+        // Do not replace the entire world when an animal is put in a pen.
+        // A full snapshot can be stale by the time Flash sends this action;
+        // its later delete/reinsert used to erase the pen contents that had
+        // just appeared client-side. Lock and update only the pen and the
+        // animal being moved.
+        $contents = [];
+        DB::transaction(function () use ($worldId, $buildingId, $resourceId, $itemCode, $storedItemName, $numToStore, &$contents) {
+            $storedBuilding = WorldObject::query()
+                ->where('world_id', $worldId)
+                ->where('object_id', (int) $buildingId)
+                ->where('deleted', false)
+                ->lockForUpdate()
+                ->first();
 
-        $building->contents = $contents;
-        if ($resourceId > 0) {
-            foreach ($currWorld["objectsArray"] as $key => $obj) {
-                if ((int) ($obj->id ?? 0) === $resourceId) {
-                    unset($currWorld["objectsArray"][$key]);
-                    $currWorld["objectsArray"] = array_values($currWorld["objectsArray"]);
+            if ($storedBuilding === null) {
+                throw new \RuntimeException("Storage building {$buildingId} no longer exists");
+            }
+
+            $contents = is_array($storedBuilding->contents) ? $storedBuilding->contents : [];
+            $contentIndex = null;
+            foreach ($contents as $key => $content) {
+                $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                if ($code === $itemCode) {
+                    $contentIndex = $key;
                     break;
                 }
             }
-        }
 
-        // The resource removal above may have reindexed objectsArray.
+            if ($contentIndex === null) {
+                $contents[] = ['itemCode' => $itemCode, 'numItem' => max(1, $numToStore)];
+            } else {
+                $currentCount = is_object($contents[$contentIndex])
+                    ? (int) ($contents[$contentIndex]->numItem ?? 0)
+                    : (int) ($contents[$contentIndex]['numItem'] ?? 0);
+                $contents[$contentIndex] = [
+                    'itemCode' => $itemCode,
+                    'numItem' => $currentCount + max(1, $numToStore),
+                ];
+            }
+
+            if ($resourceId > 0) {
+                $resource = WorldObject::query()
+                    ->where('world_id', $worldId)
+                    ->where('object_id', $resourceId)
+                    ->where('deleted', false)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($resource === null) {
+                    throw new \RuntimeException("Stored resource {$resourceId} no longer exists");
+                }
+
+                if ($storedItemName !== null && $resource->item_name !== $storedItemName) {
+                    throw new \RuntimeException("Stored resource {$resourceId} does not match requested item");
+                }
+
+                $resource->update(['deleted' => true]);
+            }
+
+            $storedBuilding->contents = $contents;
+            $this->synchronizeFeatureStorageSlots($storedBuilding, $contents);
+            $storedBuilding->save();
+        });
+
+        $building = $currWorld["objectsArray"][$buildingKey];
+        $building->contents = $contents;
+        foreach ($currWorld["objectsArray"] as $key => $obj) {
+            if ((int) ($obj->id ?? 0) === $resourceId) {
+                unset($currWorld["objectsArray"][$key]);
+            }
+        }
+        $currWorld["objectsArray"] = array_values($currWorld["objectsArray"]);
         foreach ($currWorld["objectsArray"] as $key => $obj) {
             if ((int) ($obj->id ?? 0) === (int) $buildingId) {
                 $currWorld["objectsArray"][$key] = $building;
@@ -616,9 +953,10 @@ class Player {
         }
 
         $this->worldData = $currWorld;
-        $saveResult = saveWorld($this->uid, $currentWorldType, $currWorld);
-        if (!$saveResult) {
-            throw new \Exception("Failed to save world data (storeItem) for uid={$this->uid}");
+        invalidateWorldCache($this->uid, $currentWorldType);
+
+        if ($requestedResourceId !== $resourceId) {
+            $this->forgetTemporaryObjectId($requestedResourceId);
         }
 
         return [
@@ -723,14 +1061,23 @@ class Player {
         $currWorld = empty($this->worldData)
             ? getWorldByType($this->uid, $currentWorldType)
             : $this->worldData;
+        $worldId = getWorldId($this->uid, $currentWorldType);
+        if ($worldId === null) {
+            return false;
+        }
 
-        foreach ($currWorld['objectsArray'] as $buildingKey => $building) {
-            if ((int) ($building->id ?? 0) !== (int) $buildingId) {
-                continue;
+        $contents = DB::transaction(function () use ($worldId, $buildingId, $itemCode, $delta) {
+            $building = WorldObject::query()
+                ->where('world_id', $worldId)
+                ->where('object_id', (int) $buildingId)
+                ->where('deleted', false)
+                ->lockForUpdate()
+                ->first();
+            if ($building === null) {
+                return false;
             }
 
-            $contents = isset($building->contents) && is_array($building->contents)
-                ? $building->contents : [];
+            $contents = is_array($building->contents) ? $building->contents : [];
             $contentIndex = null;
             $currentCount = 0;
 
@@ -767,14 +1114,24 @@ class Player {
             }
 
             $building->contents = $contents;
-            $currWorld['objectsArray'][$buildingKey] = $building;
-            $this->worldData = $currWorld;
+            $this->synchronizeFeatureStorageSlots($building, $contents);
+            $building->save();
 
-            if (!saveWorld($this->uid, $currentWorldType, $currWorld)) {
-                throw new \Exception("Failed to save building storage for uid={$this->uid} buildingId={$buildingId}");
+            return $contents;
+        });
+
+        if ($contents === false) {
+            return false;
+        }
+
+        foreach ($currWorld['objectsArray'] as $buildingKey => $building) {
+            if ((int) ($building->id ?? 0) === (int) $buildingId) {
+                $building->contents = $contents;
+                $currWorld['objectsArray'][$buildingKey] = $building;
+                $this->worldData = $currWorld;
+                invalidateWorldCache($this->uid, $currentWorldType);
+                return true;
             }
-
-            return true;
         }
 
         return false;

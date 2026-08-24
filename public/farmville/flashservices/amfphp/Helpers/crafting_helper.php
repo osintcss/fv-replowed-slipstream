@@ -385,6 +385,120 @@ function addToInventory($uid, $itemCode, $quantity, $storageType = "silo") {
     return true;
 }
 
+/**
+ * The shipped client registers this exact action-drop name from
+ * gameSettings.xml.  It tracks harvests separately for each crop and grants
+ * a bushel after every 50 harvests (unless a runtime multiplier overrides
+ * that threshold).  Keep the durable counter server-side: Flash only uses
+ * the returned value to update its local progress display.
+ */
+function getBushelHarvestCounts($uid): array {
+    if (!is_numeric($uid)) {
+        return [];
+    }
+
+    $raw = get_meta($uid, 'bushel_harvest_counts');
+    if (!is_string($raw) || $raw === '') {
+        return [];
+    }
+
+    $counts = json_decode($raw, true);
+    if (!is_array($counts)) {
+        return [];
+    }
+
+    $normalized = [];
+    foreach ($counts as $itemCode => $count) {
+        if (is_string($itemCode) && $itemCode !== '' && is_numeric($count)) {
+            $normalized[$itemCode] = max(0, (int) $count);
+        }
+    }
+
+    return $normalized;
+}
+
+/**
+ * Persist crop-harvest progress and return the ActionDrops payload consumed
+ * by BushelReportActionDropHandler in the shipped SWF.  Only seed crops are
+ * in the configured bushelReport action-drop task; animals and trees have
+ * separate crafting rules and must not be granted through this path.
+ *
+ * @param array<string, int> $harvestedItemCounts item name => accepted harvest count
+ * @return array<string, array>|array{} ActionDrops map, keyed by action-drop name
+ */
+function recordHarvestBushelDrops($uid, array $harvestedItemCounts): array {
+    if (!is_numeric($uid) || empty($harvestedItemCounts)) {
+        return [];
+    }
+
+    $counts = getBushelHarvestCounts($uid);
+    $report = [];
+    $newHarvestQuantities = [];
+    $threshold = 50;
+
+    foreach ($harvestedItemCounts as $itemName => $harvestCount) {
+        $harvestCount = (int) $harvestCount;
+        if (!is_string($itemName) || $itemName === '' || $harvestCount <= 0) {
+            continue;
+        }
+
+        $itemData = getItemByName($itemName, 'db');
+        if (!is_array($itemData) || ($itemData['type'] ?? null) !== 'seed') {
+            continue;
+        }
+
+        $cropItemCode = $itemData['code'] ?? null;
+        $bushelItemCode = $itemData['bushelItemCode'] ?? null;
+        if (!is_string($cropItemCode) || $cropItemCode === ''
+            || !is_string($bushelItemCode) || $bushelItemCode === '') {
+            continue;
+        }
+
+        // Do not create an inventory row for an invalid or retired bushel.
+        $bushelItem = getItemByCode($bushelItemCode);
+        if (!is_array($bushelItem) || ($bushelItem['type'] ?? null) !== 'bushel') {
+            continue;
+        }
+
+        $total = ($counts[$cropItemCode] ?? 0) + $harvestCount;
+        $bushelsAwarded = intdiv($total, $threshold);
+        $counts[$cropItemCode] = $total % $threshold;
+        $newHarvestQuantities[] = [
+            'itemCode' => $cropItemCode,
+            'quantity' => $counts[$cropItemCode],
+        ];
+
+        if ($bushelsAwarded <= 0 || !addToInventory($uid, $bushelItemCode, $bushelsAwarded)) {
+            continue;
+        }
+
+        // CraftingManager.recordBushelFound() reads these fields and updates
+        // the appropriate local (market-stall or silo) bucket immediately.
+        $report[] = [
+            'foundBushel' => [
+                'bushelCode' => $bushelItemCode,
+                'bushelsAddedToInventory' => $bushelsAwarded,
+                'bushelsAddedToSharedReward' => 0,
+                'bushelAddedToStall' => false,
+            ],
+        ];
+    }
+
+    if (empty($newHarvestQuantities)) {
+        return [];
+    }
+
+    set_meta($uid, 'bushel_harvest_counts', json_encode($counts));
+    // The AS3 handler treats this as an array with a named property.
+    $report['newHarvestQuantities'] = $newHarvestQuantities;
+
+    return [
+        'bushelReport' => [
+            'dropTypeFuncResult' => $report,
+        ],
+    ];
+}
+
 function removeFromInventory($uid, $itemCode, $quantity, $storageType = "silo") {
     if (!is_numeric($uid) || $quantity <= 0) return false;
 

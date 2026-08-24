@@ -188,10 +188,10 @@ it.
 | Action | Persistent contract | Status / regression test |
 | --- | --- | --- |
 | `place` | A market placement creates a world object; a placement from the gift box, home inventory, or a positive building-storage ID consumes exactly one existing item and must not create a market purchase. If placement fails, restore the withdrawn item. | Implemented. Place an animal from each source, reload, and verify exactly one copy exists. |
-| `harvest` | Update the target object's post-harvest state and award/track only after persistence succeeds. | Implemented for normal world actions. Harvest a crop/animal, reload, and verify state and quest count. |
+| `harvest` | Update the target object's post-harvest state and award/track only after persistence succeeds. Resolve the authoritative item by position, with the stable object ID as a fallback for FeatureBuilding/habitat snapshots. | Implemented for normal world actions. Harvest a crop/animal, reload, and verify state and quest count. |
 | `plow`, `clear`, `clearWithered`, `move`, `sell` | Apply the corresponding position/object state change without losing persistent object fields such as `contents`. | Implemented baseline; regression test each action on a stored building and an ordinary plot. |
 | `instantGrow` | Advance eligible object state and apply cash cost only when the world update succeeds. | Implemented baseline; regression test on a crop and a feature building. |
-| `store` | Remove the loose resource and increment the target building's `contents` using Flash entries shaped as `{ itemCode, numItem }`. Do **not** substitute generic home inventory for a building's own contents. | Implemented. See animal pen contract below. |
+| `store` | Remove the loose resource and increment the target building's `contents` using Flash entries shaped as `{ itemCode, numItem }`. Do **not** substitute generic home inventory for a building's own contents. A store immediately following a placement may still name Flash's temporary object ID (63000–65500), so resolve that player's short-lived placement-to-persisted-ID mapping and verify the resource's item before moving it. | Implemented. See animal pen contract below. |
 | `setMultipleFeaturedItems` | Save a feature building's featured slot map and return it under `data.featuredItems`. | Implemented. Store an animal, reload, and verify the displayed animal remains. |
 
 ### World-object serialization
@@ -223,6 +223,28 @@ same prompt even when the object was successfully loaded.
 
 Regression test: place or load a Crafting Silo, reload, open the Craftshop,
 and begin a recipe without receiving the missing-silo prompt.
+
+### Harvest bushel action drop
+
+**Verified/implemented.** The shipped `gameSettings.xml` registers an
+`actionDrop` named `bushelReport` with drop type
+`updateHarvestCountAndConditionallyAwardBushel`. It applies to harvested seed
+crops while `fv_simplified_bushels` is variant 2. The Flash client reads the
+result from `metadata.ActionDrops.bushelReport.dropTypeFuncResult`, not from
+the ordinary action `data` payload.
+
+The server stores a per-crop harvest counter, grants its matching
+`bushelItemCode` after every 50 accepted crop harvests, and returns both any
+`foundBushel` records and `newHarvestQuantities`. `CraftingManager` immediately
+places the awarded bushel into the correct live crafting bucket; the stored
+counter restores through `player.seedHarvestCountsSinceLastBushelDrop` after a
+reload. `FlashService` must merge this metadata with `QuestComponent` rather
+than replacing it.
+
+Regression test: harvest 50 of a seed crop with a `bushelItemCode`, confirm
+one matching bushel appears without a reload in the Market Stall/Craftshop
+inventory, then reload and confirm both the bushel and remaining crop counter
+persist. Repeat once using a harvester or combine.
 
 ### In-game console player attributes
 
@@ -268,21 +290,38 @@ but inherits Flash storage behaviour:
 1. Flash harvests the loose animal.
 2. Flash calls `performAction("store")` with the pen ID, animal item code, and
    resource ID.
-3. Flash calls `performAction("setMultipleFeaturedItems")` with a slot map,
-   e.g. `{ "4": { "itemCode": "7iV", "metaHash": "7iV:" } }`.
+3. Flash first calls `performAction("setFeaturedItem")` with `itemSlot`,
+   `itemCode`, `metaHash`, and `removeOrAdd`; it later calls
+   `setMultipleFeaturedItems` for slot compaction/removal. Both forms must
+   persist the slot map, e.g. `{ "4": { "itemCode": "7iV", "metaHash": "7iV:" } }`.
 4. On reload, `FeatureBuilding.loadObject()` expects `contents`,
    `storageMetadata`, and `featuredItems` at the object top level.
 
 The implementation persists `contents` plus featured items in the building's
 components and re-emits them at the required top level. Positive storage IDs
 withdraw from that exact building before an animal is placed back on the farm.
+Generic actions such as harvesting the building can send `components: {}`;
+they do not own storage state and must merge the persisted `featuredItems`,
+`storageMetadata`, and `paintColor` rather than erase them.
 When Flash sends a later full-world update, it may return those storage fields
 only at the top level; the server must merge them back into components rather
 than replacing a featured-animal map with an empty component object.
+`setMultipleFeaturedItems` is a one-building transaction and must update only
+that persisted building. It must never re-save the caller's whole cached farm:
+doing so can overwrite a different pen that was changed by its own atomic
+store transaction.
+Flash temporary object IDs (63000–65500) must never be persisted by any
+whole-world snapshot. They are client-only placeholders until the matching
+`place` response supplies a safe server ID; persisting one creates a second,
+loose copy when the player reloads.
+For legacy rows that retained contents but missed the single-slot action, the
+reload serializer derives a deterministic featured-slot map from contents so
+the animals remain visible while the stored data is preserved.
 
 Regression test: harvest an animal, put it in a Pet Run, reload, remove it
-from the Pet Run, reload, then repeat. At every stage verify there is one and
-only one animal.
+from the Pet Run, reload, then repeat. Also place an animal and immediately
+put it back in the same pen before the client applies the placement response.
+At every stage verify there is one and only one animal.
 
 ### Chicken Coops
 
@@ -426,6 +465,7 @@ index.
 | `FarmQuestService.questManagerStartReplayableQuestChain` | Starts a replayable intro. A completed repeat must return successful canonical quest state rather than an AMF error. | Implemented. |
 | `FarmQuestService.markViewDialogTaskDone` | Acknowledges the intro after its dialogue. It must be idempotent because the server atomically starts the eligible child before Flash sends this acknowledgement. | Implemented. |
 | `FarmQuestService.askForQuestItem` | `Transaction.onAmfComplete` passes the AMF response's outer `data` object to `TAskForQuestItem`, which requires that callback object to contain `data` and `ts`. The handler returns `data: { ts, data: { published: true } }` for a local immediate-publish acknowledgement. With no Facebook delivery path, it grants the remaining amount for the exact active `useItemByCode` task to the giftbox and advances that task's saved progress. It never grants an item for an inactive task or another task action. | Implemented. |
+| `FBRequestService.sendAskItemsRequest` | The generic MFS “Ask Your Friends” screen sends only an item name and the `questR4R` feature name. In the offline deployment, resolve that item to an exact active `useItemByCode` task, grant only its remaining amount, and advance that task. This is separate from `FarmQuestService.askForQuestItem`, which a different Flash helper uses. | Implemented. |
 | Quest component in action responses | Server-backed action counters must be returned as the authoritative quest component when the client is configured to wait for the server. | Implemented for supported actions. |
 | `harvestByCode`, `harvestByCategory`, `plantCropByCode`, `plantCropByCategory`, `plowPlot`, `storeItemByCode`, `storeItemByAnySpecificInventoryStorage`, `useItemByCode` | Persist progress against the active quest and cap it at the task requirement. | Implemented. The Docker build marks these actions as server-backed in quest settings. `storeItemByAnySpecificInventoryStorage` is the name used by objectives such as “Store 10 Items on Your Home Farm”; it must not be treated as a client-only synonym. |
 | Bulk equipment actions | `EquipmentWorldService` applies actions to multiple plots; task progress must use the affected count, not one event per request. | Implemented for bulk plow, plant, harvest, and combine. |

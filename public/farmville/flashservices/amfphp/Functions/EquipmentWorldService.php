@@ -6,6 +6,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
 require_once AMFPHP_ROOTPATH . "Helpers/user_resources.php";
 require_once AMFPHP_ROOTPATH . "Helpers/market_transactions.php";
 require_once AMFPHP_ROOTPATH . "Helpers/quest_progress.php";
+require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
 
 class EquipmentWorldService
 {
@@ -63,6 +64,11 @@ class EquipmentWorldService
         $modifiedObjects = [];
         $newObjects = [];
         $skippedPositions = [];
+        // Keep the server-side audit trail positional.  Flash can issue many
+        // small equipment requests while a player sweeps a large field; the
+        // coordinates let us distinguish a rejected write from a plot that
+        // was never submitted by the client.
+        $acceptedPositions = [];
 
         foreach ($plotBundle as $key => $plotData) {
             if (is_array($plotData)) {
@@ -274,6 +280,11 @@ class EquipmentWorldService
 
                     if ($wasModified) {
                         $modifiedObjects[] = $world["objectsArray"][$foundKey];
+                        $acceptedPositions[] = [
+                            'x' => $posX,
+                            'y' => $posY,
+                            'fromState' => $foundPlot->state ?? null,
+                        ];
                         $results[] = array(
                             "id" => $foundPlot->id,
                             "data" => array("id" => $foundPlot->id)
@@ -332,7 +343,10 @@ class EquipmentWorldService
                 count($modifiedObjects) + count($newObjects),
                 count($skippedPositions),
             ),
-            $skippedPositions === [] ? null : ['skippedPositions' => $skippedPositions],
+            [
+                'acceptedPositions' => $acceptedPositions,
+                'skippedPositions' => $skippedPositions,
+            ],
         );
 
         // Flash optimistically removes every plot included in its equipment
@@ -436,6 +450,13 @@ class EquipmentWorldService
             ];
         } else {
             $data["data"] = $results;
+        }
+
+        if ($worldPersisted && !empty($harvestedItems)) {
+            $actionDrops = recordHarvestBushelDrops($uid, array_count_values($harvestedItems));
+            if (!empty($actionDrops)) {
+                $data['metadata'] = ['ActionDrops' => $actionDrops];
+            }
         }
         return $data;
     }

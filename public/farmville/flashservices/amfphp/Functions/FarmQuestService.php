@@ -406,17 +406,21 @@ class FarmQuestService
             $activeQuests = getActiveQuests($uid);
             $questState = $activeQuests[$questName] ?? null;
 
-            // Flash sends this acknowledgement after it has shown a quest's
-            // reward/share flow. Recheck the persisted counters rather than
-            // relying only on the transient `completed` flag: older client
-            // flows can show the reward UI before that flag is returned to
-            // the server. This makes the state transition durable even if a
-            // browser refresh immediately follows the completion screen.
-            if (is_array($questState) && checkAndCompleteQuest($uid, $questName)) {
+            // Flash sends this acknowledgement only after it has displayed
+            // the quest's completion/reward flow. Most of the time the
+            // persisted counters agree, but a harvest callback can be lost
+            // while the client has already counted that action locally.
+            // In that case, leaving the quest active creates an impossible
+            // state: Flash has advanced the chain while the server neither
+            // archives the quest nor grants its reward. Treat this explicit
+            // completion acknowledgement as the reconciliation point.
+            // completeQuest removes the active entry first, making repeated
+            // acknowledgements idempotent.
+            if (is_array($questState)) {
                 $completion = completeQuest($uid, $questName);
                 if (($completion['success'] ?? false) === true) {
                     Logger::debug('FarmQuestService', sprintf(
-                        'Finalized completed quest: uid=%s quest=%s',
+                        'Finalized client-acknowledged quest: uid=%s quest=%s',
                         $uid,
                         $questName
                     ));

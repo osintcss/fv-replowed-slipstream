@@ -274,6 +274,26 @@ function completeQuest($uid, $questName, $worldType = 'main') {
                 $childQuest = startQuestIfEligible($uid, $child['value'], $playerLevel);
                 if ($childQuest) {
                     $childrenStarted[] = $child['value'];
+
+                    // The Flash quest book deliberately does not render a
+                    // one-task viewDialog chapter.  It can show that intro
+                    // only while handling the preceding chapter's reward
+                    // flow; after a reload (or an automatic completion) the
+                    // client leaves it hidden and the chain appears to have
+                    // disappeared.  Treat these speech-only bridge chapters
+                    // exactly as we do when a replay chain first starts:
+                    // archive the bridge and expose its real child quest.
+                    // There are no rewards on a viewDialog-only chapter.
+                    $childDefinition = getQuestByName($child['value']);
+                    if (isViewDialogOnlyQuest($childDefinition)) {
+                        $bridgeCompletion = completeQuest($uid, $child['value'], $worldType);
+                        if (($bridgeCompletion['success'] ?? false) === true) {
+                            $childrenStarted = array_merge(
+                                $childrenStarted,
+                                $bridgeCompletion['childrenStarted'] ?? []
+                            );
+                        }
+                    }
                 }
             }
         }

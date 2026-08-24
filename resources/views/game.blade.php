@@ -1685,7 +1685,14 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "FEATURE_MARKET_STALL_CAPACITY_LEVEL_CAP": 139,
                             "FEATURE_FLASHPARAM_REPORT_ERRORS": 1,
                             "FEATURE_FLASHPARAM_REPORT_SWF_EXPORT_ERRORS": 0,
-                            "batch_limit_runtime": 1,
+                            // Zynga's production batch limiter deliberately spaces out
+                            // transaction batches. On this self-hosted server it delays
+                            // the initial farm load without providing a useful benefit.
+                            "batch_limit_runtime": 0,
+                            // ExchangeSelectorSlot uses this value to decide how many
+                            // bushels its Add button can select. Without it, undefined
+                            // is coerced to 0 and every visible bushel reads "Add 0".
+                            "DEFAULT_BUSHEL_ADD_TEMPRT": 25,
                             "FEATURE_TRAVEL_ANIMATION_ASSET": "assets/dialogs/yuletide/7d2f72f99b34e0390c342e587d16c69b.swf",
                             "FLASHVAR_CRASHBUSTERS_LOGSIZE": 20,
                             "FLASHVAR_TRANSACTION_MAX_WAIT": 5000,
@@ -2256,6 +2263,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
         try {
             const response = await fetch('/chat/unread-count', {
                 headers: {
+                    'Accept': 'application/json',
                     'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
                 }
             });

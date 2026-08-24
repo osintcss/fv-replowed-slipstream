@@ -1178,18 +1178,42 @@
             return 0;
         }
 
-        static $permanentDecorations = null;
-        if ($permanentDecorations === null) {
-            $permanentDecorations = [];
-            foreach (Item::query()->where('data', 'like', '%PermanentBuffDecoration%')->get() as $decoration) {
-                $data = $decoration->itemData;
-                if (is_object($data)) {
-                    $data = (array) $data;
-                }
-                $buffName = is_array($data) ? (string) ($data['buff'] ?? '') : '';
-                if ($buffName !== '') {
-                    $permanentDecorations[(string) $decoration->name] = $buffName;
-                }
+        $worldIds = UserWorld::query()->where('uid', $uid)->pluck('id');
+        if ($worldIds->isEmpty()) {
+            return 0;
+        }
+
+        // Do not scan the whole item catalogue with an unindexed
+        // `data LIKE '%PermanentBuffDecoration%'` query here. This method
+        // runs for every manual harvest; on production that scan holds the
+        // AMF action response for many seconds and causes Flash to abandon
+        // later optimistic harvests. Query only the item names actually
+        // placed by this player, then identify permanent buffs in that small,
+        // indexed set.
+        $placedItemNames = WorldObject::query()
+            ->whereIn('world_id', $worldIds)
+            ->where('deleted', false)
+            ->pluck('item_name')
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($placedItemNames->isEmpty()) {
+            return 0;
+        }
+
+        $permanentDecorations = [];
+        foreach (Item::query()->whereIn('name', $placedItemNames)->get() as $decoration) {
+            if (stripos((string) $decoration->data, 'PermanentBuffDecoration') === false) {
+                continue;
+            }
+            $data = $decoration->itemData;
+            if (is_object($data)) {
+                $data = (array) $data;
+            }
+            $buffName = is_array($data) ? (string) ($data['buff'] ?? '') : '';
+            if ($buffName !== '') {
+                $permanentDecorations[(string) $decoration->name] = $buffName;
             }
         }
 
@@ -1197,21 +1221,9 @@
             return 0;
         }
 
-        $worldIds = UserWorld::query()->where('uid', $uid)->pluck('id');
-        if ($worldIds->isEmpty()) {
-            return 0;
-        }
-
-        $placedDecorations = WorldObject::query()
-            ->whereIn('world_id', $worldIds)
-            ->where('deleted', false)
-            ->whereIn('item_name', array_keys($permanentDecorations))
-            ->pluck('item_name')
-            ->unique();
-
         $matchingBuffs = [];
-        foreach ($placedDecorations as $decorationName) {
-            $buffName = $permanentDecorations[$decorationName] ?? null;
+        foreach (array_keys($permanentDecorations) as $decorationName) {
+            $buffName = $permanentDecorations[$decorationName];
             $buffData = $buffName ? Item::findByName($buffName) : null;
             if (is_object($buffData)) {
                 $buffData = (array) $buffData;
@@ -1364,7 +1376,18 @@
                 $recordsByObjectId = [];
                 $now = now();
                 foreach ($objects as $obj) {
+                    // IDs in Flash's temporary range exist only until its
+                    // corresponding place response supplies a persistent ID.
+                    // A whole-world snapshot can contain one during that
+                    // short window; saving it creates a second loose animal
+                    // that is no longer tied to its placement transaction.
+                    $objectId = isset($obj->id) && is_numeric($obj->id) ? (int) $obj->id : 0;
+                    if ($objectId >= TEMP_ID_THRESHOLD) {
+                        Logger::debug('World', "saveWorldObjectsToDb: skipped temporary objectId={$objectId}");
+                        continue;
+                    }
                     $data = WorldObject::fromFlashObject($obj, $worldId);
+
                     $data['created_at'] = $now;
                     $data['updated_at'] = $now;
 
@@ -1434,6 +1457,77 @@
         } catch (\Exception $e) {
             Logger::error('World', "updateWorldObjectsByPosition exception for worldId=$worldId: " . $e->getMessage());
             return false;
+        }
+    }
+
+    /**
+     * Apply a state-only world mutation if the persisted object still matches
+     * the snapshot on which the caller made its decision.  This is for actions
+     * such as instant-grow that can touch many objects at once: replacing the
+     * whole world from a request-local snapshot can otherwise resurrect crops
+     * harvested by another concurrent AMF request.
+     *
+     * Each change is an array with `object` (the new Flash object) and
+     * `expected` (the original state, item_name, and plant_time).
+     */
+    function updateWorldObjectsConditionally($worldId, $changes) {
+        if (empty($changes)) {
+            return ['success' => true, 'updated' => 0, 'skipped' => 0, 'updatedObjectIds' => []];
+        }
+
+        try {
+            $updated = 0;
+            $skipped = 0;
+            $updatedObjectIds = [];
+
+            \Illuminate\Support\Facades\DB::transaction(function () use ($worldId, $changes, &$updated, &$skipped, &$updatedObjectIds) {
+                foreach ($changes as $change) {
+                    $obj = $change['object'] ?? null;
+                    $expected = $change['expected'] ?? [];
+                    $objectId = $obj->id ?? null;
+                    if ($obj === null || $objectId === null) {
+                        $skipped++;
+                        continue;
+                    }
+
+                    $query = WorldObject::where('world_id', $worldId)
+                        ->where('object_id', (int) $objectId);
+
+                    foreach (['state', 'item_name', 'plant_time'] as $column) {
+                        $value = $expected[$column] ?? null;
+                        if ($value === null) {
+                            $query->whereNull($column);
+                        } else {
+                            $query->where($column, $value);
+                        }
+                    }
+
+                    $affected = $query->update([
+                        'state' => $obj->state ?? null,
+                        'item_name' => $obj->itemName ?? null,
+                        'plant_time' => sanitizeNumericValue($obj->plantTime ?? 0),
+                        'is_jumbo' => (bool) ($obj->isJumbo ?? false),
+                    ]);
+
+                    if ($affected === 1) {
+                        $updated++;
+                        $updatedObjectIds[(int) $objectId] = true;
+                    } else {
+                        $skipped++;
+                    }
+                }
+            });
+
+            Logger::debug('World', "updateWorldObjectsConditionally: worldId=$worldId updated=$updated skipped=$skipped");
+            return [
+                'success' => true,
+                'updated' => $updated,
+                'skipped' => $skipped,
+                'updatedObjectIds' => array_keys($updatedObjectIds),
+            ];
+        } catch (\Exception $e) {
+            Logger::error('World', "updateWorldObjectsConditionally exception for worldId=$worldId: " . $e->getMessage());
+            return ['success' => false, 'updated' => 0, 'skipped' => count($changes), 'updatedObjectIds' => []];
         }
     }
 

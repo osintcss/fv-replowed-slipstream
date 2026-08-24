@@ -294,6 +294,46 @@ class WorldObject extends Model
         $obj->paintColor = $components->paintColor ?? null;
         $obj->storageMetadata = $components->storageMetadata ?? new \stdClass();
         $obj->featuredItems = $components->featuredItems ?? new \stdClass();
+
+        // Older habitat saves have their animals safely in `contents` but no
+        // featured-slot map. FeatureBuilding renders its occupants only from
+        // featuredItems on load, so reconstruct a deterministic map for the
+        // reload response. New writes use the explicit setFeaturedItem action
+        // and persist this same structure.
+        if (
+            (
+                str_starts_with((string) $this->item_name, 'animal_breeding_')
+                || in_array($this->item_name, [
+                    'babybunnyhutch_finished',
+                    'xuk_sheep_pen_finished',
+                    'flower_garden_finished',
+                ], true)
+            )
+            &&
+            is_object($obj->featuredItems)
+            && count(get_object_vars($obj->featuredItems)) === 0
+            && is_array($obj->contents)
+            && !empty($obj->contents)
+        ) {
+            $featuredItems = new \stdClass();
+            $slot = 0;
+            foreach ($obj->contents as $content) {
+                $itemCode = is_object($content)
+                    ? ($content->itemCode ?? null)
+                    : ($content['itemCode'] ?? null);
+                $count = is_object($content)
+                    ? (int) ($content->numItem ?? 0)
+                    : (int) ($content['numItem'] ?? 0);
+
+                for ($i = 0; $itemCode !== null && $i < max(0, $count); $i++) {
+                    $featuredItems->{(string) $slot++} = (object) [
+                        'itemCode' => (string) $itemCode,
+                        'metaHash' => (string) $itemCode . ':',
+                    ];
+                }
+            }
+            $obj->featuredItems = $featuredItems;
+        }
     }
 
     public static function getCraftTypeFromItemName(?string $itemName): ?string
@@ -494,7 +534,13 @@ class WorldObject extends Model
             ! is_string($itemName)
             || ! str_starts_with($itemName, 'animal_breeding_')
             || str_ends_with($itemName, '_finished')
-            || $className !== 'AnimalBreedingPenConstructionBuilding'
+            // Pet Runs and several regional pens use a specific construction
+            // class (for example AnimalPetrunConstructionBuilding), rather
+            // than the generic AnimalBreedingPenConstructionBuilding.  All
+            // of those classes represent the same terminal construction
+            // contract when paired with an animal_breeding_* resource.
+            || ! is_string($className)
+            || ! preg_match('/^Animal.+ConstructionBuilding$/', $className)
             || $state !== 'built'
         ) {
             return [$itemName, $className, $state];

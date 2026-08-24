@@ -4,13 +4,92 @@ require_once AMFPHP_ROOTPATH . "Helpers/user_resources.php";
 require_once AMFPHP_ROOTPATH . "Helpers/constants.php";
 require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
 require_once AMFPHP_ROOTPATH . "Helpers/quest_progress.php";
+require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
 
 use App\Helpers\JsonHelper;
+use App\Models\WorldObject;
 use App\Support\CraftingCottages;
+use Illuminate\Support\Facades\DB;
 
 class WorldService
 {
     const LOG = 'World';
+
+    /** Keep all object-ID actions compatible with Flash's same-batch temp IDs. */
+    private static function resolveActionObjectId($playerObj, $object, string $worldType): int
+    {
+        $originalId = isset($object->id) && is_numeric($object->id) ? (int) $object->id : 0;
+        $resolvedId = $playerObj->resolveFlashObjectId($object, $worldType);
+        if ($resolvedId !== null && $resolvedId !== $originalId) {
+            $object->id = $resolvedId;
+            return $resolvedId;
+        }
+
+        return $originalId;
+    }
+
+    /**
+     * A featured slot map is presentation state for a building's authoritative
+     * contents. Flash can send a stale compaction map after a rapid
+     * place/store sequence; never let it render more copies of an item than
+     * are actually stored or hide a stored item completely.
+     */
+    private static function reconcileFeaturedItemsForContents($contents, $featuredItems): \stdClass
+    {
+        $featuredItems = is_object($featuredItems) ? $featuredItems : new \stdClass();
+        if (!is_array($contents) || empty($contents)) {
+            return new \stdClass();
+        }
+
+        $remaining = [];
+        $orderedCodes = [];
+        foreach ($contents as $content) {
+            $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+            $count = is_object($content) ? (int) ($content->numItem ?? 0) : (int) ($content['numItem'] ?? 0);
+            if (!is_string($code) || $code === '' || $count <= 0) {
+                continue;
+            }
+            $remaining[$code] = ($remaining[$code] ?? 0) + $count;
+            for ($i = 0; $i < $count; $i++) {
+                $orderedCodes[] = $code;
+            }
+        }
+
+        $result = new \stdClass();
+        $slots = get_object_vars($featuredItems);
+        uksort($slots, static fn ($left, $right) => (int) $left <=> (int) $right);
+        foreach ($slots as $slot => $entry) {
+            $code = is_object($entry) ? ($entry->itemCode ?? null) : ($entry['itemCode'] ?? null);
+            if (!is_string($code) || ($remaining[$code] ?? 0) <= 0) {
+                continue;
+            }
+            $result->{(string) $slot} = (object) [
+                'itemCode' => $code,
+                'metaHash' => is_object($entry)
+                    ? ($entry->metaHash ?? ($code . ':'))
+                    : ($entry['metaHash'] ?? ($code . ':')),
+            ];
+            --$remaining[$code];
+        }
+
+        $slot = 0;
+        foreach ($orderedCodes as $code) {
+            if (($remaining[$code] ?? 0) <= 0) {
+                continue;
+            }
+            while (isset($result->{(string) $slot})) {
+                ++$slot;
+            }
+            $result->{(string) $slot} = (object) [
+                'itemCode' => $code,
+                'metaHash' => $code . ':',
+            ];
+            --$remaining[$code];
+            ++$slot;
+        }
+
+        return $result;
+    }
 
     public static function performAction($playerObj, $request, $market)
     {
@@ -140,7 +219,7 @@ class WorldService
 
                 // Placing an item already owned in a storage box must not be
                 // processed as a new market purchase.
-                if ($isStorageWithdrawal === 0) {
+                if ($isStorageWithdrawal === 0 && !$playerObj->lastPlacementWasIdempotentRetry()) {
                     try {
                         $currency = ($extraParams !== null && isset($extraParams->currency))
                             ? (string) $extraParams->currency : null;
@@ -148,6 +227,13 @@ class WorldService
                     } catch (\Throwable $e) {
                         Logger::error('WorldService', "Plant transaction error: " . $e->getMessage());
                     }
+                } elseif ($isStorageWithdrawal === 0) {
+                    Logger::debug('WorldService', sprintf(
+                        'Skipped duplicate market charge: uid=%s item=%s objectId=%s',
+                        $playerObj->getUid(),
+                        $marketPurchaseObj->itemName ?? '',
+                        $retId
+                    ));
                 }
 
                 if ($extraParams) {
@@ -303,6 +389,26 @@ class WorldService
                 $posY = isset($clientObj->position) ? ($clientObj->position->y ?? ($clientObj->position['y'] ?? null)) : null;
 
                 $foundKey = findByPosition($positionIndex, $posX, $posY);
+                // Most harvests identify the persisted object by position,
+                // but FeatureBuilding transactions also carry the stable
+                // object ID.  Some habitat snapshots omit or normalize their
+                // position before this request is processed; falling back to
+                // the ID keeps the authoritative harvest and its quest credit
+                // tied to the same stored building.
+                if ($foundKey === null && isset($clientObj->id) && is_numeric($clientObj->id)) {
+                    $clientObjectId = (int) $clientObj->id;
+                    foreach ($world['objectsArray'] ?? [] as $key => $worldObject) {
+                        if ((int) ($worldObject->id ?? 0) === $clientObjectId) {
+                            $foundKey = $key;
+                            Logger::debug('WorldService', sprintf(
+                                'Harvest resolved by object ID: uid=%s id=%d',
+                                $uid,
+                                $clientObjectId
+                            ));
+                            break;
+                        }
+                    }
+                }
                 $serverItemName = null;
 
                 if ($foundKey !== null && isset($world["objectsArray"][$foundKey])) {
@@ -348,15 +454,45 @@ class WorldService
 
                 $foundKey = findByPosition($positionIndex, $posX, $posY);
                 $serverItemName = null;
+                $isStalePlotHarvest = false;
 
                 if ($foundKey !== null && isset($world["objectsArray"][$foundKey])) {
                     $serverObj = $world["objectsArray"][$foundKey];
                     $serverItemName = $serverObj->itemName ?? null;
 
+                    // Flash can replay a queued harvest after a reload.  The
+                    // request still names the crop, but the authoritative
+                    // plot has already become fallow.  Previously we applied
+                    // rewards and quest credit again because setWorld accepts
+                    // an update by ID.  A plot may only yield while its saved
+                    // state is harvest-ready; accept both names used by the
+                    // legacy data/client (grown and ripe).
+                    $serverClassName = (string) ($serverObj->className ?? '');
+                    $serverState = (string) ($serverObj->state ?? '');
+                    if (stripos($serverClassName, 'Plot') !== false
+                        && !in_array($serverState, [PLOT_STATE_GROWN, 'ripe'], true)) {
+                        $isStalePlotHarvest = true;
+                        Logger::debug('WorldService', sprintf(
+                            'Ignored stale plot harvest: uid=%s id=%s state=%s',
+                            $uid,
+                            $serverObj->id ?? 'unknown',
+                            $serverState
+                        ));
+                    }
+
                     $clientItemName = $clientObj->itemName ?? null;
                     if ($clientItemName !== null && $serverItemName !== null && $clientItemName !== $serverItemName) {
                         Logger::warning('WorldService', "Harvest mismatch: uid=$uid, pos=($posX,$posY), client=$clientItemName, server=$serverItemName");
                     }
+                }
+
+                if ($isStalePlotHarvest) {
+                    // Treat a replay as a successful no-op.  Returning an
+                    // AMF error causes Flash to keep it in its transaction
+                    // queue and retry it on the next reload.
+                    $data["id"] = 0;
+                    $data["data"] = ["id" => 0, "stale" => true];
+                    break;
                 }
 
                 $retId = $playerObj->setWorld($clientObj, $action);
@@ -389,6 +525,13 @@ class WorldService
                         "link" => ""
                     ]];
                 }
+
+                if ($retId !== false && $serverItemName) {
+                    $actionDrops = recordHarvestBushelDrops($uid, [$serverItemName => 1]);
+                    if (!empty($actionDrops)) {
+                        $data['metadata'] = ['ActionDrops' => $actionDrops];
+                    }
+                }
                 break;
 
             case ACTION_INSTANT_GROW:
@@ -397,6 +540,7 @@ class WorldService
                 $world = getWorldByType($uid, $currentWorldType);
                 $modified = false;
                 $modifiedCount = 0;
+                $instantGrowChanges = [];
                 $instantGrowQuestEvents = [];
 
                 $typeCounts = [
@@ -446,6 +590,13 @@ class WorldService
                             continue;
                         }
 
+                        // Retain the precise snapshot used to decide this
+                        // object was eligible. The conditional persistence
+                        // below must not overwrite a concurrent harvest.
+                        $expectedState = $state;
+                        $expectedItemName = $itemName;
+                        $expectedPlantTime = $plantTime;
+
                         $growTimeDays = (float) $itemData["growTime"];
 
                         $newPlantTime = calculateFullyGrownPlantTime($growTimeDays);
@@ -459,6 +610,15 @@ class WorldService
                         $modified = true;
                         $modifiedCount++;
                         $typeCounts[$typeMatched]++;
+                        $instantGrowChanges[] = [
+                            'object' => $world["objectsArray"][$key],
+                            'type' => $typeMatched,
+                            'expected' => [
+                                'state' => $expectedState,
+                                'item_name' => $expectedItemName,
+                                'plant_time' => $expectedPlantTime,
+                            ],
+                        ];
                         // Quest settings explicitly register instantGrow as a
                         // harvest transaction for harvestByCategory tasks.
                         // Defer progress until after the authoritative world
@@ -470,25 +630,46 @@ class WorldService
                         ];
                     }
 
-                    $totalCost = 0;
-                    if ($typeCounts['Plot'] > 0) {
-                        $totalCost += INSTAGROW_COST_CROP;
-                    }
-                    if ($typeCounts['Tree'] > 0) {
-                        $totalCost += INSTAGROW_COST_TREE;
-                    }
-                    if ($typeCounts['Animal'] > 0) {
-                        $totalCost += INSTAGROW_COST_ANIMAL;
-                    }
-                    if ($typeCounts['Bloom/Building'] > 0) {
-                        $totalCost += INSTAGROW_COST_BLOOM;
-                    }
-
                     if ($modified) {
-                        if (!saveWorld($uid, $currentWorldType, $world)) {
-                            throw new \Exception("Failed to save world (instant grow) for uid=$uid");
+                        $worldId = getWorldId($uid, $currentWorldType);
+                        $instantGrowResult = $worldId === null
+                            ? ['success' => false]
+                            : updateWorldObjectsConditionally($worldId, $instantGrowChanges);
+                        if (empty($instantGrowResult['success'])) {
+                            throw new \Exception("Failed to update world objects (instant grow) for uid=$uid");
                         }
+                        invalidateWorldCache($uid, $currentWorldType);
+
+                        // A simultaneous harvest wins for the same tile. Do
+                        // not grant instant-grow quest progress or charge for
+                        // mutations that were deliberately skipped.
+                        $updatedObjectIds = array_flip($instantGrowResult['updatedObjectIds'] ?? []);
+                        $appliedTypeCounts = array_fill_keys(array_keys($typeCounts), 0);
+                        foreach ($instantGrowChanges as $change) {
+                            $objectId = (int) ($change['object']->id ?? 0);
+                            if (isset($updatedObjectIds[$objectId])) {
+                                $appliedTypeCounts[$change['type']]++;
+                            }
+                        }
+                        $totalCost = 0;
+                        if ($appliedTypeCounts['Plot'] > 0) {
+                            $totalCost += INSTAGROW_COST_CROP;
+                        }
+                        if ($appliedTypeCounts['Tree'] > 0) {
+                            $totalCost += INSTAGROW_COST_TREE;
+                        }
+                        if ($appliedTypeCounts['Animal'] > 0) {
+                            $totalCost += INSTAGROW_COST_ANIMAL;
+                        }
+                        if ($appliedTypeCounts['Bloom/Building'] > 0) {
+                            $totalCost += INSTAGROW_COST_BLOOM;
+                        }
+
                         foreach ($instantGrowQuestEvents as $event) {
+                            $objectId = (int) ($event['object']['id'] ?? 0);
+                            if (!isset($updatedObjectIds[$objectId])) {
+                                continue;
+                            }
                             trackHarvestProgress(
                                 $uid,
                                 $event['object'],
@@ -507,6 +688,8 @@ class WorldService
 
             case ACTION_STORE:
                 $buildingObj = $request->params[1];
+                $storeWorldType = getCurrentWorldType($playerObj->getUid());
+                self::resolveActionObjectId($playerObj, $buildingObj, $storeWorldType);
                 if ($extraParams) {
                     $storedItemName = $extraParams->storedItemName ?? null;
                     $storedItemCode = $extraParams->storedItemCode ?? null;
@@ -667,28 +850,45 @@ class WorldService
             case ACTION_SET_MULTIPLE_FEATURED_ITEMS:
                 $buildingObj = $request->params[1] ?? null;
                 $featuredItems = $extraParams->featuredItems ?? null;
-                $buildingId = (int) ($buildingObj->id ?? 0);
                 $uid = $playerObj->getUid();
+                $buildingId = $buildingObj === null
+                    ? 0
+                    : self::resolveActionObjectId($playerObj, $buildingObj, getCurrentWorldType($uid));
 
                 if ($buildingId > 0 && is_object($featuredItems)) {
-                    $currentWorldType = getCurrentWorldType($uid);
-                    $currWorld = getWorldByType($uid, $currentWorldType);
+                    // This transaction is emitted after storing/compacting a
+                    // pen.  It describes one building only.  Re-saving the
+                    // entire cached farm here can overwrite a different pen
+                    // that was just changed by its own atomic store action.
+                    // Persist only this building, matching setFeaturedItem.
+                    $worldType = getCurrentWorldType($uid);
+                    $worldId = getWorldId($uid, $worldType);
+                    if ($worldId !== null) {
+                        $featuredItems = DB::transaction(function () use ($worldId, $buildingId, $featuredItems) {
+                            $building = WorldObject::query()
+                                ->where('world_id', $worldId)
+                                ->where('object_id', $buildingId)
+                                ->where('deleted', false)
+                                ->lockForUpdate()
+                                ->first();
 
-                    foreach ($currWorld['objectsArray'] as $key => $building) {
-                        if ((int) ($building->id ?? 0) !== $buildingId) {
-                            continue;
-                        }
+                            if ($building === null) {
+                                throw new \RuntimeException("Featured-item building {$buildingId} no longer exists");
+                            }
 
-                        if (!isset($building->components) || !is_object($building->components)) {
-                            $building->components = new \stdClass();
-                        }
-                        $building->components->featuredItems = $featuredItems;
-                        $currWorld['objectsArray'][$key] = $building;
+                            $components = is_object($building->components)
+                                ? $building->components
+                                : new \stdClass();
+                            $components->featuredItems = self::reconcileFeaturedItemsForContents(
+                                $building->contents,
+                                $featuredItems,
+                            );
+                            $building->components = $components;
+                            $building->save();
 
-                        if (!saveWorld($uid, $currentWorldType, $currWorld)) {
-                            throw new \Exception("Failed to save featured items for uid=$uid buildingId=$buildingId");
-                        }
-                        break;
+                            return $components->featuredItems;
+                        });
+                        invalidateWorldCache($uid, $worldType);
                     }
                 }
 
@@ -696,6 +896,76 @@ class WorldService
                 // supplied a callback, but returning the canonical data keeps
                 // the AMF response aligned with the Flash transaction.
                 $data['data'] = ['featuredItems' => $featuredItems ?? new \stdClass()];
+                break;
+
+            case ACTION_SET_FEATURED_ITEM:
+                // FeaturedRenderFManager uses this single-slot transaction
+                // when an animal is first put into a habitat.  The later
+                // setMultipleFeaturedItems call is only used for compaction
+                // or removal, so ignoring this action left a stored animal
+                // in `contents` but invisible after a reload.
+                $buildingObj = $request->params[1] ?? null;
+                $uid = $playerObj->getUid();
+                $buildingId = $buildingObj === null
+                    ? 0
+                    : self::resolveActionObjectId($playerObj, $buildingObj, getCurrentWorldType($uid));
+                $slot = $extraParams->itemSlot ?? null;
+                $itemCode = $extraParams->itemCode ?? null;
+                $metaHash = $extraParams->metaHash ?? null;
+                $removeOrAdd = !empty($extraParams->removeOrAdd);
+                $featuredItems = new \stdClass();
+
+                if ($buildingId > 0 && $slot !== null && $itemCode !== null) {
+                    $worldId = getWorldId($uid, getCurrentWorldType($uid));
+
+                    if ($worldId !== null) {
+                        $featuredItems = DB::transaction(function () use (
+                            $worldId,
+                            $buildingId,
+                            $slot,
+                            $itemCode,
+                            $metaHash,
+                            $removeOrAdd
+                        ) {
+                            $building = WorldObject::query()
+                                ->where('world_id', $worldId)
+                                ->where('object_id', $buildingId)
+                                ->where('deleted', false)
+                                ->lockForUpdate()
+                                ->first();
+
+                            if ($building === null) {
+                                throw new \RuntimeException("Featured-item building {$buildingId} no longer exists");
+                            }
+
+                            $components = is_object($building->components)
+                                ? $building->components
+                                : new \stdClass();
+                            $featured = isset($components->featuredItems) && is_object($components->featuredItems)
+                                ? $components->featuredItems
+                                : new \stdClass();
+                            $slotKey = (string) $slot;
+
+                            if ($removeOrAdd) {
+                                $featured->{$slotKey} = (object) [
+                                    'itemCode' => (string) $itemCode,
+                                    'metaHash' => (string) ($metaHash ?? ((string) $itemCode . ':')),
+                                ];
+                            } else {
+                                unset($featured->{$slotKey});
+                            }
+
+                            $components->featuredItems = $featured;
+                            $building->components = $components;
+                            $building->save();
+
+                            return $featured;
+                        });
+                        invalidateWorldCache($uid, getCurrentWorldType($uid));
+                    }
+                }
+
+                $data['data'] = ['featuredItems' => $featuredItems];
                 break;
 
             case ACTION_NEIGHBOR_ACT:
@@ -966,16 +1236,17 @@ class WorldService
 
             case ACTION_EXPAND_WITH_CURRENCY:
                 $expandObj = $request->params[1];
-                $objId = $expandObj->id ?? 0;
                 $itemName = $expandObj->itemName ?? "NULL";
+
+                $uid = $playerObj->getUid();
+                $worldType = getCurrentWorldType($uid);
+                $objId = self::resolveActionObjectId($playerObj, $expandObj, $worldType);
 
                 if ($objId <= 0) {
                     $data["data"] = array("success" => false);
                     break;
                 }
 
-                $uid = $playerObj->getUid();
-                $worldType = getCurrentWorldType($uid);
                 $world = getWorldByType($uid, $worldType);
 
                 if (empty($world) || !isset($world["objectsArray"])) {
@@ -1012,17 +1283,18 @@ class WorldService
 
             case ACTION_COMPLETE_NOW:
                 $expandObj = $request->params[1];
-                $objId = $expandObj->id ?? 0;
                 $itemName = $expandObj->itemName ?? "NULL";
                 $currency = $extraParams->currency ?? null;
+
+                $uid = $playerObj->getUid();
+                $worldType = getCurrentWorldType($uid);
+                $objId = self::resolveActionObjectId($playerObj, $expandObj, $worldType);
 
                 if ($objId <= 0) {
                     $data["data"] = array("success" => false);
                     break;
                 }
 
-                $uid = $playerObj->getUid();
-                $worldType = getCurrentWorldType($uid);
                 $world = getWorldByType($uid, $worldType);
 
                 if (empty($world) || !isset($world["objectsArray"])) {
@@ -1100,16 +1372,17 @@ class WorldService
 
             case ACTION_OPEN:
                 $presentObj = $request->params[1];
-                $objId = $presentObj->id ?? 0;
                 $objItemName = $presentObj->itemName ?? null;
+
+                $uid = $playerObj->getUid();
+                $worldType = getCurrentWorldType($uid);
+                $objId = self::resolveActionObjectId($playerObj, $presentObj, $worldType);
 
                 if ($objId <= 0 || !$objItemName) {
                     $data["data"] = array("error" => "invalid_object");
                     break;
                 }
 
-                $uid = $playerObj->getUid();
-                $worldType = getCurrentWorldType($uid);
                 $worldId = getWorldId($uid, $worldType);
 
                 if (!$worldId) {
@@ -1165,15 +1438,17 @@ class WorldService
 
             case ACTION_UPGRADE_STORAGE:
                 $buildingObj = $request->params[1] ?? null;
-                $buildingId = $buildingObj->id ?? 0;
+                $uid = $playerObj->getUid();
+                $worldType = getCurrentWorldType($uid);
+                $buildingId = $buildingObj === null
+                    ? 0
+                    : self::resolveActionObjectId($playerObj, $buildingObj, $worldType);
 
                 if ($buildingId <= 0) {
                     $data["data"] = ["error" => "invalid_building"];
                     break;
                 }
 
-                $uid = $playerObj->getUid();
-                $worldType = getCurrentWorldType($uid);
                 $worldId = getWorldId($uid, $worldType);
 
                 if (!$worldId) {
@@ -1233,15 +1508,17 @@ class WorldService
 
             case ACTION_PURCHASE_STORAGE_UPGRADE:
                 $buildingObj = $request->params[1] ?? null;
-                $buildingId = $buildingObj->id ?? 0;
+                $uid = $playerObj->getUid();
+                $worldType = getCurrentWorldType($uid);
+                $buildingId = $buildingObj === null
+                    ? 0
+                    : self::resolveActionObjectId($playerObj, $buildingObj, $worldType);
 
                 if ($buildingId <= 0) {
                     $data["data"] = ["error" => "invalid_building"];
                     break;
                 }
 
-                $uid = $playerObj->getUid();
-                $worldType = getCurrentWorldType($uid);
                 $worldId = getWorldId($uid, $worldType);
 
                 if (!$worldId) {
@@ -1309,8 +1586,10 @@ class WorldService
 
             case ACTION_GET_STORAGE_INFO:
                 $buildingObj = $request->params[1] ?? null;
-                $buildingId = $buildingObj->id ?? 0;
                 $uid = $playerObj->getUid();
+                $buildingId = $buildingObj === null
+                    ? 0
+                    : self::resolveActionObjectId($playerObj, $buildingObj, getCurrentWorldType($uid));
 
                 $upgradeStatusJson = get_meta($uid, 'upgradeStatus');
                 $upgradeStatus = ($upgradeStatusJson && $upgradeStatusJson !== '')
