@@ -20,7 +20,9 @@ return new class extends Migration
             })
             ->update([
                 'state' => 'grown',
-                'expansion_level' => DB::raw('GREATEST(COALESCE(expansion_level, 0), 1)'),
+                'expansion_level' => DB::raw(
+                    'CASE WHEN COALESCE(expansion_level, 0) < 1 THEN 1 ELSE expansion_level END'
+                ),
                 'updated_at' => now(),
             ]);
     }

@@ -11,12 +11,22 @@ return new class extends Migration
      */
     public function up(): void
     {
+        // SQLite does not support MariaDB's `ALTER TABLE ... MODIFY` syntax.
+        // Its fresh test schema already creates both columns at this width.
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
         DB::statement('ALTER TABLE crafting_recipe_states MODIFY recipe_id VARCHAR(100) NOT NULL');
         DB::statement('ALTER TABLE crafting_queue MODIFY recipe_id VARCHAR(100) NOT NULL');
     }
 
     public function down(): void
     {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
         DB::statement('ALTER TABLE crafting_recipe_states MODIFY recipe_id VARCHAR(20) NOT NULL');
         DB::statement('ALTER TABLE crafting_queue MODIFY recipe_id VARCHAR(20) NOT NULL');
     }

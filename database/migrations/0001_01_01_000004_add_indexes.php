@@ -29,11 +29,15 @@ return new class extends Migration
             $table->index(['uid', 'type']);
         });
 
-        DB::statement('CREATE INDEX items_name_index ON items (name(255))');
+        // `items` belongs to the legacy game-data schema, which is not created
+        // by this application's migrations (including the SQLite test schema).
+        if (Schema::hasTable('items')) {
+            DB::statement('CREATE INDEX items_name_index ON items (name(255))');
 
-        Schema::table('items', function (Blueprint $table) {
-            $table->index('code');
-        });
+            Schema::table('items', function (Blueprint $table) {
+                $table->index('code');
+            });
+        }
     }
 
     public function down(): void
@@ -58,10 +62,12 @@ return new class extends Migration
             $table->dropIndex(['uid', 'type']);
         });
 
-        DB::statement('DROP INDEX items_name_index ON items');
+        if (Schema::hasTable('items')) {
+            DB::statement('DROP INDEX items_name_index ON items');
 
-        Schema::table('items', function (Blueprint $table) {
-            $table->dropIndex(['code']);
-        });
+            Schema::table('items', function (Blueprint $table) {
+                $table->dropIndex(['code']);
+            });
+        }
     }
 };
