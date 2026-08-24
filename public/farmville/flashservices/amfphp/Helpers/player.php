@@ -12,6 +12,7 @@ use App\Models\UserWorld;
 use App\Models\User;
 use App\Models\PlayerMeta;
 use App\Models\WorldObject;
+use App\Support\WorldPersistence;
 use Illuminate\Support\Facades\DB;
 
 class Player {
@@ -738,7 +739,12 @@ class Player {
                 $currWorld["objectsArray"][$key] = $this->sanitizeObjectValues($obj);
             }
             $this->worldData = $currWorld;
-            $saveResult = saveWorld($this->uid, $currentWorldType, $currWorld);
+            $saveResult = WorldPersistence::replaceSnapshot(
+                $this->uid,
+                $currentWorldType,
+                $currWorld,
+                'world-size-change',
+            );
             if (!$saveResult) {
                 throw new \Exception("Failed to save world data for uid={$this->uid}");
             }
@@ -753,17 +759,20 @@ class Player {
         $dbResult = true;
         switch ($operationType) {
             case 'DELETE':
-                $dbResult = deleteWorldObjectByPosition($worldId, (int)$newPosX, (int)$newPosY);
+                $dbResult = WorldPersistence::deleteAtPosition(
+                    $this->uid,
+                    $currentWorldType,
+                    (int) $newPosX,
+                    (int) $newPosY,
+                );
                 break;
             case 'UPDATE':
-                $dbResult = updateWorldObjectFull($worldId, $newObj);
+                $dbResult = WorldPersistence::updateObject($this->uid, $currentWorldType, $newObj);
                 break;
             case 'INSERT':
-                $dbResult = insertWorldObject($worldId, $newObj);
+                $dbResult = WorldPersistence::insertObject($this->uid, $currentWorldType, $newObj);
                 break;
         }
-
-        invalidateWorldCache($this->uid, $currentWorldType);
 
         if (!$dbResult) {
             throw new \Exception("Failed to perform $operationType on world object for uid={$this->uid}");
@@ -1019,7 +1028,7 @@ class Player {
             $currWorld['objectsArray'] = array_values($currWorld['objectsArray']);
             $this->worldData = $currWorld;
 
-            if (!saveWorld($this->uid, $currentWorldType, $currWorld)) {
+            if (!WorldPersistence::deleteObject($this->uid, $currentWorldType, $resourceId)) {
                 // The inventory write is deliberately first: a save failure
                 // may duplicate an item, but can never destroy one.
                 throw new \Exception("Failed to save world data (storeInHomeInventory) for uid={$this->uid}");

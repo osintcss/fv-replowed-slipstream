@@ -1641,6 +1641,11 @@
         return UserWorld::getWorldId($uid, $type);
     }
 
+    /**
+     * @deprecated Use WorldPersistence::replaceSnapshot() for intentional
+     * full-world replacement, or a targeted WorldPersistence operation for
+     * ordinary gameplay mutations.
+     */
     function saveWorld($uid, $type, $worldData) {
         $worldId = $worldData['worldId'] ?? getWorldId($uid, $type);
 

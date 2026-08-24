@@ -9,6 +9,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
 use App\Helpers\JsonHelper;
 use App\Models\WorldObject;
 use App\Support\CraftingCottages;
+use App\Support\WorldPersistence;
 use Illuminate\Support\Facades\DB;
 
 class WorldService
@@ -631,14 +632,14 @@ class WorldService
                     }
 
                     if ($modified) {
-                        $worldId = getWorldId($uid, $currentWorldType);
-                        $instantGrowResult = $worldId === null
-                            ? ['success' => false]
-                            : updateWorldObjectsConditionally($worldId, $instantGrowChanges);
+                        $instantGrowResult = WorldPersistence::updateConditionally(
+                            $uid,
+                            $currentWorldType,
+                            $instantGrowChanges,
+                        );
                         if (empty($instantGrowResult['success'])) {
                             throw new \Exception("Failed to update world objects (instant grow) for uid=$uid");
                         }
-                        invalidateWorldCache($uid, $currentWorldType);
 
                         // A simultaneous harvest wins for the same tile. Do
                         // not grant instant-grow quest progress or charge for
@@ -837,8 +838,7 @@ class WorldService
                                     $building->expansionParts = new \stdClass();
                                 }
 
-                                $currWorld["objectsArray"][$buildingKey] = $building;
-                                if (!saveWorld($uid, $currentWorldType, $currWorld)) {
+                                if (!WorldPersistence::updateObject($uid, $currentWorldType, $building)) {
                                     throw new \Exception("Failed to save world (store expansion) for uid=$uid");
                                 }
                             }
@@ -1072,7 +1072,7 @@ class WorldService
                             }
 
                             if ($modified) {
-                                if (!saveWorld($hostId, $hostWorldType, $hostWorld)) {
+                                if (!WorldPersistence::updateObject($hostId, $hostWorldType, $hostWorld['objectsArray'][$key])) {
                                     throw new \Exception("Failed to save host world (neighbor action) for hostId=$hostId");
                                 }
                             }
@@ -1271,7 +1271,7 @@ class WorldService
                     break;
                 }
 
-                if (!saveWorld($uid, $worldType, $world)) {
+                if (!WorldPersistence::updateObject($uid, $worldType, $world['objectsArray'][$key])) {
                     throw new \Exception("Failed to save world (expand with currency) for uid=$uid");
                 }
                 $expandedItemData = getItemByName($itemName, "db");
@@ -1363,7 +1363,7 @@ class WorldService
                 $world["objectsArray"][$buildingKey]->expansionLevel = $currentLevel + 1;
                 $world["objectsArray"][$buildingKey]->expansionParts = new \stdClass();
 
-                if (!saveWorld($uid, $worldType, $world)) {
+                if (!WorldPersistence::updateObject($uid, $worldType, $world['objectsArray'][$buildingKey])) {
                     throw new \Exception("Failed to save world (complete now) for uid=$uid");
                 }
                 trackStorageBuildingExpansionProgress($uid, $buildingItemData);
@@ -1421,13 +1421,11 @@ class WorldService
                 $posY = isset($presentObj->position) ? ($presentObj->position->y ?? null) : null;
 
                 if ($posX !== null && $posY !== null) {
-                    deleteWorldObjectByPosition($worldId, (int)$posX, (int)$posY);
+                    WorldPersistence::deleteAtPosition($uid, $worldType, (int) $posX, (int) $posY);
                 }
 
                 $senderId = $extraItemData['sender'] ?? $uid;
                 addGiftByName($uid, $resultItem, 1, $senderId, $extraItemData);
-
-                invalidateWorldCache($uid, $worldType);
 
                 $data["data"] = [
                     "item" => $resultItem,
