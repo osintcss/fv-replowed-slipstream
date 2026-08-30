@@ -10,7 +10,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>FarmVille Classic</title>
+    <title>FV Classic</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html, body { width: 100%; height: 100%; overflow: hidden; background: #3d6b1e; }
@@ -24,6 +24,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
             flex-shrink: 0;
         }
         .game-header-title { color: #fbbf24; font-weight: 700; font-size: 1.125rem; font-family: 'Segoe UI', sans-serif; }
+        .game-header-title small { color: rgba(255,255,255,0.8); font-size: 0.7rem; font-weight: 500; }
         .game-header-user { color: rgba(255,255,255,0.9); font-size: 0.8rem; font-family: 'Segoe UI', sans-serif; display: flex; align-items: center; gap: 12px; }
         .game-header-user b { color: #fbbf24; }
         .btn-neighbors {
@@ -611,7 +612,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
     </div>
     <div class="game-card">
         <div class="game-header">
-            <span class="game-header-title">FarmVille Classic</span>
+            <span class="game-header-title">FV Classic <small>Unofficial</small></span>
             <span class="game-header-user">
                 Welcome <b>{{ auth()->user()->load('userMeta')->userMeta->firstName ?? auth()->user()->name }}</b>!
                 <button type="button" id="dailyGiftBtn" class="btn-daily-gift" onclick="claimDailyGift()">Claim Daily Gift</button>
@@ -1590,7 +1591,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "master_assethash_url": "<?= $baseUrl ?>/farmville/assethash/v9/",
                             "masterysigns_amf_url": "<?= $baseUrl ?>/farmville/masterysigns/v1/",
                             "ITEMS_AMF_BUILD_TIME_REDUCTION": false,
-                            "swfLocation": "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FarmGame-10-plowdispatch1.swf?restore_original=1",
+                            "swfLocation": "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FarmGame-10-farmactiondispatch2.swf?restore_original=1",
                             "parts_count": 3,
                             "NO_FUEL_DAY_START_TIME": "1606723200",
                             "NO_FUEL_DAY_END_TIME": "1607328000",
@@ -1689,10 +1690,11 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             // transaction batches. On this self-hosted server it delays
                             // the initial farm load without providing a useful benefit.
                             "batch_limit_runtime": 0,
-                            // ExchangeSelectorSlot uses this value to decide how many
-                            // bushels its Add button can select. Without it, undefined
-                            // is coerced to 0 and every visible bushel reads "Add 0".
+                            // ExchangeSelectorSlot limits each selection by the
+                            // per-click amount and the remaining total trade-in amount.
+                            // Both values are required; a missing value is coerced to 0.
                             "DEFAULT_BUSHEL_ADD_TEMPRT": 25,
+                            "BUSHEL_TRADE_NEEDED_TEMPRT": 25,
                             "FEATURE_TRAVEL_ANIMATION_ASSET": "assets/dialogs/yuletide/7d2f72f99b34e0390c342e587d16c69b.swf",
                             "FLASHVAR_CRASHBUSTERS_LOGSIZE": 20,
                             "FLASHVAR_TRANSACTION_MAX_WAIT": 5000,
@@ -1997,20 +1999,10 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                                             <label style="display: block; margin-bottom: 5px; font-weight: 600; color: #333;">Last Name</label>
                                             <input type="text" id="settingsLastName" value="{{ auth()->user()->userMeta->lastName ?? '' }}" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; box-sizing: border-box;">
                                         </div>
-                                        <hr style="margin: 20px 0; border: none; border-top: 1px solid #e5e7eb;">
-                                        <p style="font-size: 12px; color: #666; margin-bottom: 15px;">Leave password fields empty to keep current password</p>
-                                        <div style="margin-bottom: 15px;">
-                                            <label style="display: block; margin-bottom: 5px; font-weight: 600; color: #333;">Current Password</label>
-                                            <input type="password" id="settingsCurrentPassword" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; box-sizing: border-box;">
-                                        </div>
-                                        <div style="margin-bottom: 15px;">
-                                            <label style="display: block; margin-bottom: 5px; font-weight: 600; color: #333;">New Password</label>
-                                            <input type="password" id="settingsNewPassword" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; box-sizing: border-box;">
-                                        </div>
-                                        <div style="margin-bottom: 20px;">
-                                            <label style="display: block; margin-bottom: 5px; font-weight: 600; color: #333;">Confirm New Password</label>
-                                            <input type="password" id="settingsConfirmPassword" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; box-sizing: border-box;">
-                                        </div>
+                                        <label style="display: flex; gap: 8px; align-items: flex-start; margin-bottom: 20px; color: #333; font-size: 14px; line-height: 1.4;">
+                                            <input type="checkbox" id="settingsAutoAcceptNeighbors" @checked($autoAcceptNeighborRequests ?? true) style="margin-top: 3px;">
+                                            <span>Automatically accept neighbor requests</span>
+                                        </label>
                                         <button type="submit" style="width: 100%; padding: 12px; background: linear-gradient(180deg, #10b981, #059669); color: white; border: none; border-radius: 5px; font-size: 16px; font-weight: 600; cursor: pointer;">Save Changes</button>
                                     </form>
                                 </div>
@@ -2021,9 +2013,6 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                         function openSettingsModal() {
                             document.getElementById('settingsModal').style.display = 'block';
                             document.getElementById('settingsMessage').style.display = 'none';
-                            document.getElementById('settingsCurrentPassword').value = '';
-                            document.getElementById('settingsNewPassword').value = '';
-                            document.getElementById('settingsConfirmPassword').value = '';
                         }
 
                         function closeSettingsModal() {
@@ -2033,16 +2022,6 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                         document.getElementById('settingsForm').addEventListener('submit', function(e) {
                             e.preventDefault();
                             const msgEl = document.getElementById('settingsMessage');
-                            const newPass = document.getElementById('settingsNewPassword').value;
-                            const confirmPass = document.getElementById('settingsConfirmPassword').value;
-
-                            if (newPass && newPass !== confirmPass) {
-                                msgEl.style.display = 'block';
-                                msgEl.style.backgroundColor = '#fee2e2';
-                                msgEl.style.color = '#dc2626';
-                                msgEl.textContent = 'New passwords do not match';
-                                return;
-                            }
 
                             fetch('{{ route("profile.settings") }}', {
                                 method: 'POST',
@@ -2053,9 +2032,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                                 body: JSON.stringify({
                                     firstName: document.getElementById('settingsFirstName').value,
                                     lastName: document.getElementById('settingsLastName').value,
-                                    current_password: document.getElementById('settingsCurrentPassword').value,
-                                    new_password: newPass,
-                                    new_password_confirmation: confirmPass
+                                    auto_accept_neighbor_requests: document.getElementById('settingsAutoAcceptNeighbors').checked
                                 })
                             })
                             .then(res => res.json())
@@ -2092,8 +2069,8 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                                     <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; background: linear-gradient(135deg, #2d5016 0%, #4a7c23 50%, #2d5016 100%); font-family: Arial, sans-serif; color: white; text-align: center; padding: 40px;">
                                         <div style="background: rgba(0,0,0,0.4); border-radius: 20px; padding: 40px 60px; max-width: 500px;">
                                             <h1 style="font-size: 32px; margin-bottom: 20px; text-shadow: 2px 2px 4px rgba(0,0,0,0.5);">Flash Player Not Detected</h1>
-                                            <p style="font-size: 18px; margin-bottom: 30px; line-height: 1.6;">FarmVille Classic requires Flash Player to run. Please download our standalone launcher to play.</p>
-                                            <a href="https://farmplay.win" style="display: inline-block; background: #4a7c23; color: white; padding: 15px 40px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 18px; border: 2px solid #fff; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.05)';" onmouseout="this.style.transform='scale(1)';">Download Launcher</a>
+                                            <p style="font-size: 18px; margin-bottom: 30px; line-height: 1.6;">FV Classic requires Flash Player to run. The standalone launcher is available on GitHub Releases.</p>
+                                            <a href="https://github.com/osintcss/fv-launcher/releases/tag/v1.0.1" target="_blank" rel="noopener noreferrer" style="display: inline-block; background: #4a7c23; color: white; padding: 15px 40px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 18px; border: 2px solid #fff; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.05)';" onmouseout="this.style.transform='scale(1)';">View Launcher Downloads on GitHub</a>
                                         </div>
                                     </div>
                                 </div>
