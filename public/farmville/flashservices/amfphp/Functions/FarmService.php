@@ -4,6 +4,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
 require_once AMFPHP_ROOTPATH . "Helpers/quest_progress.php";
 
 use App\Models\UserMeta;
+use App\Models\PlayerMeta;
 
 class FarmService
 {
@@ -144,7 +145,10 @@ class FarmService
     {
         $data = array();
         $itemName = $request->params[0] ?? null;
-        $isGift = $request->params[1] ?? false;
+        $isGiftValue = $request->params[1] ?? false;
+        $isGift = is_bool($isGiftValue)
+            ? $isGiftValue
+            : !in_array(strtolower(trim((string) $isGiftValue)), ['', '0', 'false', 'off', 'no'], true);
         if (!$itemName) return $data;
 
         $uid = $playerObj->getUid();
@@ -154,7 +158,62 @@ class FarmService
         $count = (float) ($item["count"] ?? 0);
         if ($count <= 0) return $data;
 
-        if (!$isGift) {
+        try {
+            if ($isGift) {
+                $itemCode = $item['code'] ?? null;
+                if (!is_string($itemCode) || $itemCode === '') {
+                    return [
+                        'data' => ['success' => false],
+                        'errorType' => 1,
+                        'errorData' => 'Fuel item has no storage code.',
+                    ];
+                }
+
+                // Giftbox fuel is removed and energy is granted in one
+                // transaction. Once the stack is gone, a replay cannot mint
+                // more energy.
+                $consumed = \DB::transaction(function () use ($uid, $itemCode, $count) {
+                    PlayerMeta::query()
+                        ->where('uid', $uid)
+                        ->where('meta_key', 'giftbox')
+                        ->lockForUpdate()
+                        ->first();
+                    PlayerMeta::clearCache($uid, 'giftbox');
+
+                    $userMeta = UserMeta::query()
+                        ->where('uid', $uid)
+                        ->lockForUpdate()
+                        ->first();
+                    if (!$userMeta || !consumeStoredItem($uid, $itemCode, 1, GIFTBOX_ID)) {
+                        return false;
+                    }
+
+                    $addedEnergy = (int) floor($count * (int) $userMeta->energyMax);
+                    $userMeta->energy = min(
+                        2147483647,
+                        max(0, (int) $userMeta->energy + $addedEnergy)
+                    );
+                    $userMeta->save();
+                    UserMeta::invalidateCache($uid);
+
+                    return $addedEnergy;
+                });
+
+                if ($consumed === false) {
+                    return [
+                        'data' => ['success' => false],
+                        'errorType' => 1,
+                        'errorData' => 'Fuel gift is no longer available.',
+                    ];
+                }
+
+                $data["data"] = [
+                    'success' => true,
+                    'fuelAdded' => $consumed,
+                ];
+                return $data;
+            }
+
             $cashCost = (int) ($item["cash"] ?? 0);
             $goldCost = (int) ($item["cost"] ?? 0);
             if ($cashCost > 0) {
@@ -162,14 +221,29 @@ class FarmService
             } elseif ($goldCost > 0) {
                 if (!UserResources::removeGold($uid, $goldCost)) return $data;
             }
+
+            $updated = UserMeta::where('uid', $uid)
+                ->update([
+                    'energy' => \DB::raw("LEAST(energy + FLOOR({$count} * energyMax), 2147483647)")
+                ]);
+            if ($updated < 1) {
+                return [
+                    'data' => ['success' => false],
+                    'errorType' => 1,
+                    'errorData' => 'Player energy record is unavailable.',
+                ];
+            }
+            UserMeta::invalidateCache($uid);
+        } catch (\Throwable $e) {
+            Logger::error('FarmService', "buyFuel failed: uid={$uid}, item={$itemName}, reason={$e->getMessage()}");
+            return [
+                'data' => ['success' => false],
+                'errorType' => 1,
+                'errorData' => 'Fuel could not be applied.',
+            ];
         }
 
-        UserMeta::where('uid', $uid)
-            ->update([
-                'energy' => \DB::raw("LEAST(energy + FLOOR({$count} * energyMax), 2147483647)")
-            ]);
-
-        $data["data"] = array();
+        $data["data"] = ['success' => true];
 
         return $data;
     }

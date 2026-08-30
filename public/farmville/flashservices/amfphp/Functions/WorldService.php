@@ -8,6 +8,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
 require_once AMFPHP_ROOTPATH . "Helpers/mutable_animal_completion.php";
 
 use App\Helpers\JsonHelper;
+use App\Models\PlayerMeta;
 use App\Models\WorldObject;
 use App\Support\CraftingCottages;
 use App\Support\WorldPersistence;
@@ -16,6 +17,116 @@ class WorldService
 {
     const LOG = 'World';
     private const PIGPEN_TRUFFLE_COOLDOWN_SECONDS = 172800;
+
+    /** Read a named value from an AMF object or associative array. */
+    private static function flashValue($source, string $key, $default = null)
+    {
+        if (is_object($source)) {
+            return property_exists($source, $key) ? $source->{$key} : $default;
+        }
+        if (is_array($source)) {
+            return array_key_exists($key, $source) ? $source[$key] : $default;
+        }
+        return $default;
+    }
+
+    /** AMF booleans normally arrive as bools, but tolerate legacy strings. */
+    private static function flashBoolean($value, bool $default): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_numeric($value)) {
+            return (int) $value !== 0;
+        }
+        if (is_string($value)) {
+            return !in_array(strtolower(trim($value)), ['', '0', 'false', 'off', 'no'], true);
+        }
+        return $default;
+    }
+
+    /**
+     * Persist the inventory side of TUseConsumable's optimistic operation.
+     * The effect itself remains owned by the client, while the item count is
+     * authoritative on the server and survives reloads.
+     */
+    private static function consumeUseItem($playerObj, $request, $extraParams): array
+    {
+        $uid = $playerObj->getUid();
+        $savedItem = $request->params[1] ?? null;
+        $itemName = self::flashValue($savedItem, 'itemName');
+        $itemCode = self::flashValue($savedItem, 'itemCode');
+        if (!is_string($itemCode) || $itemCode === '') {
+            $itemCode = self::flashValue($savedItem, 'code');
+        }
+
+        $item = is_string($itemName) && $itemName !== ''
+            ? getItemByName($itemName, 'db')
+            : false;
+        if ((!is_string($itemCode) || $itemCode === '') && is_array($item)) {
+            $itemCode = $item['code'] ?? null;
+        }
+        if (!is_string($itemCode) || $itemCode === '') {
+            return ['success' => false, 'consumed' => 0, 'error' => 'Consumable has no storage code.'];
+        }
+
+        $isGift = self::flashBoolean(self::flashValue($extraParams, 'isGift', true), true);
+        $isFree = self::flashBoolean(self::flashValue($extraParams, 'isFree', false), false);
+        $storageId = (int) self::flashValue($extraParams, 'storageId', GIFTBOX_ID);
+        $itemCount = (int) self::flashValue($extraParams, 'itemCount', 1);
+        if ($itemCount <= 0) {
+            return ['success' => false, 'consumed' => 0, 'error' => 'Invalid consumable quantity.'];
+        }
+
+        $storageIsPersisted = in_array($storageId, [
+            GIFTBOX_ID,
+            (int) GIFTBOX_STORAGE_KEY,
+            HOME_INVENTORY_ID,
+            PERSONAL_CRAFTING_INVENTORY_ID,
+        ], true);
+        // Market/free uses have no persisted source to consume.  Preserve
+        // their existing client-side behavior while making storage-backed
+        // uses durable.
+        if ($isFree || !$storageIsPersisted || (!$isGift && $storageId === GIFTBOX_ID)) {
+            return ['success' => true, 'consumed' => 0];
+        }
+
+        try {
+            $consumed = \DB::transaction(function () use ($uid, $itemCode, $itemCount, $storageId) {
+                if (in_array($storageId, [GIFTBOX_ID, (int) GIFTBOX_STORAGE_KEY], true)) {
+                    PlayerMeta::query()
+                        ->where('uid', $uid)
+                        ->where('meta_key', 'giftbox')
+                        ->lockForUpdate()
+                        ->first();
+                    PlayerMeta::clearCache($uid, 'giftbox');
+                } elseif ($storageId === HOME_INVENTORY_ID) {
+                    PlayerMeta::query()
+                        ->where('uid', $uid)
+                        ->where('meta_key', 'inventory_storage')
+                        ->lockForUpdate()
+                        ->first();
+                    PlayerMeta::clearCache($uid, 'inventory_storage');
+                }
+
+                return consumeStoredItem($uid, $itemCode, $itemCount, $storageId);
+            });
+        } catch (\Throwable $e) {
+            Logger::error(self::LOG, sprintf(
+                'Consumable use failed: uid=%s, code=%s, reason=%s',
+                $uid,
+                $itemCode,
+                $e->getMessage(),
+            ));
+            $consumed = false;
+        }
+
+        if (!$consumed) {
+            return ['success' => false, 'consumed' => 0, 'error' => 'Consumable is no longer available.'];
+        }
+
+        return ['success' => true, 'consumed' => $itemCount];
+    }
 
     /** Keep all object-ID actions compatible with Flash's same-batch temp IDs. */
     private static function resolveActionObjectId($playerObj, $object, string $worldType): int
@@ -1355,6 +1466,21 @@ class WorldService
                 }
 
                 $data["data"] = array("id" => 0);
+                break;
+
+            case ACTION_USE:
+                $useResult = self::consumeUseItem($playerObj, $request, $extraParams);
+                $data["data"] = array_merge(
+                    ["id" => 0],
+                    $useResult,
+                );
+                if (empty($useResult['success'])) {
+                    Logger::log(self::LOG, sprintf(
+                        'Consumable use rejected: uid=%s, reason=%s',
+                        $playerObj->getUid(),
+                        $useResult['error'] ?? 'unavailable',
+                    ));
+                }
                 break;
 
             case ACTION_STORE:

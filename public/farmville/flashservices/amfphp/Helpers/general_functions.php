@@ -248,6 +248,41 @@
         return true;
     }
 
+    /**
+     * Persist one or more items consumed by the Flash client.
+     *
+     * TUseConsumable removes Giftbox items optimistically before sending its
+     * WorldService.performAction request.  Some callers instead consume from
+     * Home Inventory or the personal crafting silo.  Keep the storage-ID
+     * mapping in one place so those paths cannot silently diverge.
+     */
+    function consumeStoredItem($uid, string $itemCode, int $quantity, int $storageId): bool {
+        if (!is_numeric($uid) || $itemCode === '' || $quantity <= 0) {
+            return false;
+        }
+
+        if (in_array($storageId, [GIFTBOX_ID, (int) GIFTBOX_STORAGE_KEY], true)) {
+            // Storage reads are cached for the duration of an AMF request.
+            // Clear the Giftbox entry before a transactional consume so a
+            // preceding read cannot re-save stale serialized contents.
+            PlayerMeta::clearCache($uid, 'giftbox');
+            return removeGiftByCode($uid, $itemCode, $quantity);
+        }
+
+        if ($storageId === HOME_INVENTORY_ID) {
+            PlayerMeta::clearCache($uid, 'inventory_storage');
+            return removeFromInventoryStorage($uid, $itemCode, $quantity);
+        }
+
+        if ($storageId === PERSONAL_CRAFTING_INVENTORY_ID) {
+            // The client calls this collection the personal crafting
+            // inventory; the server exposes it as the `silo` bucket.
+            return removeFromInventory($uid, $itemCode, $quantity, 'silo');
+        }
+
+        return false;
+    }
+
     function buildInventoryStorageData($uid) {
         $storage = getInventoryStorage($uid);
         $storageData = [];

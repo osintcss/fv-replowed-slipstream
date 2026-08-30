@@ -122,6 +122,8 @@ define('GIFTBOX_STORAGE_KEY', '-6');
 
 define('HOME_INVENTORY_ID', -2);
 define('INVENTORY_STORAGE_KEY', '-2');
+// StorageInventoryType.PERSONAL_CRAFTING_INVENTORY in the shipped client.
+define('PERSONAL_CRAFTING_INVENTORY_ID', -4);
 
 // FarmGameWorld.CRAFTEDGOODS_ID. Crafted goods are a separate client storage
 // collection: they are keyed as "itemCode:recipeLevel", not normal inventory
@@ -146,6 +148,9 @@ define('ACTION_SELL', 'sell');
 define('ACTION_CLEAR', 'clear');
 define('ACTION_CLEAR_WITHERED', 'clearWithered');
 define('ACTION_INSTANT_GROW', 'instantGrow');
+// TUseConsumable sends this generic world action after removing the item
+// optimistically in Flash. The server must persist that storage decrement.
+define('ACTION_USE', 'use');
 define('ACTION_STORE', 'store');
 define('ACTION_SET_FEATURED_ITEM', 'setFeaturedItem');
 define('ACTION_SET_MULTIPLE_FEATURED_ITEMS', 'setMultipleFeaturedItems');
