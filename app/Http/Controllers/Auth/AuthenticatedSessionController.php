@@ -24,6 +24,12 @@ class AuthenticatedSessionController extends Controller
      */
     public function store(LoginRequest $request): RedirectResponse
     {
+        if ((string) config('services.discord.required_guild_id', '') !== '') {
+            return redirect()->route('login')->withErrors([
+                'discord' => 'Discord sign-in is required to access FarmVille.',
+            ]);
+        }
+
         $request->authenticate();
 
         $request->session()->regenerate();

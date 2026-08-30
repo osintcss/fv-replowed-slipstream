@@ -7,6 +7,7 @@ use App\Models\DiscordIdentity;
 use App\Models\User;
 use App\Models\UserAvatar;
 use App\Models\UserMeta;
+use App\Support\RegistrationCapacity;
 use Illuminate\Auth\Events\Registered;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\RedirectResponse;
@@ -19,6 +20,12 @@ class DiscordRegistrationController extends Controller
 {
     public function create(): View|RedirectResponse
     {
+        if (RegistrationCapacity::isFull()) {
+            return redirect()->route('login')->withErrors([
+                'discord' => 'Registration is currently full.',
+            ]);
+        }
+
         if (!$this->pendingDiscordId(request())) {
             return redirect()->route('register')->withErrors([
                 'discord' => 'Start by signing in with Discord.',
@@ -48,6 +55,8 @@ class DiscordRegistrationController extends Controller
         try {
             $avatarUrl = (string) $request->session()->get('discord_registration_avatar_url', '');
             $user = DB::transaction(function () use ($discordId, $name, $avatarUrl): User {
+                RegistrationCapacity::ensureAvailable();
+
                 if (DiscordIdentity::where('discord_id', $discordId)->exists()) {
                     throw new \RuntimeException('This Discord account is already linked to a FarmVille account.');
                 }
@@ -79,6 +88,9 @@ class DiscordRegistrationController extends Controller
         event(new Registered($user));
         Auth::login($user);
         $request->session()->regenerate();
+        if ((string) config('services.discord.required_guild_id', '') !== '') {
+            $request->session()->put('discord_membership_verified_at', now()->timestamp);
+        }
 
         return redirect()->route('play');
     }

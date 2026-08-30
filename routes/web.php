@@ -105,7 +105,7 @@ Route::get('/up', function () {
 
 Route::get('/', function () {
     return view('welcome');
-})->middleware('maintenance');
+})->middleware(['maintenance', 'auth', 'discord.member']);
 
 // Launcher routes
 Route::get('/app', function () {
@@ -113,22 +113,24 @@ Route::get('/app', function () {
         return redirect('/play');
     }
     return view('launcher.home');
-})->name('app')->middleware('maintenance');
+})->name('app')->middleware(['maintenance', 'auth', 'discord.member']);
 
-Route::get('/play', [GameController::class, 'play'])->middleware(['auth', 'verified'])->name('play');
+Route::get('/play', [GameController::class, 'play'])->middleware(['auth', 'verified', 'discord.member'])->name('play');
 
 Route::get('/dashboard', function () {
     return view('dashboard');
-})->middleware(['auth', 'verified'])->name('dashboard');
+})->middleware(['auth', 'verified', 'discord.member'])->name('dashboard');
 
-Route::get('/game', [GameController::class, 'index'])->middleware(['auth', 'verified'])->name('game');
+Route::get('/game', [GameController::class, 'index'])->middleware(['auth', 'verified', 'discord.member'])->name('game');
 
-Route::post('/download-file', [AssetsController::class, 'downloadAssets'])->name('download.file');
-Route::get('/download-progress', [AssetsController::class, 'getProgress'])->name('download.progress');
-Route::post('/extract-file', [AssetsController::class, 'extractAssets'])->name('extract.file');
-Route::get('/extract-progress', [AssetsController::class, 'extractProgress'])->name('extract.progress');
+Route::middleware(['auth', 'discord.member'])->group(function () {
+    Route::post('/download-file', [AssetsController::class, 'downloadAssets'])->name('download.file');
+    Route::get('/download-progress', [AssetsController::class, 'getProgress'])->name('download.progress');
+    Route::post('/extract-file', [AssetsController::class, 'extractAssets'])->name('extract.file');
+    Route::get('/extract-progress', [AssetsController::class, 'extractProgress'])->name('extract.progress');
+});
 
-Route::middleware(['auth', 'verified', 'admin'])->group(function () {
+Route::middleware(['auth', 'verified', 'discord.member', 'admin'])->group(function () {
     Route::get('/admin', [AdminController::class, 'index'])->name('admin');
     Route::post('/admin/lookup', [AdminController::class, 'lookupUser'])->name('admin.lookup');
     Route::post('/admin/update-currency', [AdminController::class, 'updateCurrency'])->name('admin.update-currency');
@@ -141,7 +143,7 @@ Route::get('/profile-pictures/discord/{uid}', [DiscordAvatarController::class, '
     ->whereNumber('uid')
     ->name('profile.discord-avatar');
 
-Route::middleware('auth')->group(function () {
+Route::middleware(['auth', 'discord.member'])->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');

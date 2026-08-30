@@ -5,7 +5,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="csrf-token" content="{{ csrf_token() }}">
 
-        <title>{{ config('app.name', 'Farmville Classic') }}</title>
+        <title>{{ $minimal ? 'Sign in with Discord' : 'FV Classic' }}</title>
 
         <!-- Fonts -->
         <link rel="preconnect" href="https://fonts.bunny.net">
@@ -52,11 +52,17 @@
     </head>
     <body class="font-sans text-gray-900 antialiased">
         <div style="padding: 2rem; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh;">
-            <a href="/" class="guest-brand">Farmville Classic</a>
+            @if (!$minimal)
+                <a href="/" class="guest-brand">FV Classic</a>
+            @endif
 
             <div class="guest-card dark:bg-gray-800">
                 {{ $slot }}
             </div>
+
+            @if (!$minimal)
+                <x-unofficial-notice />
+            @endif
         </div>
     </body>
 </html>

@@ -37,8 +37,16 @@ Route::middleware('guest')->group(function () {
         ->name('discord.redirect')
         ->middleware('maintenance');
 
+    Route::get('auth/discord/launcher', [DiscordAuthenticatedSessionController::class, 'launcherRedirect'])
+        ->name('discord.launcher.redirect')
+        ->middleware(['maintenance', 'throttle:10,1']);
+
     Route::get('auth/discord/callback', [DiscordAuthenticatedSessionController::class, 'callback'])
         ->name('discord.callback')
+        ->middleware('maintenance');
+
+    Route::get('auth/discord/launcher/consume', [DiscordAuthenticatedSessionController::class, 'launcherConsume'])
+        ->name('discord.launcher.consume')
         ->middleware('maintenance');
 
     Route::get('forgot-password', [PasswordResetLinkController::class, 'create'])
@@ -54,7 +62,7 @@ Route::middleware('guest')->group(function () {
         ->name('password.store');
 });
 
-Route::middleware('auth')->group(function () {
+Route::middleware(['auth', 'discord.member'])->group(function () {
     Route::get('verify-email', EmailVerificationPromptController::class)
         ->name('verification.notice');
 

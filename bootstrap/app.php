@@ -17,6 +17,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->trustProxies(at: '*');
         $middleware->alias([
             'admin' => \App\Http\Middleware\EnsureUserIsAdmin::class,
+            'discord.member' => \App\Http\Middleware\EnsureDiscordGuildMembership::class,
             'maintenance' => \App\Http\Middleware\CheckMaintenanceMode::class,
         ]);
     })

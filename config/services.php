@@ -39,6 +39,9 @@ return [
         'client_id' => env('DISCORD_CLIENT_ID'),
         'client_secret' => env('DISCORD_CLIENT_SECRET'),
         'redirect' => env('DISCORD_REDIRECT_URI'),
+        // When set, Discord sign-in is restricted to members of this guild.
+        'required_guild_id' => env('DISCORD_REQUIRED_GUILD_ID'),
+        'membership_verification_minutes' => (int) env('DISCORD_MEMBERSHIP_VERIFICATION_MINUTES', 1440),
     ],
 
 ];
