@@ -3,8 +3,6 @@
 use App\Models\UserWorld;
 use App\Models\WorldObject;
 use App\Support\WorldPersistence;
-use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\Schema;
 
 beforeEach(function (): void {
     if (! defined('AMFPHP_ROOTPATH')) {
@@ -13,19 +11,6 @@ beforeEach(function (): void {
 
     require_once AMFPHP_ROOTPATH.'Helpers/logger.php';
     require_once AMFPHP_ROOTPATH.'Helpers/general_functions.php';
-
-    // The production items table belongs to the imported legacy game-data
-    // schema, so it is not created by Laravel's application migrations. Some
-    // reload normalization paths consult it even when no item row is needed;
-    // provide the minimal test shape so those paths can be exercised safely.
-    if (! Schema::hasTable('items')) {
-        Schema::create('items', function (Blueprint $table): void {
-            $table->id();
-            $table->string('name');
-            $table->string('code');
-            $table->longText('data');
-        });
-    }
 });
 
 function persistenceTestWorld(): UserWorld
