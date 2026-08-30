@@ -219,9 +219,25 @@ class UserService{
             return ["data" => ["success" => false, "error" => "Item not found"]];
         }
 
-        $removed = removeFromInventoryStorage($uid, $itemCode, $quantity);
+        // GiftBoxSlot sends the Giftbox origin (-1; older clients may use the
+        // storage key -6).  Keep that collection separate from regular Home
+        // Inventory (-2): selling a gift must decrement the persisted Giftbox
+        // metadata, otherwise the client only removes it locally and it
+        // reappears after the next reload.
+        $isGiftbox = in_array($inventoryId, [
+            (int) GIFTBOX_ID,
+            (int) GIFTBOX_STORAGE_KEY,
+        ], true);
+        $removed = $isGiftbox
+            ? removeGiftByCode($uid, $itemCode, $quantity)
+            : removeFromInventoryStorage($uid, $itemCode, $quantity);
         if (!$removed) {
-            return ["data" => ["success" => false, "error" => "Item not in storage"]];
+            $storageName = $isGiftbox ? 'Giftbox' : 'storage';
+            return ["data" => [
+                "success" => false,
+                "sellable" => false,
+                "error" => "Item not in {$storageName}",
+            ]];
         }
 
         $sellPrice = 0;

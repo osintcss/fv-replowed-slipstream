@@ -240,6 +240,13 @@ class FarmService
                             addGiftByCode($uid, $grantItemCode, $grantQuantity);
                         }
                     }
+                } elseif ($packagedItem && is_string($packagedItem['code'] ?? null)
+                    && $packagedItem['code'] !== '') {
+                    // Animal love-potion packages name the consumable itself,
+                    // rather than an intermediary reward definition. Grant
+                    // that item directly; otherwise cash is charged but the
+                    // potions never reach the giftbox.
+                    addGiftByCode($uid, $packagedItem['code'], $packagedAmount);
                 }
             }
         }
