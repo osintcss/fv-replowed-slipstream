@@ -29,6 +29,7 @@
 
             <!-- Page Content -->
             <main>
+                <x-unofficial-notice />
                 {{ $slot }}
             </main>
         </div>

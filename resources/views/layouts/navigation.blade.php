@@ -63,7 +63,7 @@
                 <!-- Logo -->
                 <div class="shrink-0 flex items-center">
                     <a href="{{ route('dashboard') }}" style="font-size: 1.25rem; font-weight: 700; color: #fbbf24; text-decoration: none;">
-                        Farmville Classic
+                        FV Classic
                     </a>
                 </div>
 

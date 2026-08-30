@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>FarmVille Classic</title>
+    <title>FV Classic</title>
     <style>
         * {
             box-sizing: border-box;
@@ -129,9 +129,11 @@
 <body>
     <div class="container">
         <div class="logo">
-            <h1>FarmVille Classic</h1>
-            <p class="subtitle">Welcome back to the farm!</p>
+            <h1>FV Classic</h1>
+            <p class="subtitle">An unofficial community preservation project</p>
         </div>
+
+        <x-unofficial-notice />
 
         <div class="auth-buttons">
             <a href="{{ route('login') }}" class="btn btn-login">Login</a>
