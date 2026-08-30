@@ -54,6 +54,23 @@ function persistenceTestFlashObject(int $objectId, array $attributes = []): stdC
     ], $attributes);
 }
 
+it('enables turbo-ring mode only while a turbo ring is placed in the world', function (): void {
+    $world = persistenceTestWorld();
+
+    expect(hasTurboRing($world->uid, $world->type))->toBeFalse();
+
+    $ring = persistenceTestObject($world, 99, [
+        'class_name' => 'Decoration',
+        'item_name' => 'turboring',
+    ]);
+
+    expect(hasTurboRing($world->uid, $world->type))->toBeTrue();
+
+    $ring->update(['deleted' => true]);
+
+    expect(hasTurboRing($world->uid, $world->type))->toBeFalse();
+});
+
 it('does not let a stale conditional update overwrite a harvested plot', function (): void {
     $world = persistenceTestWorld();
     $plot = persistenceTestObject($world, 101);
@@ -106,6 +123,266 @@ it('updates only the requested world object', function (): void {
     expect($result)->toBeTrue();
     $this->assertDatabaseHas('world_objects', ['world_id' => $world->id, 'object_id' => 201, 'state' => 'fallow']);
     $this->assertDatabaseHas('world_objects', ['world_id' => $world->id, 'object_id' => 202, 'state' => 'grown', 'item_name' => 'pumpkin']);
+});
+
+it('serializes a completed pigpen with its authoritative storage state', function (): void {
+    $world = persistenceTestWorld();
+    $pigpen = persistenceTestObject($world, 250, [
+        'class_name' => 'PigpenBuilding',
+        'item_name' => 'pigpen',
+        'state' => 'built',
+        'expansion_level' => 2,
+        'expansion_parts' => json_encode(['pigpen_part' => 3]),
+        'contents' => json_encode([['itemCode' => 'pig', 'numItem' => 2]]),
+    ]);
+
+    $flash = $pigpen->toFlashObject();
+
+    expect($flash->isFullyBuilt)->toBeTrue()
+        ->and($flash->expansionLevel)->toBe(2)
+        ->and($flash->expansionParts->pigpen_part)->toBe(3)
+        ->and($flash->contents)->toBe([['itemCode' => 'pig', 'numItem' => 2]]);
+});
+
+it('normalizes legacy finished orchards without losing their contents', function (): void {
+    $world = persistenceTestWorld();
+    $orchard = persistenceTestObject($world, 2501, [
+        'class_name' => 'OrchardFeatureBuilding',
+        'item_name' => 'orchard_featurebuilding_finished',
+        'state' => 'grown',
+        'contents' => [
+            ['itemCode' => 'AP', 'numItem' => 2],
+            ['itemCode' => 'OR', 'numItem' => 1],
+        ],
+    ]);
+
+    $flash = $orchard->toFlashObject();
+
+    expect($flash->state)->toBe('bare')
+        ->and($flash->contents)->toBe([
+            ['itemCode' => 'AP', 'numItem' => 2],
+            ['itemCode' => 'OR', 'numItem' => 1],
+        ]);
+
+    $persisted = WorldObject::fromFlashObject($flash, $world->id);
+    expect($persisted['state'])->toBe('bare')
+        ->and(json_decode($persisted['contents'], true))->toBe([
+            ['itemCode' => 'AP', 'numItem' => 2],
+            ['itemCode' => 'OR', 'numItem' => 1],
+        ]);
+});
+
+it('does not normalize construction or unrelated orchard states', function (): void {
+    $world = persistenceTestWorld();
+    $construction = persistenceTestObject($world, 2502, [
+        'class_name' => 'OrchardConstructionBuilding',
+        'item_name' => 'orchard_featurebuilding',
+        'state' => 'construction',
+    ]);
+    $ripe = persistenceTestObject($world, 2503, [
+        'class_name' => 'OrchardFeatureBuilding',
+        'item_name' => 'orchard_featurebuilding_finished',
+        'state' => 'ripe',
+    ]);
+
+    expect($construction->toFlashObject()->state)->toBe('construction')
+        ->and($ripe->toFlashObject()->state)->toBe('ripe');
+});
+
+it('preserves mutable animal pattern hashes when rebuilding feature slots', function (): void {
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    $world = persistenceTestWorld();
+    $dnaOne = [
+        'G' => 'F',
+        'B' => ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => ['T' => ['c'], 'H' => ['20', '20'], 'S' => ['9', '9'], 'V' => ['9', '9']],
+    ];
+    $dnaTwo = [
+        'G' => 'M',
+        'B' => ['H' => ['30', '30'], 'S' => ['7', '7'], 'V' => ['7', '7']],
+        'P' => ['T' => ['d'], 'H' => ['40', '40'], 'S' => ['6', '6'], 'V' => ['6', '6']],
+    ];
+    $building = persistenceTestObject($world, 251, [
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'xuk_sheep_pen_finished',
+        'state' => 'bare',
+        'contents' => [
+            ['itemCode' => 'sheeppen_ewe', 'numItem' => 2],
+        ],
+        'components' => (object) [
+            'featuredItems' => (object) [
+                '0' => (object) ['itemCode' => 'sheeppen_ewe', 'metaHash' => 'sheeppen_ewe:keepme'],
+            ],
+            'storageMetadata' => (object) [
+                'sheeppen_ewe:' => [json_encode($dnaOne), json_encode($dnaTwo)],
+            ],
+        ],
+    ]);
+
+    $sync = new ReflectionMethod('Player', 'synchronizeFeatureStorageSlots');
+    $sync->setAccessible(true);
+    $sync->invoke(new Player($world->uid), $building, $building->contents);
+
+    expect($building->components->featuredItems->{'0'}->metaHash)->toBe('sheeppen_ewe:keepme')
+        ->and($building->components->featuredItems->{'1'}->metaHash)->toMatch('/^sheeppen_ewe:[a-f0-9]{8}$/')
+        ->and($building->components->featuredItems->{'1'}->metaHash)->not->toBe('sheeppen_ewe:');
+
+    // A pen saved by the old synchronizer may still have a generic hash. The
+    // reload serializer repairs it from the same DNA metadata.
+    $building->components->featuredItems->{'0'}->metaHash = 'sheeppen_ewe:';
+    expect($building->toFlashObject()->featuredItems->{'0'}->metaHash)
+        ->toMatch('/^sheeppen_ewe:[a-f0-9]{8}$/');
+});
+
+it('allows only DNA-backed boars and sows in a finished pig pen', function (): void {
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    $world = persistenceTestWorld();
+    $pen = persistenceTestObject($world, 2511, [
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'pigpenv2_finished',
+        'state' => 'bare',
+    ]);
+    $dna = (object) [
+        'G' => 'F',
+        'B' => (object) ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => (object) ['T' => ['c'], 'H' => ['20', '20'], 'S' => ['9', '9'], 'V' => ['9', '9']],
+    ];
+    $sow = persistenceTestObject($world, 2512, [
+        'class_name' => 'MutableAnimal',
+        'item_name' => 'pigpen_female',
+        'components' => (object) ['mutableAnimalState' => (object) ['dna' => $dna]],
+    ]);
+    $ordinaryPig = persistenceTestObject($world, 2513, [
+        'class_name' => 'Animal',
+        'item_name' => 'pig',
+    ]);
+
+    $validation = new ReflectionMethod('Player', 'isValidPigpenBreedingAnimal');
+    $validation->setAccessible(true);
+
+    expect($validation->invoke(null, $sow))->toBeTrue()
+        ->and($validation->invoke(null, $ordinaryPig))->toBeFalse();
+});
+
+it('round-trips adult mutable-animal DNA across world serialization', function (): void {
+    $world = persistenceTestWorld();
+    $dna = (object) [
+        'N' => 'Spots',
+        'G' => 'F',
+        'B' => (object) ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => (object) ['T' => ['c'], 'H' => ['20', '20'], 'S' => ['9', '9'], 'V' => ['9', '9']],
+    ];
+    $adult = persistenceTestObject($world, 252, [
+        'class_name' => 'MutableAnimal',
+        'item_name' => 'sheeppen_ewe',
+        'state' => 'bare',
+        'components' => (object) ['mutableAnimalState' => (object) ['dna' => $dna]],
+    ]);
+
+    $flash = $adult->toFlashObject();
+    expect($flash->mutableAnimalState->dna->P->T[0])->toBe('c');
+
+    $persisted = WorldObject::fromFlashObject($flash, $world->id);
+    $components = json_decode($persisted['components']);
+    expect($components->mutableAnimalState->dna->P->T[0])->toBe('c');
+});
+
+it('recovers adult breeding DNA saved by the legacy giftbox placement path', function (): void {
+    $world = persistenceTestWorld();
+    $dna = [
+        'G' => 'F',
+        'B' => ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => ['T' => ['e'], 'H' => ['20', '20'], 'S' => ['9', '9'], 'V' => ['9', '9']],
+    ];
+    $adult = persistenceTestObject($world, 2521, [
+        'class_name' => 'MutableAnimal',
+        'item_name' => 'sheeppen_ewe',
+        // `(object) $rawJson` stores raw primitive data as `scalar`.
+        'components' => (object) ['scalar' => json_encode($dna)],
+    ]);
+
+    expect($adult->toFlashObject()->mutableAnimalState->dna->P->T[0])->toBe('e');
+});
+
+it('keeps an explicit adult pattern instead of falling back to the default', function (): void {
+    $world = persistenceTestWorld();
+    $adult = persistenceTestObject($world, 253, [
+        'class_name' => 'MutableAnimal',
+        'item_name' => 'sheeppen_ewe',
+        'components' => (object) [
+            'mutableAnimalState' => (object) [
+                'dna' => (object) [
+                    'G' => 'F',
+                    'B' => (object) ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+                    'P' => (object) ['T' => ['g'], 'H' => ['20', '20'], 'S' => ['9', '9'], 'V' => ['9', '9']],
+                ],
+            ],
+        ],
+    ]);
+
+    expect($adult->toFlashObject()->mutableAnimalState->dna->P->T[0])->toBe('g');
+});
+
+it('reloads an unfinished breeding baby in its interactive state', function (): void {
+    $world = persistenceTestWorld();
+    $baby = persistenceTestObject($world, 2531, [
+        'class_name' => 'MutableAnimalBaby',
+        'item_name' => 'sheeppen_lamb',
+        'state' => 'built',
+        'components' => (object) [
+            'mutableAnimalState' => (object) ['dna' => (object) [
+                'G' => 'F',
+                'B' => (object) ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+                'P' => (object) ['T' => ['a'], 'H' => ['20', '20'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+            ]],
+        ],
+    ]);
+
+    $flash = $baby->toFlashObject();
+
+    expect($flash->state)->toBe('built')
+        ->and($flash->isFullyBuilt)->toBeFalse();
+});
+
+it('keeps a partially fed breeding baby clickable after reload', function (): void {
+    $world = persistenceTestWorld();
+    $baby = persistenceTestObject($world, 2532, [
+        'class_name' => 'MutableAnimalBaby',
+        'item_name' => 'pigpen_baby',
+        'state' => 'built',
+        'contents' => [
+            ['itemCode' => 'B8', 'numItem' => 9],
+        ],
+        'components' => (object) [
+            'mutableAnimalState' => (object) ['dna' => (object) [
+                'G' => 'F',
+                'B' => (object) ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+                'P' => (object) ['T' => ['a'], 'H' => ['20', '20'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+            ]],
+        ],
+    ]);
+
+    $flash = $baby->toFlashObject();
+
+    expect($flash->state)->toBe('built')
+        ->and($flash->isFullyBuilt)->toBeFalse()
+        ->and($flash->contents)->toBe([['itemCode' => 'B8', 'numItem' => 9]]);
+});
+
+it('normalizes legacy bare breeding babies to construction on reload', function (): void {
+    $world = persistenceTestWorld();
+    $baby = persistenceTestObject($world, 2533, [
+        'class_name' => 'MutableAnimalBaby',
+        'item_name' => 'pigpen_baby',
+        'state' => 'bare',
+    ]);
+
+    $flash = $baby->toFlashObject();
+
+    expect($flash->state)->toBe('construction')
+        ->and($flash->isFullyBuilt)->toBeFalse();
 });
 
 it('commits equipment changes atomically', function (): void {

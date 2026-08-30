@@ -5,6 +5,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/constants.php";
 require_once AMFPHP_ROOTPATH . "Helpers/quest_helper.php";
 require_once AMFPHP_ROOTPATH . "Helpers/collision.php";
 require_once AMFPHP_ROOTPATH . "Helpers/capture_feature_helper.php";
+require_once AMFPHP_ROOTPATH . "Helpers/mutable_animal_completion.php";
 
 use App\Models\UserMeta;
 use App\Models\UserAvatar;
@@ -12,6 +13,7 @@ use App\Models\UserWorld;
 use App\Models\User;
 use App\Models\PlayerMeta;
 use App\Models\WorldObject;
+use App\Support\StorageConfig;
 use App\Support\WorldPersistence;
 
 class Player {
@@ -34,6 +36,38 @@ class Player {
 
     public function getUid(){
         return $this->uid;
+    }
+
+    /**
+     * BreedingSkillState is initialized by Flash from this top-level map.
+     * Keep a small server-side copy so a reload does not reset a player's
+     * sheep/pig breeding progress to level zero.
+     */
+    public function getBreedingSkillStates(): array
+    {
+        $raw = get_meta($this->uid, 'breeding_skill_states');
+        $states = is_string($raw) ? (@unserialize($raw) ?: []) : [];
+        if (!is_array($states)) {
+            $states = [];
+        }
+
+        foreach (['xuk_sheep_pen_finished', 'pigpenv2_finished'] as $featureName) {
+            $state = $states[$featureName] ?? [];
+            if (is_object($state)) {
+                $state = get_object_vars($state);
+            }
+            if (!is_array($state)) {
+                $state = [];
+            }
+            $states[$featureName] = [
+                'featureName' => $featureName,
+                'xp' => max(0, (int) ($state['xp'] ?? 0)),
+                'level' => max(1, (int) ($state['level'] ?? 1)),
+                'milestones' => is_array($state['milestones'] ?? null) ? $state['milestones'] : [],
+            ];
+        }
+
+        return $states;
     }
 
     public function lastPlacementWasIdempotentRetry(): bool {
@@ -166,22 +200,200 @@ class Player {
             return;
         }
 
+        $components = is_object($building->components) ? $building->components : new \stdClass();
+        $existingFeatured = isset($components->featuredItems) && is_object($components->featuredItems)
+            ? $components->featuredItems : new \stdClass();
+
+        // A mutable animal's item code is shared by every colour/pattern
+        // variant.  Keep the hash sent by Flash for existing slots; replacing
+        // it with "code:" makes all sheep resolve to the first DNA record on
+        // the next reload.  This is especially easy to trigger when a store
+        // action compacts the slot map after the animal has been harvested.
         $featuredItems = new \stdClass();
+        $remaining = [];
+        foreach ($contents as $content) {
+            $itemCode = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+            $count = is_object($content) ? (int) ($content->numItem ?? 0) : (int) ($content['numItem'] ?? 0);
+            if (is_string($itemCode) && $itemCode !== '' && $count > 0) {
+                $remaining[$itemCode] = ($remaining[$itemCode] ?? 0) + $count;
+            }
+        }
+
+        $existingSlots = get_object_vars($existingFeatured);
+        uksort($existingSlots, static fn ($left, $right) => (int) $left <=> (int) $right);
+        foreach ($existingSlots as $slot => $entry) {
+            $itemCode = is_object($entry) ? ($entry->itemCode ?? null) : ($entry['itemCode'] ?? null);
+            if (!is_string($itemCode) || $itemCode === '' || ($remaining[$itemCode] ?? 0) <= 0) {
+                continue;
+            }
+
+            $metaHash = is_object($entry)
+                ? ($entry->metaHash ?? null)
+                : ($entry['metaHash'] ?? null);
+            // "code:" is only the non-specific fallback. Treat it as a
+            // missing hash so the metadata pass below can assign this slot's
+            // actual DNA hash and repair legacy rows during the next write.
+            if (!is_string($metaHash) || $metaHash === '' || $metaHash === $itemCode . ':') {
+                continue;
+            }
+            $featuredItems->{(string) $slot} = (object) [
+                'itemCode' => $itemCode,
+                'metaHash' => $metaHash,
+            ];
+            --$remaining[$itemCode];
+        }
+
+        // Build hashes for metadata records that do not yet have a featured
+        // slot (for example, a legacy pen containing animals before the
+        // single-slot action was implemented).
+        $metadataHashes = [];
+        $storageMetadata = isset($components->storageMetadata) && is_object($components->storageMetadata)
+            ? $components->storageMetadata : new \stdClass();
+        foreach (get_object_vars($storageMetadata) as $metadataKey => $entries) {
+            $baseCode = explode(':', (string) $metadataKey, 2)[0];
+            if ($baseCode === '') {
+                continue;
+            }
+            $entries = is_array($entries) ? $entries : [$entries];
+            foreach ($entries as $metadata) {
+                $hash = self::mutableAnimalMetadataHash($metadata);
+                if ($hash !== null) {
+                    $metadataHashes[$baseCode][] = $baseCode . ':' . $hash;
+                }
+            }
+        }
+
+        $availableHashes = [];
+        foreach ($metadataHashes as $hashes) {
+            foreach ($hashes as $hash) {
+                $availableHashes[$hash] = ($availableHashes[$hash] ?? 0) + 1;
+            }
+        }
+        foreach (get_object_vars($featuredItems) as $entry) {
+            if (is_object($entry) && is_string($entry->metaHash ?? null)) {
+                if (($availableHashes[$entry->metaHash] ?? 0) > 0) {
+                    --$availableHashes[$entry->metaHash];
+                }
+            }
+        }
+
         $slot = 0;
         foreach ($contents as $content) {
             $itemCode = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
             $count = is_object($content) ? (int) ($content->numItem ?? 0) : (int) ($content['numItem'] ?? 0);
             for ($i = 0; is_string($itemCode) && $itemCode !== '' && $i < max(0, $count); $i++) {
-                $featuredItems->{(string) $slot++} = (object) [
+                if (($remaining[$itemCode] ?? 0) <= 0) {
+                    continue;
+                }
+                while (isset($featuredItems->{(string) $slot})) {
+                    ++$slot;
+                }
+                $metaHash = null;
+                foreach (($metadataHashes[$itemCode] ?? []) as $candidate) {
+                    if (($availableHashes[$candidate] ?? 0) > 0) {
+                        $metaHash = $candidate;
+                        --$availableHashes[$candidate];
+                        break;
+                    }
+                }
+                $featuredItems->{(string) $slot} = (object) [
                     'itemCode' => $itemCode,
-                    'metaHash' => $itemCode . ':',
+                    'metaHash' => $metaHash ?? $itemCode . ':',
                 ];
+                --$remaining[$itemCode];
+                ++$slot;
             }
         }
 
-        $components = is_object($building->components) ? $building->components : new \stdClass();
         $components->featuredItems = $featuredItems;
         $building->components = $components;
+    }
+
+    /** Return the same short DNA hash used by AnimalBreedingService. */
+    private static function mutableAnimalMetadataHash($metadata): ?string {
+        if (is_object($metadata) && isset($metadata->type) && is_string($metadata->type)) {
+            $metadata = $metadata->type;
+        }
+        if (is_array($metadata) && isset($metadata['type']) && is_string($metadata['type'])) {
+            $metadata = $metadata['type'];
+        }
+        if (is_string($metadata)) {
+            $metadata = json_decode($metadata, true);
+        } elseif (is_object($metadata)) {
+            $metadata = get_object_vars($metadata);
+        }
+        if (!is_array($metadata) || !isset($metadata['G'], $metadata['B'], $metadata['P'])) {
+            return null;
+        }
+
+        $state = (string) $metadata['G'];
+        foreach (['B', 'P'] as $trait) {
+            foreach (['H', 'S', 'V'] as $channel) {
+                $values = $metadata[$trait][$channel] ?? ['', ''];
+                $state .= ($values[0] ?? '') . ',' . ($values[1] ?? '');
+            }
+            if ($trait === 'P') {
+                $state .= $metadata['P']['T'][0] ?? '';
+            }
+        }
+
+        return substr(md5($state), 0, 8);
+    }
+
+    /** A finished pig pen may contain only adult, DNA-backed breeding pigs. */
+    private static function isValidPigpenBreedingAnimal(WorldObject $animal): bool {
+        // The original Pig Pen treats the ordinary market Pig as a sow. It
+        // has no mutable envelope on the farm, so storeItem supplies its
+        // canonical female breeding DNA when it enters the pen.
+        if ($animal->class_name === 'Animal' && $animal->item_name === 'pig') {
+            return true;
+        }
+
+        if ($animal->class_name !== 'MutableAnimal'
+            || !preg_match('/^pigpen_(male|female)(?:_|$)/', (string) $animal->item_name, $match)) {
+            return false;
+        }
+
+        $components = is_object($animal->components) ? $animal->components : new \stdClass();
+        $mutableState = $components->mutableAnimalState ?? null;
+        $dna = is_object($mutableState) ? ($mutableState->dna ?? null) : null;
+        if (!is_object($dna) && !is_array($dna)) {
+            return false;
+        }
+
+        $metadata = json_decode(json_encode($dna), true);
+        if (self::mutableAnimalMetadataHash($metadata) === null) {
+            return false;
+        }
+
+        return ($metadata['G'] ?? null) === ($match[1] === 'male' ? 'M' : 'F');
+    }
+
+    private static function isBasePigpenSow(WorldObject $animal): bool {
+        return $animal->class_name === 'Animal' && $animal->item_name === 'pig';
+    }
+
+    /** Default female traits for an ordinary Pig stored in the Pig Pen. */
+    private static function basePigpenSowDna(): array {
+        return [
+            'N' => '',
+            'G' => 'F',
+            'B' => ['H' => ['d5', 'd6'], 'S' => ['2', '2'], 'V' => ['f', 'f']],
+            'P' => ['H' => ['9', '9'], 'S' => ['e', 'e'], 'V' => ['f', 'f'], 'T' => ['f']],
+        ];
+    }
+
+    /** Reject animals that can render in a pen but cannot participate in its breeding protocol. */
+    private static function canStoreInFeatureBuilding(WorldObject $building, ?WorldObject $animal, string $itemCode): bool {
+        if ($building->item_name !== 'pigpenv2_finished') {
+            return true;
+        }
+        if ($animal === null || !self::isValidPigpenBreedingAnimal($animal)) {
+            return false;
+        }
+
+        $item = getItemByName((string) $animal->item_name, 'db');
+        return is_array($item) && ($item['code'] ?? null) === $itemCode;
     }
 
     public function getData($requ) {
@@ -254,6 +466,11 @@ class Player {
                 "MINIDARTS" => '{"CURRENCY_ITEM":"","THROTTLE":0,"CONSUMABLE":"consume_mystery_game_revamp_dart","END_DATE":"01/01/2010","VERSION":1,"CONSUMABLE_COST":15}',
                 "REALITEMNAME_ENABLED" => true,
                 "MARKET_REPOP_BLACKLIST" => "",
+                // ExchangeSelectorSlot replaces the page flash parameters with this
+                // InitUser payload. Both values are required for bushel-trader
+                // inputs; a missing value is coerced to zero and disables Add.
+                "DEFAULT_BUSHEL_ADD_TEMPRT" => 25,
+                "BUSHEL_TRADE_NEEDED_TEMPRT" => 25,
                 // The original cash-purchase flow opened Zynga's external
                 // payment dialog.  In the offline build it instead falls
                 // back to this message.  The Flash client dereferences this
@@ -305,6 +522,9 @@ class Player {
             "userLocale" => "en_US",
             "req_initUserStartTimestamp" => time(),
             "world" => $currentWorld,
+            // TInitUser reads breeding skill states from the top-level
+            // InitUser payload, not from postInit's legacy breedingState.
+            "breedingSkillStates" => $this->getBreedingSkillStates(),
             "craftingState" => array(
                 "craftingItems" => getCraftingInventory($this->uid),
                 "nextCalendarDate" => 12,
@@ -405,7 +625,10 @@ class Player {
                         'm_neighborActionLimits' => getNeighborActionLimits($this->uid)
                     ),
                     'energyManager' => array(
-                        "turboChargers" => 0
+                        // FarmService::buyTurboChargers persists this value in player
+                        // metadata. Return the same value on InitUser so a reload
+                        // does not reset the client's Turbo Fuel balance to zero.
+                        "turboChargers" => (int) (get_meta($this->uid, "turboChargers") ?: 0)
                     ),
                     "isAKeynoteUser" => "1"
                 ),
@@ -433,6 +656,12 @@ class Player {
 
     private function buildFeatureOptions() {
         $irrigationData = getIrrigationData($this->uid);
+        $currentWorldType = getCurrentWorldType($this->uid);
+        $turboRingActiveWorlds = [];
+
+        if (hasTurboRing($this->uid, $currentWorldType)) {
+            $turboRingActiveWorlds[$currentWorldType] = true;
+        }
 
         return [
             "world_seasons" => [
@@ -444,6 +673,12 @@ class Player {
             ],
             "gophergarden" => [
                 "gophergarden" => getCaptureFeatureData($this->uid, "gophergarden")
+            ],
+            // InfiniteTurboManager reads this setting on every Turbo action.
+            // Keeping it world-scoped preserves the original Turbo Ring rule:
+            // a ring affects its placed world, not a player's fuel inventory.
+            "turbo_rings" => [
+                "turbo_rings_active_worlds" => $turboRingActiveWorlds
             ]
         ];
     }
@@ -524,7 +759,12 @@ class Player {
             }
         }
 
-        if (($action == ACTION_PLOW || $action == ACTION_PLANT) && $incomingObjectId !== null && $incomingObjectId >= TEMP_ID_THRESHOLD){
+        // Flash's local object counter can also produce low IDs after a
+        // reload. Treat every placement as a server-assigned identity
+        // operation: an existing plot keeps its ID, while a new object gets
+        // the next unused ID. Restricting this to large temporary IDs let a
+        // new breeding lamb with a low ID overwrite an unrelated penguin.
+        if ($action == ACTION_PLOW || $action == ACTION_PLANT){
             $placement = CollisionDetector::validatePlacement($newObj, $currWorld["objectsArray"], $action);
             
             if ($placement['existingKey'] !== null) {
@@ -643,7 +883,12 @@ class Player {
             if ($existingComponents !== null) {
                 $incomingComponents = isset($newObj->components) && is_object($newObj->components)
                     ? $newObj->components : new \stdClass();
-                foreach (['featuredItems', 'storageMetadata', 'paintColor'] as $componentKey) {
+                $preserveComponents = ['featuredItems', 'storageMetadata', 'paintColor'];
+                if (in_array(($newObj->className ?? ''), ['MutableAnimal', 'MutableAnimalBaby'], true)
+                    || in_array(($existingObj->className ?? ''), ['MutableAnimal', 'MutableAnimalBaby'], true)) {
+                    $preserveComponents[] = 'mutableAnimalState';
+                }
+                foreach ($preserveComponents as $componentKey) {
                     if (property_exists($newObj, $componentKey) && !property_exists($incomingComponents, $componentKey)) {
                         $incomingComponents->{$componentKey} = $newObj->{$componentKey};
                     }
@@ -720,6 +965,21 @@ class Player {
                         $newObj->expansionParts = new \stdClass();
                     }
                 }
+            }
+
+            // Market placement packets use the final artwork state (`built`)
+            // even for an uncompleted construction building.  That is only a
+            // client-side placement preview: persisting it makes Flash render
+            // an unfinished Pig Pen as complete after a reload, while its
+            // server contract is still PigpenConstructionBuilding.  The
+            // completion flow is the sole authority allowed to create the
+            // finished building, so newly inserted construction sites always
+            // start in Flash's explicit `construction` state. `bare` is not
+            // equivalent here: StorageBuilding.loadObject treats an empty
+            // bare building as built before choosing its artwork.
+            if (is_string($newObj->className ?? null)
+                && str_ends_with($newObj->className, 'ConstructionBuilding')) {
+                $newObj->state = 'construction';
             }
 
             $currWorld["objectsArray"][] = $newObj;
@@ -822,6 +1082,81 @@ class Player {
         return $obj;
     }
 
+    /**
+     * Return the finished Pig Pen contract once every configured construction
+     * part is present. This is intentionally checked against the locked
+     * database row, rather than Flash's isFull flag.
+     */
+    private function pigpenConstructionCompletion(WorldObject $building, array $contents): ?array
+    {
+        if ($building->item_name !== 'pigpen'
+            || $building->class_name !== 'PigpenConstructionBuilding'
+            || $building->state !== 'construction') {
+            return null;
+        }
+
+        $constructionItem = getItemByName('pigpen', 'db');
+        if (!is_array($constructionItem)) {
+            return null;
+        }
+
+        $storageType = $constructionItem['storageType'] ?? null;
+        $storageClass = is_array($storageType)
+            ? ($storageType['itemClass'] ?? null)
+            : (is_object($storageType) ? ($storageType->itemClass ?? null) : null);
+        $requirements = StorageConfig::constructionRequirements($storageClass);
+        if ($requirements === []) {
+            return null;
+        }
+
+        foreach ($requirements as $partName => $required) {
+            $partItem = getItemByName((string) $partName, 'db');
+            $partCode = is_array($partItem) ? ($partItem['code'] ?? null) : null;
+            if (!is_string($partCode) || $partCode === '') {
+                return null;
+            }
+
+            $collected = 0;
+            foreach ($contents as $content) {
+                $itemCode = is_object($content)
+                    ? ($content->itemCode ?? null)
+                    : ($content['itemCode'] ?? null);
+                if ($itemCode !== $partCode) {
+                    continue;
+                }
+
+                $collected += max(0, (int) (is_object($content)
+                    ? ($content->numItem ?? 0)
+                    : ($content['numItem'] ?? 0)));
+            }
+
+            if ($collected < (int) $required) {
+                return null;
+            }
+        }
+
+        $finishedName = $constructionItem['finishedName'] ?? null;
+        if (!is_string($finishedName) || $finishedName === '') {
+            return null;
+        }
+
+        $finishedItem = getItemByName($finishedName, 'db');
+        if (!is_array($finishedItem)) {
+            return null;
+        }
+
+        $finishedClassName = is_string($finishedItem['className'] ?? null)
+            ? $finishedItem['className'] : 'Building';
+        $finishedState = $finishedClassName === 'FeatureBuilding' ? 'bare' : 'built';
+
+        return [
+            'finishedName' => $finishedName,
+            'finishedClassName' => $finishedClassName,
+            'finishedState' => $finishedState,
+            'gift' => $constructionItem['finishedReward'] ?? null,
+        ];
+    }
+
     public function storeItem($buildingObj, $storeParams){
         $currentWorldType = get_meta($this->uid, "currentWorldType") ?: "farm";
 
@@ -837,6 +1172,8 @@ class Player {
         $requestedResourceId = (int) ($storeParams->resource ?? 0);
         $resourceId = $requestedResourceId;
         $numToStore = (int) ($storeParams->numToStore ?? 1);
+        $storedClassName = (string) ($storeParams->storedClassName ?? '');
+        $storedMetadata = $storeParams->metadata ?? null;
 
         if (!$buildingId || !$itemCode) return false;
 
@@ -880,7 +1217,7 @@ class Player {
         // its later delete/reinsert used to erase the pen contents that had
         // just appeared client-side. Lock and update only the pen and the
         // animal being moved.
-        $contents = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $resourceId, $itemCode, $storedItemName, $numToStore) {
+        $contents = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $resourceId, $itemCode, $storedItemName, $numToStore, $storedClassName, $storedMetadata) {
             $storedBuilding = WorldObject::query()
                 ->where('world_id', $worldId)
                 ->where('object_id', (int) $buildingId)
@@ -892,28 +1229,7 @@ class Player {
                 throw new \RuntimeException("Storage building {$buildingId} no longer exists");
             }
 
-            $contents = is_array($storedBuilding->contents) ? $storedBuilding->contents : [];
-            $contentIndex = null;
-            foreach ($contents as $key => $content) {
-                $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
-                if ($code === $itemCode) {
-                    $contentIndex = $key;
-                    break;
-                }
-            }
-
-            if ($contentIndex === null) {
-                $contents[] = ['itemCode' => $itemCode, 'numItem' => max(1, $numToStore)];
-            } else {
-                $currentCount = is_object($contents[$contentIndex])
-                    ? (int) ($contents[$contentIndex]->numItem ?? 0)
-                    : (int) ($contents[$contentIndex]['numItem'] ?? 0);
-                $contents[$contentIndex] = [
-                    'itemCode' => $itemCode,
-                    'numItem' => $currentCount + max(1, $numToStore),
-                ];
-            }
-
+            $resource = null;
             if ($resourceId > 0) {
                 $resource = WorldObject::query()
                     ->where('world_id', $worldId)
@@ -929,23 +1245,154 @@ class Player {
                 if ($storedItemName !== null && $resource->item_name !== $storedItemName) {
                     throw new \RuntimeException("Stored resource {$resourceId} does not match requested item");
                 }
+            }
 
+            // Generic pigs used to be accepted into the breeding pen because
+            // they share its visual animal category. They have no mutable DNA
+            // or gender, however, so they could never form a valid pair.
+            // Validate the locked world object rather than Flash's claimed
+            // class/name metadata, before changing either object.
+            if (!$this->canStoreInFeatureBuilding($storedBuilding, $resource, (string) $itemCode)) {
+                throw new \RuntimeException('invalid_feature_storage_animal');
+            }
+            $isBasePigpenSow = $storedBuilding->item_name === 'pigpenv2_finished'
+                && $resource !== null && self::isBasePigpenSow($resource);
+            // Keep the same code Flash supplied.  PigpenDialog later sends
+            // that code back when it removes the pig from the pen; rewriting
+            // PI (Pig) to I! (pigpen_female) leaves the visual slot and its
+            // stored count out of sync with the removal request.
+            $storageItemCode = (string) $itemCode;
+
+            $contents = is_array($storedBuilding->contents) ? $storedBuilding->contents : [];
+            $contentIndex = null;
+            foreach ($contents as $key => $content) {
+                $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                if ($code === $storageItemCode) {
+                    $contentIndex = $key;
+                    break;
+                }
+            }
+
+            if ($contentIndex === null) {
+                $contents[] = ['itemCode' => $storageItemCode, 'numItem' => max(1, $numToStore)];
+            } else {
+                $currentCount = is_object($contents[$contentIndex])
+                    ? (int) ($contents[$contentIndex]->numItem ?? 0)
+                    : (int) ($contents[$contentIndex]['numItem'] ?? 0);
+                $contents[$contentIndex] = [
+                    'itemCode' => $storageItemCode,
+                    'numItem' => $currentCount + max(1, $numToStore),
+                ];
+            }
+
+            if ($resource !== null) {
                 $resource->update(['deleted' => true]);
             }
 
-            $storedBuilding->contents = $contents;
+            // Mutable animals carry their DNA in the store transaction rather
+            // than in the compact contents count. Keep that per-instance
+            // metadata beside the count so a later withdrawal or breeding
+            // request can recover the same traits after a reload.
+            if (($storedMetadata !== null
+                    && in_array($storedClassName, ['MutableAnimal', 'MutableAnimalBaby'], true))
+                || $isBasePigpenSow) {
+                $components = is_object($storedBuilding->components)
+                    ? $storedBuilding->components : new \stdClass();
+                $storageMetadata = is_object($components->storageMetadata ?? null)
+                    ? $components->storageMetadata : new \stdClass();
+                // FeaturedRenderFMutableObject expects the raw JSON state,
+                // not TStoreItem's {type: ...} wrapper object. Persisting the
+                // wrapper makes Flash coerce it to "[object Object]" and
+                // fail JSON parsing during the next world load.
+                $metadataValue = $isBasePigpenSow
+                    ? json_encode(self::basePigpenSowDna()) : $storedMetadata;
+                if (!$isBasePigpenSow) {
+                    if (is_object($metadataValue) && isset($metadataValue->type) && is_string($metadataValue->type)) {
+                        $metadataValue = $metadataValue->type;
+                    } elseif (is_array($metadataValue) && isset($metadataValue['type']) && is_string($metadataValue['type'])) {
+                        $metadataValue = $metadataValue['type'];
+                    } elseif (is_object($metadataValue) || is_array($metadataValue)) {
+                        $metadataValue = json_encode($metadataValue);
+                    }
+                }
+                $metadataHash = self::mutableAnimalMetadataHash($metadataValue);
+                $metadataKey = $storageItemCode . ':' . ($metadataHash ?? '');
+                $entries = $storageMetadata->{$metadataKey} ?? [];
+                $entries = is_array($entries) ? $entries : [];
+                for ($i = 0; $i < max(1, $numToStore); $i++) {
+                    if (is_string($metadataValue) && $metadataValue !== '') {
+                        $entries[] = $metadataValue;
+                    }
+                }
+                $storageMetadata->{$metadataKey} = $entries;
+                $components->storageMetadata = $storageMetadata;
+                $storedBuilding->components = $components;
+            }
+
+            $completion = $this->pigpenConstructionCompletion($storedBuilding, $contents);
+            if ($completion === null && $storedBuilding->class_name === 'MutableAnimalBaby') {
+                // The final bottle is the normal, free completion path for a
+                // breeding baby. Persist the same adult transition that the
+                // explicit TransformBuilding action uses so a reload cannot
+                // leave the client displaying a permanent 10/10 baby.
+                $completion = MutableAnimalCompletion::forBaby($storedBuilding, $contents, true);
+                if ($completion !== null) {
+                    Logger::debug('World', sprintf(
+                        'Mutable baby final bottle transform: uid=%s objectId=%d item=%s finished=%s',
+                        $this->uid,
+                        (int) $storedBuilding->object_id,
+                        (string) $storedBuilding->item_name,
+                        (string) $completion['finishedName'],
+                    ));
+                }
+            }
+            if ($completion !== null) {
+                $storedBuilding->item_name = $completion['finishedName'];
+                $storedBuilding->class_name = $completion['finishedClassName'];
+                $storedBuilding->state = $completion['finishedState'];
+                $storedBuilding->contents = [];
+                $finishedComponents = new \stdClass();
+                if (isset($completion['mutableAnimalState'])
+                    && is_object($completion['mutableAnimalState'])) {
+                    $finishedComponents->mutableAnimalState = $completion['mutableAnimalState'];
+                }
+                $storedBuilding->components = $finishedComponents;
+                $contents = [];
+            } else {
+                $storedBuilding->contents = $contents;
+            }
+
             $this->synchronizeFeatureStorageSlots($storedBuilding, $contents);
             $storedBuilding->save();
 
-            return $contents;
+            return [
+                'contents' => $contents,
+                'completion' => $completion,
+            ];
         });
 
         if ($contents === false) {
             return false;
         }
 
+        $completion = is_array($contents['completion'] ?? null)
+            ? $contents['completion'] : null;
+        $contents = is_array($contents['contents'] ?? null)
+            ? $contents['contents'] : [];
+
         $building = $currWorld["objectsArray"][$buildingKey];
         $building->contents = $contents;
+        if ($completion !== null) {
+            $building->itemName = $completion['finishedName'];
+            $building->className = $completion['finishedClassName'];
+            $building->state = $completion['finishedState'];
+            $finishedComponents = new \stdClass();
+            if (isset($completion['mutableAnimalState'])
+                && is_object($completion['mutableAnimalState'])) {
+                $finishedComponents->mutableAnimalState = $completion['mutableAnimalState'];
+            }
+            $building->components = $finishedComponents;
+        }
         foreach ($currWorld["objectsArray"] as $key => $obj) {
             if ((int) ($obj->id ?? 0) === $resourceId) {
                 unset($currWorld["objectsArray"][$key]);
@@ -970,6 +1417,7 @@ class Player {
             'id' => $resourceId,
             'itemCode' => $itemCode,
             'quantity' => max(1, $numToStore),
+            'completion' => $completion,
         ];
     }
 
@@ -1055,6 +1503,242 @@ class Player {
      */
     public function withdrawStoredItem($buildingId, $itemCode){
         return $this->adjustStoredItemCount($buildingId, $itemCode, -1);
+    }
+
+    /**
+     * Withdraw one mutable animal and its per-instance DNA metadata from a
+     * FeatureBuilding. Returns false when the older save has no metadata; the
+     * caller can then fall back to the ordinary count-only withdrawal.
+     *
+     * @return array{metadata: string|null}|false
+     */
+    public function withdrawMutableAnimal($buildingId, $itemCode){
+        $currentWorldType = get_meta($this->uid, 'currentWorldType') ?: 'farm';
+        return WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $itemCode) {
+            $building = WorldObject::query()->where('world_id', $worldId)
+                ->where('object_id', (int) $buildingId)->where('deleted', false)
+                ->lockForUpdate()->first();
+            if ($building === null) return false;
+
+            $contents = is_array($building->contents) ? $building->contents : [];
+            $hasItem = false;
+            foreach ($contents as $content) {
+                $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                $count = is_object($content) ? (int) ($content->numItem ?? 0) : (int) ($content['numItem'] ?? 0);
+                if ($code === $itemCode && $count > 0) { $hasItem = true; break; }
+            }
+            if (!$hasItem) return false;
+
+            $components = is_object($building->components) ? $building->components : new \stdClass();
+            $storageMetadata = is_object($components->storageMetadata ?? null)
+                ? $components->storageMetadata : new \stdClass();
+            $keys = array_keys(get_object_vars($storageMetadata));
+            $metadataKey = null;
+            foreach ($keys as $key) {
+                if (explode(':', (string) $key, 2)[0] !== (string) $itemCode) continue;
+                $entries = $storageMetadata->{$key};
+                if (is_array($entries) && $entries !== []) {
+                    $metadataKey = $key;
+                }
+            }
+            if ($metadataKey === null) return false;
+
+            $entries = $storageMetadata->{$metadataKey};
+            $metadata = array_pop($entries);
+            if ($entries === []) unset($storageMetadata->{$metadataKey});
+            else $storageMetadata->{$metadataKey} = array_values($entries);
+            $components->storageMetadata = $storageMetadata;
+
+            foreach ($contents as $index => $content) {
+                $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                if ($code !== $itemCode) continue;
+                $count = is_object($content) ? (int) ($content->numItem ?? 0) : (int) ($content['numItem'] ?? 0);
+                if ($count <= 1) unset($contents[$index]);
+                elseif (is_object($content)) $content->numItem = $count - 1;
+                else $contents[$index]['numItem'] = $count - 1;
+                break;
+            }
+            $building->contents = array_values($contents);
+            $building->components = $components;
+            $this->synchronizeFeatureStorageSlots($building, $building->contents);
+            $building->save();
+
+            return ['metadata' => is_string($metadata) ? $metadata : json_encode($metadata)];
+        });
+    }
+
+    /** Restore a mutable-animal withdrawal, retaining its exact DNA hash key. */
+    public function restoreMutableAnimal($buildingId, $itemCode, $metadata): bool {
+        if (!is_string($metadata) || $metadata === '') return false;
+        $currentWorldType = get_meta($this->uid, 'currentWorldType') ?: 'farm';
+        $restored = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $itemCode, $metadata) {
+            $building = WorldObject::query()->where('world_id', $worldId)
+                ->where('object_id', (int) $buildingId)->where('deleted', false)
+                ->lockForUpdate()->first();
+            if ($building === null) return false;
+            $contents = is_array($building->contents) ? $building->contents : [];
+            $found = false;
+            foreach ($contents as $index => $content) {
+                $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                if ($code !== $itemCode) continue;
+                if (is_object($content)) ++$content->numItem;
+                else ++$contents[$index]['numItem'];
+                $found = true; break;
+            }
+            if (!$found) $contents[] = (object) ['itemCode' => $itemCode, 'numItem' => 1];
+            $components = is_object($building->components) ? $building->components : new \stdClass();
+            $storageMetadata = is_object($components->storageMetadata ?? null) ? $components->storageMetadata : new \stdClass();
+            $hash = self::mutableAnimalMetadataHash($metadata);
+            $key = $itemCode . ':' . ($hash ?? '');
+            $entries = $storageMetadata->{$key} ?? [];
+            $entries = is_array($entries) ? $entries : [];
+            $entries[] = $metadata;
+            $storageMetadata->{$key} = $entries;
+            $components->storageMetadata = $storageMetadata;
+            $building->contents = $contents;
+            $building->components = $components;
+            $this->synchronizeFeatureStorageSlots($building, $contents);
+            $building->save();
+            return true;
+        });
+        return $restored === true;
+    }
+
+    /**
+     * Withdraw one mutable animal crate and its per-instance metadata from a
+     * FeatureBuilding.  Crates share one item code but can grow into
+     * different adults, so the metadata entry is as authoritative as the
+     * count in `contents`.
+     *
+     * @return array{metadata: string|null}|false
+     */
+    public function withdrawMutableAnimalCrate($buildingId, $itemCode){
+        $currentWorldType = get_meta($this->uid, 'currentWorldType') ?: 'farm';
+        $result = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $itemCode) {
+            $building = WorldObject::query()
+                ->where('world_id', $worldId)
+                ->where('object_id', (int) $buildingId)
+                ->where('deleted', false)
+                ->lockForUpdate()
+                ->first();
+            if ($building === null) {
+                return false;
+            }
+
+            $contents = is_array($building->contents) ? $building->contents : [];
+            $contentIndex = null;
+            foreach ($contents as $key => $content) {
+                $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                $count = is_object($content) ? (int) ($content->numItem ?? 0) : (int) ($content['numItem'] ?? 0);
+                if ($code === $itemCode && $count > 0) {
+                    $contentIndex = $key;
+                    break;
+                }
+            }
+            if ($contentIndex === null) {
+                return false;
+            }
+
+            $components = is_object($building->components) ? $building->components : new \stdClass();
+            $storageMetadata = is_object($components->storageMetadata ?? null)
+                ? $components->storageMetadata : new \stdClass();
+            $metadataKey = $itemCode . ':';
+            $metadataEntries = $storageMetadata->{$metadataKey} ?? [];
+            if (!is_array($metadataEntries) || empty($metadataEntries)) {
+                // A mutable crate without its adultCode cannot be completed
+                // safely. Leave the source building unchanged rather than
+                // creating an irrecoverable generic crate.
+                return false;
+            }
+
+            // FeatureBuilding.removeContents() removes the last matching
+            // entry when a metadata record is not explicitly identified in a
+            // world-action request. Mirror that legacy client behavior.
+            $metadata = array_pop($metadataEntries);
+            if ($metadataEntries === []) {
+                unset($storageMetadata->{$metadataKey});
+            } else {
+                $storageMetadata->{$metadataKey} = array_values($metadataEntries);
+            }
+            $components->storageMetadata = $storageMetadata;
+
+            $count = is_object($contents[$contentIndex])
+                ? (int) ($contents[$contentIndex]->numItem ?? 0)
+                : (int) ($contents[$contentIndex]['numItem'] ?? 0);
+            if ($count <= 1) {
+                unset($contents[$contentIndex]);
+                $contents = array_values($contents);
+            } elseif (is_object($contents[$contentIndex])) {
+                --$contents[$contentIndex]->numItem;
+            } else {
+                --$contents[$contentIndex]['numItem'];
+            }
+
+            $building->contents = $contents;
+            $building->components = $components;
+            $this->synchronizeFeatureStorageSlots($building, $contents);
+            $building->save();
+
+            return ['metadata' => is_string($metadata) ? $metadata : null];
+        });
+
+        return $result;
+    }
+
+    /** Restore a metadata-aware crate withdrawal when its placement fails. */
+    public function restoreMutableAnimalCrate($buildingId, $itemCode, $metadata): bool {
+        if (!is_string($metadata) || $metadata === '') {
+            return false;
+        }
+
+        $currentWorldType = get_meta($this->uid, 'currentWorldType') ?: 'farm';
+        $restored = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $itemCode, $metadata) {
+            $building = WorldObject::query()
+                ->where('world_id', $worldId)
+                ->where('object_id', (int) $buildingId)
+                ->where('deleted', false)
+                ->lockForUpdate()
+                ->first();
+            if ($building === null) {
+                return false;
+            }
+
+            $contents = is_array($building->contents) ? $building->contents : [];
+            $contentIndex = null;
+            foreach ($contents as $key => $content) {
+                $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                if ($code === $itemCode) {
+                    $contentIndex = $key;
+                    break;
+                }
+            }
+            if ($contentIndex === null) {
+                $contents[] = (object) ['itemCode' => $itemCode, 'numItem' => 1];
+            } elseif (is_object($contents[$contentIndex])) {
+                ++$contents[$contentIndex]->numItem;
+            } else {
+                ++$contents[$contentIndex]['numItem'];
+            }
+
+            $components = is_object($building->components) ? $building->components : new \stdClass();
+            $storageMetadata = is_object($components->storageMetadata ?? null)
+                ? $components->storageMetadata : new \stdClass();
+            $metadataKey = $itemCode . ':';
+            $entries = $storageMetadata->{$metadataKey} ?? [];
+            $entries = is_array($entries) ? $entries : [];
+            $entries[] = $metadata;
+            $storageMetadata->{$metadataKey} = $entries;
+            $components->storageMetadata = $storageMetadata;
+
+            $building->contents = $contents;
+            $building->components = $components;
+            $this->synchronizeFeatureStorageSlots($building, $contents);
+            $building->save();
+
+            return true;
+        });
+
+        return $restored === true;
     }
 
     /** Restore a building-stored item if its subsequent world placement fails. */
@@ -1305,6 +1989,21 @@ class Player {
 
     public function setPendingNeighbors($pid){
 
+        $pid = (string) $pid;
+        if ($pid === '' || $pid === (string) $this->uid) {
+            return;
+        }
+
+        // Neighbor requests are accepted by default. Players can opt out
+        // through the Account Settings modal; the same player metadata key is
+        // used by the Laravel neighbor endpoints.
+        if ($this->autoAcceptNeighborRequests($pid)) {
+            $this->addCurrentNeighbor($pid, (string) $this->uid);
+            $this->addCurrentNeighbor((string) $this->uid, $pid);
+            $this->removePendingNeighbor($pid, (string) $this->uid);
+            return;
+        }
+
         $res_uns = [];
 
         $currNeighbors = get_meta($pid, 'pending_neighbors');
@@ -1319,6 +2018,39 @@ class Player {
 
         set_meta($pid, 'pending_neighbors', serialize($res_uns));
 
+    }
+
+    private function autoAcceptNeighborRequests(string $uid): bool
+    {
+        $value = get_meta($uid, 'auto_accept_neighbor_requests');
+        if (!is_string($value) || trim($value) === '') {
+            return true;
+        }
+
+        return !in_array(strtolower(trim($value)), ['0', 'false', 'off', 'no'], true);
+    }
+
+    private function addCurrentNeighbor(string $uid, string $neighborId): void
+    {
+        $raw = get_meta($uid, 'current_neighbors');
+        $neighbors = is_string($raw) ? (@unserialize($raw) ?: []) : [];
+        $neighbors = is_array($neighbors) ? array_map('strval', $neighbors) : [];
+
+        if (!in_array($neighborId, $neighbors, true)) {
+            $neighbors[] = $neighborId;
+            set_meta($uid, 'current_neighbors', serialize(array_values($neighbors)));
+        }
+    }
+
+    private function removePendingNeighbor(string $uid, string $neighborId): void
+    {
+        $raw = get_meta($uid, 'pending_neighbors');
+        $pending = is_string($raw) ? (@unserialize($raw) ?: []) : [];
+        $pending = is_array($pending)
+            ? array_values(array_filter($pending, static fn ($id) => (string) $id !== $neighborId))
+            : [];
+
+        set_meta($uid, 'pending_neighbors', serialize($pending));
     }
 
     public function getPendingNeighbors(){

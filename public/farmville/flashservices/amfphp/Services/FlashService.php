@@ -13,6 +13,8 @@ require_once AMFPHP_ROOTPATH . "Functions/LeaderboardService.php";
 require_once AMFPHP_ROOTPATH . "Functions/FarmService.php";
 require_once AMFPHP_ROOTPATH . "Functions/CraftingService.php";
 require_once AMFPHP_ROOTPATH . "Functions/CaptureFeatureService.php";
+require_once AMFPHP_ROOTPATH . "Functions/AnimalBreedingService.php";
+require_once AMFPHP_ROOTPATH . "Functions/SheepPenService.php";
 require_once AMFPHP_ROOTPATH . "Functions/FleaMarketService.php";
 require_once AMFPHP_ROOTPATH . "Functions/UserService.php";
 require_once AMFPHP_ROOTPATH . "Functions/WorldService.php";
@@ -62,6 +64,7 @@ class FlashService {
             if (strpos($requ->functionName, 'PresentService') !== false
                 || $requ->functionName === 'FarmService.expandFarm'
                 || $requ->functionName === 'WorldService.performAction'
+                || strpos($requ->functionName, 'AnimalBreedingService.') === 0
                 || strpos($requ->functionName, 'FarmQuestService.') === 0) {
                 Logger::debug('FlashService', $requ->functionName . ' params: ' . json_encode($requ->params, JSON_PRETTY_PRINT));
             }

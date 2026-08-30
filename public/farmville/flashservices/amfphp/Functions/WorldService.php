@@ -5,6 +5,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/constants.php";
 require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
 require_once AMFPHP_ROOTPATH . "Helpers/quest_progress.php";
 require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
+require_once AMFPHP_ROOTPATH . "Helpers/mutable_animal_completion.php";
 
 use App\Helpers\JsonHelper;
 use App\Models\WorldObject;
@@ -14,6 +15,7 @@ use App\Support\WorldPersistence;
 class WorldService
 {
     const LOG = 'World';
+    private const PIGPEN_TRUFFLE_COOLDOWN_SECONDS = 172800;
 
     /** Keep all object-ID actions compatible with Flash's same-batch temp IDs. */
     private static function resolveActionObjectId($playerObj, $object, string $worldType): int
@@ -26,6 +28,29 @@ class WorldService
         }
 
         return $originalId;
+    }
+
+    /** Return a deliberately modest, non-canonical Pig Pen truffle prize. */
+    private static function pigpenTrufflePrize(): ?array
+    {
+        // One hunt in four finds a truffle. The colour controls the Gift Box
+        // consumable; its embedded reward is awarded when the truffle opens.
+        if (random_int(1, 100) > 25) {
+            return null;
+        }
+
+        $roll = random_int(1, 100);
+        if ($roll <= 60) {
+            return ['truffle' => 'consume_truffle_black', 'reward' => 'bottle'];
+        }
+        if ($roll <= 87) {
+            return ['truffle' => 'consume_truffle_brown', 'reward' => 'xuk_animal_love_potion'];
+        }
+        if ($roll <= 97) {
+            return ['truffle' => 'consume_truffle_white', 'reward' => 'xuk_animal_love_potion'];
+        }
+
+        return ['truffle' => 'consume_truffle_gold', 'reward' => 'pig_hotpink'];
     }
 
     /**
@@ -91,6 +116,242 @@ class WorldService
         return $result;
     }
 
+    /**
+     * Return the server-authoritative result for a standard construction
+     * building's Finish/Complete Now flow.  Flash sends TransformBuilding for
+     * this operation (not CompleteNow, which is reserved for expansions).
+     */
+    private static function constructionCompletionData(WorldObject $building): ?array
+    {
+        if ($building->class_name === 'MutableAnimalCrate') {
+            return self::mutableAnimalCrateCompletionData($building);
+        }
+
+        if ($building->class_name === 'MutableAnimalBaby') {
+            return self::mutableAnimalBabyCompletionData($building);
+        }
+
+        if (!is_string($building->class_name)
+            || !str_ends_with($building->class_name, 'ConstructionBuilding')) {
+            return null;
+        }
+
+        $constructionItem = getItemByName((string) $building->item_name, 'db');
+        $finishedName = $constructionItem['finishedName'] ?? null;
+        $defaultPart = $constructionItem['defaultItem'] ?? null;
+        $materialsNeeded = (int) ($constructionItem['matsNeeded'] ?? 0);
+
+        if (is_object($defaultPart)) {
+            $defaultPart = get_object_vars($defaultPart);
+        }
+
+        if (!is_string($finishedName) || $finishedName === ''
+            || !is_array($defaultPart) || !is_string($defaultPart['name'] ?? null)
+            || $materialsNeeded <= 0) {
+            return null;
+        }
+
+        $finishedItem = getItemByName($finishedName, 'db');
+        $partItem = getItemByName($defaultPart['name'], 'db');
+        if (!$finishedItem || !$partItem || !isset($partItem['code'])) {
+            return null;
+        }
+
+        $requiredParts = $materialsNeeded * max(1, (int) ($defaultPart['amount'] ?? 1));
+        $collectedParts = 0;
+        foreach (is_array($building->contents) ? $building->contents : [] as $content) {
+            $itemCode = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+            $quantity = is_object($content) ? ($content->numItem ?? 0) : ($content['numItem'] ?? 0);
+            if ($itemCode === $partItem['code']) {
+                $collectedParts += max(0, (int) $quantity);
+            }
+        }
+
+        return [
+            'cashCost' => max(0, $requiredParts - $collectedParts) * max(0, (int) ($partItem['cash'] ?? 0)),
+            'finishedName' => $finishedName,
+            'finishedClassName' => $finishedItem['className'] ?? 'Building',
+            'finishedState' => 'built',
+            'finishedReward' => $constructionItem['finishedReward'] ?? null,
+        ];
+    }
+
+    /** Resolve a mutable crate from the adultCode transferred at placement. */
+    private static function mutableAnimalCrateCompletionData(WorldObject $building): ?array
+    {
+        $components = is_object($building->components) ? $building->components : new \stdClass();
+        $rawMetadata = $components->mutableAnimalCrateMetadata ?? null;
+        $metadata = is_string($rawMetadata)
+            ? JsonHelper::safeDecode($rawMetadata, false, new \stdClass())
+            : (is_object($rawMetadata) ? $rawMetadata : new \stdClass());
+        $adultCode = $metadata->adultCode ?? null;
+        $adultItem = is_string($adultCode) ? getItemByCode($adultCode) : false;
+        if (is_object($adultItem)) {
+            $adultItem = get_object_vars($adultItem);
+        }
+        if (!is_array($adultItem) || !is_string($adultItem['name'] ?? null) || $adultItem['name'] === '') {
+            return null;
+        }
+
+        $crateItem = getItemByName((string) $building->item_name, 'db');
+        $feedItem = getItemByName('animalfeedtrough_feed', 'db');
+        $materialsNeeded = max(0, (int) ($crateItem['matsNeeded'] ?? 0));
+        $feedCode = $feedItem['code'] ?? null;
+        if (!is_string($feedCode) || $feedCode === '' || $materialsNeeded <= 0) {
+            return null;
+        }
+
+        $collectedFeed = 0;
+        foreach (is_array($building->contents) ? $building->contents : [] as $content) {
+            $itemCode = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+            $quantity = is_object($content) ? ($content->numItem ?? 0) : ($content['numItem'] ?? 0);
+            if ($itemCode === $feedCode) {
+                $collectedFeed += max(0, (int) $quantity);
+            }
+        }
+
+        $finishedClassName = (string) ($adultItem['className'] ?? 'Animal');
+        return [
+            'cashCost' => max(0, $materialsNeeded - $collectedFeed) * max(0, (int) ($feedItem['cash'] ?? 0)),
+            'finishedName' => $adultItem['name'],
+            'finishedClassName' => $finishedClassName,
+            'finishedState' => str_ends_with($finishedClassName, 'Building') ? 'built' : 'bare',
+            'finishedReward' => $crateItem['finishedReward'] ?? null,
+        ];
+    }
+
+    /** Resolve a breeding baby into its gender-specific adult animal. */
+    private static function mutableAnimalBabyCompletionData(WorldObject $building): ?array
+    {
+        return MutableAnimalCompletion::forBaby($building);
+    }
+
+    /** Extract and validate the crate envelope used by giftbox/inventory storage. */
+    private static function mutableAnimalCrateMetadata($extraData): ?string
+    {
+        if (is_object($extraData)) {
+            $extraData = get_object_vars($extraData);
+        }
+        if (is_array($extraData)) {
+            $extraData = $extraData['metadata'] ?? $extraData;
+        }
+        if (is_object($extraData)) {
+            $extraData = $extraData->metadata ?? $extraData;
+        }
+        if (!is_string($extraData) || $extraData === '') {
+            return null;
+        }
+
+        $metadata = JsonHelper::safeDecode($extraData, false, new \stdClass());
+        if (!is_string($metadata->adultCode ?? null) || $metadata->adultCode === '') {
+            return null;
+        }
+
+        return $extraData;
+    }
+
+    /** Decode the raw per-instance DNA stored with a Giftbox animal reward. */
+    private static function mutableAnimalDna($extraData): ?\stdClass
+    {
+        if (is_string($extraData)) {
+            $extraData = JsonHelper::safeDecode($extraData, false, null);
+        } elseif (is_array($extraData)) {
+            $extraData = (object) $extraData;
+        }
+
+        if (is_object($extraData) && isset($extraData->type) && is_string($extraData->type)) {
+            $extraData = JsonHelper::safeDecode($extraData->type, false, null);
+        }
+
+        if (!is_object($extraData)
+            || !isset($extraData->G, $extraData->B, $extraData->P)
+            || !is_object($extraData->B) || !is_object($extraData->P)) {
+            return null;
+        }
+
+        return $extraData;
+    }
+
+    /** Decide when a mutable animal may inherit its per-instance Giftbox DNA. */
+    private static function shouldHydrateGiftboxAnimal(
+        string $className,
+        bool $isGiftboxWithdrawal,
+        bool $isGiftboxPlacement,
+    ): bool {
+        if ($isGiftboxWithdrawal || $className === 'MutableAnimalBaby') {
+            return true;
+        }
+
+        // Adult breeding rewards use the legacy isGift marker but may omit
+        // isStorageWithdrawal entirely, just like Sal's boar did.
+        return $className === 'MutableAnimal' && $isGiftboxPlacement;
+    }
+
+    /**
+     * Some construction rewards are individual mutable animals, rather than
+     * ordinary stackable Gift Box items.  Their traits must travel with the
+     * reward so placing the animal creates a real breeding parent.
+     */
+    private static function constructionRewardExtraData(string $itemName): ?\stdClass
+    {
+        if ($itemName !== 'pigpen_male_light_green') {
+            return null;
+        }
+
+        // This is the Pig Pen's documented starter Green Boar variant from
+        // AnimalBreeding.xml.  Its plain pattern is available at level one.
+        return (object) [
+            'N' => 'pigpen_male_light_green',
+            'G' => 'M',
+            'B' => (object) ['H' => ['66', '66'], 'S' => ['c', 'c'], 'V' => ['c', 'c']],
+            'P' => (object) ['H' => ['66', '66'], 'S' => ['c', 'c'], 'V' => ['c', 'c'], 'T' => ['a']],
+        ];
+    }
+
+    /**
+     * The original service rolled the Pet Run's server-side loot table before
+     * handing a market-bought crate to Flash. That table is absent from the
+     * recovered data set, so use an explicit equal-weight pool of valid rare
+     * level-two cat and dog adults (the Pet Run animal family).
+     */
+    private static function marketMutableAnimalCrateMetadata(string $itemName): ?string
+    {
+        if ($itemName !== 'petrun_baby_rare2') {
+            return null;
+        }
+
+        static $adultCodes = null;
+        if ($adultCodes === null) {
+            $adultCodes = [];
+            foreach (\App\Models\Item::query()
+                ->where(function ($query) {
+                    $query->where('name', 'like', 'cat%')
+                        ->orWhere('name', 'like', 'dog%');
+                })
+                ->get() as $candidate) {
+                $data = (array) $candidate->itemData;
+                if (($data['type'] ?? null) !== 'animal'
+                    || ($data['breedingShare'] ?? null) !== 'exclusiveRare'
+                    || !in_array($data['rareItem'] ?? null, [true, 'true'], true)
+                    || (int) ($data['animalLevel'] ?? 0) < 2
+                    || !is_string($candidate->code) || $candidate->code === '') {
+                    continue;
+                }
+                $adultCodes[] = $candidate->code;
+            }
+        }
+
+        if ($adultCodes === []) {
+            return null;
+        }
+
+        return JsonHelper::safeEncode([
+            'storageContent' => [],
+            'fullyBuilt' => false,
+            'adultCode' => $adultCodes[random_int(0, count($adultCodes) - 1)],
+        ]);
+    }
+
     public static function performAction($playerObj, $request, $market)
     {
         $data = array("id" => 0, "data" => array("id" => 0));
@@ -124,11 +385,68 @@ class WorldService
                     GIFTBOX_ID,
                     (int) GIFTBOX_STORAGE_KEY,
                 ], true);
+                $isGiftboxPlacement = $extraParams !== null
+                    && (bool) ($extraParams->isGift ?? false);
                 $isBuildingWithdrawal = $isStorageWithdrawal > 0;
                 $isInventoryWithdrawal = $isStorageWithdrawal === HOME_INVENTORY_ID;
                 $withdrawnInventoryItemCode = null;
                 $withdrawnInventoryExtraData = null;
                 $withdrawnBuildingItemCode = null;
+                $withdrawnMutableCrateMetadata = null;
+                $withdrawnMutableAnimalMetadata = null;
+                $inferredMutableGiftboxWithdrawal = false;
+
+                // A breeding reward's DNA must be part of the *initial*
+                // world-object insert.  Previously we withdrew the Giftbox
+                // metadata only after setWorld(), then patched it onto the
+                // row in a second write.  Flash can reload immediately after
+                // placing a lamb; that window let the reload snapshot save a
+                // blank baby, whose later TransformBuilding call produced a
+                // default-pattern adult.  Peek without consuming first, so a
+                // failed placement still leaves the Giftbox untouched.
+                if (in_array($className, ['MutableAnimal', 'MutableAnimalBaby'], true)) {
+                    $giftItem = getItemByName($plantObj->itemName ?? '', 'db');
+                    $giftCode = is_array($giftItem) ? ($giftItem['code'] ?? null) : null;
+                    $giftboxDna = null;
+                    if (is_string($giftCode) && $giftCode !== '') {
+                        $giftboxDna = self::mutableAnimalDna(
+                            peekGiftboxItemExtraData($playerObj->getUid(), $giftCode)
+                        );
+                        // Some Flash Giftbox placement requests omit their
+                        // isStorageWithdrawal envelope entirely. Per-instance
+                        // breeding rewards are not market items, so a matching
+                        // Giftbox DNA record is authoritative even when that
+                        // legacy source marker is missing. The same request
+                        // shape is used for adult breeding animals (not just
+                        // lambs), with isGift set instead of a source ID.
+                        $canInferGiftboxAnimal = self::shouldHydrateGiftboxAnimal(
+                            $className,
+                            $isGiftboxWithdrawal,
+                            $isGiftboxPlacement,
+                        );
+                        if ($giftboxDna !== null && $canInferGiftboxAnimal) {
+                            $plantObj->mutableAnimalState = (object) ['dna' => $giftboxDna];
+                            $plantComponents = isset($plantObj->components) && is_object($plantObj->components)
+                                ? $plantObj->components : new \stdClass();
+                            $plantComponents->mutableAnimalState = $plantObj->mutableAnimalState;
+                            $plantObj->components = $plantComponents;
+                            $inferredMutableGiftboxWithdrawal = !$isGiftboxWithdrawal && $canInferGiftboxAnimal;
+                        }
+                    }
+                    if ($className === 'MutableAnimalBaby'
+                        || ($className === 'MutableAnimal' && $isGiftboxPlacement)) {
+                        Logger::debug(self::LOG, sprintf(
+                            'Mutable Giftbox placement: uid=%s item=%s source=%d extra=%s giftCode=%s dna=%s inferred=%s',
+                            $playerObj->getUid(),
+                            $plantObj->itemName ?? '',
+                            $isStorageWithdrawal,
+                            $extraParams === null ? 'none' : 'present',
+                            $giftCode ?? 'none',
+                            $giftboxDna === null ? 'missing' : 'present',
+                            $inferredMutableGiftboxWithdrawal ? 'yes' : 'no',
+                        ));
+                    }
+                }
 
                 // Remove home/inventory items before creating their world
                 // object. The previous post-placement withdrawal silently
@@ -161,11 +479,77 @@ class WorldService
                         $playerObj->getUid(),
                         $itemCode
                     );
+                    if (($plantObj->className ?? null) === 'MutableAnimalCrate') {
+                        $withdrawnMutableCrateMetadata = self::mutableAnimalCrateMetadata(
+                            $withdrawnInventoryExtraData
+                        );
+                        if ($withdrawnMutableCrateMetadata === null) {
+                            addToInventoryStorage(
+                                $playerObj->getUid(),
+                                $itemCode,
+                                1,
+                                $withdrawnInventoryExtraData
+                            );
+
+                            return [
+                                'id' => 0,
+                                'data' => ['id' => 0, 'success' => false, 'error' => 'Crate metadata is not available in storage'],
+                            ];
+                        }
+                    }
                 } elseif ($isBuildingWithdrawal) {
                     $itemData = getItemByName($plantObj->itemName ?? '', 'db');
                     $itemCode = $itemData['code'] ?? null;
 
-                    if (!$itemCode || !$playerObj->withdrawStoredItem($isStorageWithdrawal, $itemCode)) {
+                    if (($plantObj->className ?? null) === 'MutableAnimalCrate') {
+                        $withdrawal = $itemCode
+                            ? $playerObj->withdrawMutableAnimalCrate($isStorageWithdrawal, $itemCode)
+                            : false;
+                        if ($withdrawal === false) {
+                            Logger::error(self::LOG, sprintf(
+                                'Rejected mutable-crate placement: uid=%s buildingId=%d item=%s code=%s',
+                                $playerObj->getUid(),
+                                $isStorageWithdrawal,
+                                $plantObj->itemName ?? '',
+                                $itemCode ?? 'unknown'
+                            ));
+
+                            return [
+                                'id' => 0,
+                                'data' => ['id' => 0, 'success' => false, 'error' => 'Crate metadata is not available in this building'],
+                            ];
+                        }
+                        $withdrawnBuildingItemCode = $itemCode;
+                        $withdrawnMutableCrateMetadata = $withdrawal['metadata'] ?? null;
+                    } elseif (in_array(($plantObj->className ?? null), ['MutableAnimal', 'MutableAnimalBaby'], true)) {
+                        $withdrawal = $itemCode
+                            ? $playerObj->withdrawMutableAnimal($isStorageWithdrawal, $itemCode)
+                            : false;
+                        if ($withdrawal !== false) {
+                            $withdrawnMutableAnimalMetadata = $withdrawal['metadata'] ?? null;
+                        } elseif (!$itemCode || !$playerObj->withdrawStoredItem($isStorageWithdrawal, $itemCode)) {
+                            Logger::error(self::LOG, sprintf(
+                                'Rejected mutable-animal placement: uid=%s buildingId=%d item=%s code=%s',
+                                $playerObj->getUid(), $isStorageWithdrawal, $plantObj->itemName ?? '', $itemCode ?? 'unknown'
+                            ));
+                            return [
+                                'id' => 0,
+                                'data' => ['id' => 0, 'success' => false, 'error' => 'Item is not available in this building'],
+                            ];
+                        }
+                    } else {
+                        // PigpenDialog places an ordinary stored Pig as an
+                        // Animal, even though its feature slot carries a
+                        // per-pig DNA record.  Consume that record together
+                        // with the contents count when present.  Otherwise a
+                        // removed Pig remains rendered in the pen after a
+                        // reload and can be counted again by breeding.
+                        $withdrawal = $itemCode
+                            ? $playerObj->withdrawMutableAnimal($isStorageWithdrawal, $itemCode)
+                            : false;
+                        if ($withdrawal !== false) {
+                            $withdrawnMutableAnimalMetadata = $withdrawal['metadata'] ?? null;
+                        } elseif (!$itemCode || !$playerObj->withdrawStoredItem($isStorageWithdrawal, $itemCode)) {
                         Logger::error(self::LOG, sprintf(
                             'Rejected building-storage placement: uid=%s buildingId=%d item=%s code=%s',
                             $playerObj->getUid(),
@@ -176,8 +560,9 @@ class WorldService
 
                         return [
                             'id' => 0,
-                            'data' => ['id' => 0, 'success' => false, 'error' => 'Item is not available in this building'],
-                        ];
+                                'data' => ['id' => 0, 'success' => false, 'error' => 'Item is not available in this building'],
+                            ];
+                        }
                     }
 
                     $withdrawnBuildingItemCode = $itemCode;
@@ -200,12 +585,111 @@ class WorldService
                 }
 
                 if ($isBuildingWithdrawal && $retId <= 0) {
-                    $playerObj->restoreStoredItem($isStorageWithdrawal, $withdrawnBuildingItemCode);
+                    if ($withdrawnMutableCrateMetadata !== null) {
+                        $playerObj->restoreMutableAnimalCrate(
+                            $isStorageWithdrawal,
+                            $withdrawnBuildingItemCode,
+                            $withdrawnMutableCrateMetadata
+                        );
+                    } elseif ($withdrawnMutableAnimalMetadata !== null) {
+                        $playerObj->restoreMutableAnimal(
+                            $isStorageWithdrawal,
+                            $withdrawnBuildingItemCode,
+                            $withdrawnMutableAnimalMetadata
+                        );
+                    } else {
+                        $playerObj->restoreStoredItem($isStorageWithdrawal, $withdrawnBuildingItemCode);
+                    }
 
                     return [
                         'id' => 0,
                         'data' => ['id' => 0, 'success' => false, 'error' => 'Could not place item'],
                     ];
+                }
+
+                // MutableAnimalCrate's adult target lives in the source
+                // FeatureBuilding's per-instance storage metadata. The Flash
+                // placement object deliberately omits it, so preserve the
+                // withdrawn record on the new world object before any later
+                // completion request can transform it.
+                if ($withdrawnMutableCrateMetadata !== null && $retId > 0) {
+                    $uid = $playerObj->getUid();
+                    $worldType = getCurrentWorldType($uid);
+                    WorldPersistence::mutateObject(
+                        $uid,
+                        $worldType,
+                        $retId,
+                        static function (WorldObject $placedObject) use ($withdrawnMutableCrateMetadata): bool {
+                            $components = is_object($placedObject->components)
+                                ? $placedObject->components : new \stdClass();
+                            $components->mutableAnimalCrateMetadata = $withdrawnMutableCrateMetadata;
+                            $metadata = JsonHelper::safeDecode(
+                                $withdrawnMutableCrateMetadata,
+                                false,
+                                new \stdClass()
+                            );
+                            if (is_array($metadata->storageContent ?? null)) {
+                                $placedObject->contents = $metadata->storageContent;
+                            }
+                            $placedObject->components = $components;
+
+                            return true;
+                        },
+                    );
+                }
+
+                if ($withdrawnMutableAnimalMetadata !== null && $retId > 0) {
+                    $uid = $playerObj->getUid();
+                    $worldType = getCurrentWorldType($uid);
+                    WorldPersistence::mutateObject(
+                        $uid,
+                        $worldType,
+                        $retId,
+                        static function (WorldObject $placedObject) use ($withdrawnMutableAnimalMetadata): bool {
+                            $metadata = is_string($withdrawnMutableAnimalMetadata)
+                                ? JsonHelper::safeDecode($withdrawnMutableAnimalMetadata, false, null)
+                                : null;
+                            if (is_object($metadata) && isset($metadata->type) && is_string($metadata->type)) {
+                                $metadata = JsonHelper::safeDecode($metadata->type, false, null);
+                            }
+                            if (!is_object($metadata)) {
+                                return false;
+                            }
+                            $components = is_object($placedObject->components)
+                                ? $placedObject->components : new \stdClass();
+                            $components->mutableAnimalState = (object) ['dna' => $metadata];
+                            $placedObject->components = $components;
+                            return true;
+                        },
+                    );
+                }
+
+                // Direct market placement bypasses giftbox/inventory metadata.
+                // Mint the crate's adult result here, before it can be reloaded
+                // or completed, using the equal-weight Pet Run rare pool.
+                if (($plantObj->className ?? null) === 'MutableAnimalCrate'
+                    && $isStorageWithdrawal === 0
+                    && $retId > 0) {
+                    $marketCrateMetadata = self::marketMutableAnimalCrateMetadata(
+                        (string) ($plantObj->itemName ?? '')
+                    );
+                    if ($marketCrateMetadata !== null) {
+                        $uid = $playerObj->getUid();
+                        $worldType = getCurrentWorldType($uid);
+                        WorldPersistence::mutateObject(
+                            $uid,
+                            $worldType,
+                            $retId,
+                            static function (WorldObject $placedObject) use ($marketCrateMetadata): bool {
+                                $components = is_object($placedObject->components)
+                                    ? $placedObject->components : new \stdClass();
+                                $components->mutableAnimalCrateMetadata = $marketCrateMetadata;
+                                $placedObject->components = $components;
+
+                                return true;
+                            },
+                        );
+                    }
                 }
 
                 if ($cottage !== null) {
@@ -215,6 +699,19 @@ class WorldService
                         $cottage['functionalItem'],
                         $retId
                     ));
+                }
+
+                // When Flash omitted the Giftbox source envelope for a lamb,
+                // consume the same DNA record only after its world row has
+                // been inserted successfully. This preserves the normal
+                // failed-placement guarantee while preventing a duplicate
+                // lamb from remaining in Giftbox.
+                if ($inferredMutableGiftboxWithdrawal && $retId > 0) {
+                    $giftItem = getItemByName($plantObj->itemName ?? '', 'db');
+                    $giftCode = is_array($giftItem) ? ($giftItem['code'] ?? null) : null;
+                    if (is_string($giftCode) && $giftCode !== '') {
+                        withdrawGiftboxItem($playerObj->getUid(), $giftCode);
+                    }
                 }
 
                 // Placing an item already owned in a storage box must not be
@@ -267,6 +764,35 @@ class WorldService
                                             foreach ($extraDataObj as $key => $value) {
                                                 $components->$key = $value;
                                             }
+
+                                            // Breeding currently awards a gender-specific adult
+                                            // MutableAnimal directly. Both that adult and a lamb
+                                            // use the same raw giftbox DNA envelope; restoring it
+                                            // only for babies made a new patterned sheep render
+                                            // correctly until the next reload, then fall back to
+                                            // its default coat.
+                                            if (in_array(($plantObj->className ?? null), ['MutableAnimal', 'MutableAnimalBaby'], true)) {
+                                                $dna = self::mutableAnimalDna($giftboxExtraData);
+                                                if ($dna !== null) {
+                                                    $components->mutableAnimalState = (object) ['dna' => $dna];
+                                                }
+                                            }
+
+                                            if (($plantObj->className ?? null) === 'MutableAnimalCrate') {
+                                                $crateMetadata = self::mutableAnimalCrateMetadata($giftboxExtraData);
+                                                if ($crateMetadata !== null) {
+                                                    $components->mutableAnimalCrateMetadata = $crateMetadata;
+                                                    $decodedCrateMetadata = JsonHelper::safeDecode(
+                                                        $crateMetadata,
+                                                        false,
+                                                        new \stdClass()
+                                                    );
+                                                    if (is_array($decodedCrateMetadata->storageContent ?? null)) {
+                                                        $placedObj->contents = $decodedCrateMetadata->storageContent;
+                                                    }
+                                                }
+                                            }
+                                            $placedContents = $placedObj->contents;
                                             
                                             if (!isset($components->active) && stripos($placedItemName, 'unwitherring') !== false) {
                                                 $components->active = true;
@@ -276,8 +802,9 @@ class WorldService
                                                 $uid,
                                                 $worldType,
                                                 $retId,
-                                                static function (WorldObject $lockedObject) use ($components): bool {
+                                                static function (WorldObject $lockedObject) use ($components, $placedContents): bool {
                                                     $lockedObject->components = $components;
+                                                    $lockedObject->contents = $placedContents;
 
                                                     return true;
                                                 },
@@ -561,6 +1088,18 @@ class WorldService
                 $data["id"] = $retId;
                 $data["data"] = array("id" => $retId);
 
+                // PigPenHarvestFManager dereferences postHarvestData before
+                // checking whether a truffle was found. The generic harvest
+                // reply has only an id, which made a normal pig-pen harvest
+                // crash client-side with Error #1009. Supply the no-reward
+                // envelope for this ordinary building harvest.
+                if ($serverItemName === 'pigpenv2_finished') {
+                    $data['data']['postHarvestData'] = [
+                        'pigCode' => '',
+                        'truffleFound' => '',
+                    ];
+                }
+
                 if (is_array($transactionResult) && !empty($transactionResult['masteryLevelUp'])) {
                     $levelUp = $transactionResult['masteryLevelUp'];
                     $data["data"]["goals"] = [[
@@ -577,6 +1116,93 @@ class WorldService
                         $data['metadata'] = ['ActionDrops' => $actionDrops];
                     }
                 }
+                break;
+
+            case 'huntTruffle':
+                $uid = $playerObj->getUid();
+                $worldType = getCurrentWorldType($uid);
+                $buildingObj = $request->params[1] ?? null;
+                $buildingId = $buildingObj === null
+                    ? 0 : self::resolveActionObjectId($playerObj, $buildingObj, $worldType);
+                $pigCode = is_string($extraParams) ? $extraParams : '';
+                $failure = null;
+                $hunt = WorldPersistence::transaction(
+                    $uid,
+                    $worldType,
+                    static function (int $worldId) use ($buildingId, $pigCode, &$failure): array {
+                        $building = WorldObject::query()
+                            ->where('world_id', $worldId)
+                            ->where('object_id', $buildingId)
+                            ->where('item_name', 'pigpenv2_finished')
+                            ->where('deleted', false)
+                            ->lockForUpdate()
+                            ->first();
+                        if ($building === null || $pigCode === '') {
+                            $failure = 'invalid_pigpen_hunt';
+                            throw new \RuntimeException($failure);
+                        }
+
+                        $pigCount = 0;
+                        foreach (is_array($building->contents) ? $building->contents : [] as $content) {
+                            $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                            $count = is_object($content) ? ($content->numItem ?? 0) : ($content['numItem'] ?? 0);
+                            if ($code === $pigCode) {
+                                $pigCount += max(0, (int) $count);
+                            }
+                        }
+                        $pig = getItemByCode($pigCode);
+                        $pigName = is_array($pig) ? (string) ($pig['name'] ?? '') : '';
+                        if ($pigCount < 1 || !is_array($pig)
+                            || ($pigName !== 'pig'
+                                && !preg_match('/^pigpen_(male|female)(?:_|$)/', $pigName))) {
+                            $failure = 'invalid_hunt_pig';
+                            throw new \RuntimeException($failure);
+                        }
+
+                        $components = is_object($building->components) ? $building->components : new \stdClass();
+                        $cooldowns = is_object($components->truffleHuntCooldowns ?? null)
+                            ? $components->truffleHuntCooldowns : new \stdClass();
+                        $now = time();
+                        $timestamps = $cooldowns->{$pigCode} ?? [];
+                        $timestamps = is_array($timestamps) ? $timestamps : [];
+                        $timestamps = array_values(array_filter($timestamps, static fn ($timestamp): bool =>
+                            is_numeric($timestamp) && (int) $timestamp + self::PIGPEN_TRUFFLE_COOLDOWN_SECONDS > $now
+                        ));
+                        if (count($timestamps) >= $pigCount) {
+                            $failure = 'pig_resting';
+                            throw new \RuntimeException($failure);
+                        }
+
+                        $timestamps[] = $now;
+                        $cooldowns->{$pigCode} = $timestamps;
+                        $components->truffleHuntCooldowns = $cooldowns;
+                        $building->components = $components;
+                        $building->save();
+
+                        return self::pigpenTrufflePrize() ?? [];
+                    },
+                );
+
+                if ($hunt === false) {
+                    $data['data'] = ['success' => false, 'error' => $failure ?? 'hunt_failed'];
+                    break;
+                }
+
+                $truffle = (string) ($hunt['truffle'] ?? '');
+                if ($truffle !== '') {
+                    addGiftByName($uid, $truffle, 1, $uid, (object) ['rewardName' => $hunt['reward']]);
+                }
+                $data['data'] = [
+                    'id' => $buildingId,
+                    'success' => true,
+                    'truffleFound' => $truffle,
+                    // The recovered game data contains no original neighbor
+                    // selection service. Keep the success dialog usable.
+                    'friendName' => 'a neighboring farmer',
+                    'friendUid' => 0,
+                    'friendPic' => '',
+                    'rewardUrl' => '',
+                ];
                 break;
 
             case ACTION_INSTANT_GROW:
@@ -801,6 +1427,33 @@ class WorldService
                             'id' => $storeResult['id'] ?? 0,
                             'success' => true,
                         ];
+
+                        // A construction store becomes complete as soon as
+                        // the final configured part is committed. Player::storeItem
+                        // performs that transition inside the same persistence
+                        // transaction; return the normal Flash completion
+                        // envelope so the client replaces its local frame with
+                        // the finished building instead of disabling its menu.
+                        $completion = is_array($storeResult['completion'] ?? null)
+                            ? $storeResult['completion'] : null;
+                        if ($completion !== null) {
+                            $reward = $completion['gift']
+                                ?? ($completion['finishedReward'] ?? null);
+                            if (is_string($reward) && $reward !== '') {
+                                addGiftByName(
+                                    $playerObj->getUid(),
+                                    $reward,
+                                    1,
+                                    $playerObj->getUid(),
+                                    self::constructionRewardExtraData($reward),
+                                );
+                            }
+
+                            $data['data']['finishedName'] = $completion['finishedName'];
+                            $data['data']['finishedClassName'] = $completion['finishedClassName'];
+                            $data['data']['finishedState'] = $completion['finishedState'];
+                            $data['data']['gift'] = $reward;
+                        }
                     }
 
                     $creditItems = [
@@ -1421,6 +2074,105 @@ class WorldService
                 }
                 trackStorageBuildingExpansionProgress($uid, $buildingItemData);
                 $data["data"] = array("success" => true);
+                break;
+
+            case ACTION_TRANSFORM_BUILDING:
+                $buildingObj = $request->params[1] ?? null;
+                $uid = $playerObj->getUid();
+                $worldType = getCurrentWorldType($uid);
+                $buildingId = $buildingObj === null
+                    ? 0
+                    : self::resolveActionObjectId($playerObj, $buildingObj, $worldType);
+
+                if ($buildingId <= 0) {
+                    $data['data'] = ['success' => false, 'error' => 'invalid_building'];
+                    break;
+                }
+
+                $failure = null;
+                $completion = WorldPersistence::transaction(
+                    $uid,
+                    $worldType,
+                    static function (int $worldId) use ($uid, $buildingId, &$failure): array {
+                        $building = WorldObject::query()
+                            ->where('world_id', $worldId)
+                            ->where('object_id', $buildingId)
+                            ->where('deleted', false)
+                            ->lockForUpdate()
+                            ->first();
+
+                        if ($building === null) {
+                            $failure = 'building_not_found';
+                            throw new \RuntimeException($failure);
+                        }
+
+                        $completion = self::constructionCompletionData($building);
+                        if ($completion === null) {
+                            $failure = 'unsupported_construction';
+                            throw new \RuntimeException($failure);
+                        }
+
+                        if ($building->class_name === 'MutableAnimalBaby') {
+                            $dna = $building->components->mutableAnimalState->dna ?? null;
+                            Logger::debug(self::LOG, sprintf(
+                                'Mutable lamb transform: uid=%s objectId=%d dna=%s',
+                                $uid,
+                                $buildingId,
+                                is_object($dna) ? 'present' : 'missing',
+                            ));
+                        }
+
+                        if (!UserResources::removeCash($uid, (int) $completion['cashCost'])) {
+                            $failure = 'insufficient_cash';
+                            throw new \RuntimeException($failure);
+                        }
+
+                        $building->item_name = $completion['finishedName'];
+                        $building->class_name = $completion['finishedClassName'];
+                        $building->state = $completion['finishedState'];
+                        $building->contents = [];
+                        // Eloquent's object cast returns a fresh decoded
+                        // object on each property read. Build this envelope
+                        // locally and assign it once; mutating
+                        // `$building->components->...` after assigning `{}`
+                        // silently loses the nested DNA at save time.
+                        $finishedComponents = new \stdClass();
+                        if (isset($completion['mutableAnimalState'])
+                            && is_object($completion['mutableAnimalState'])) {
+                            $finishedComponents->mutableAnimalState = $completion['mutableAnimalState'];
+                        }
+                        $building->components = $finishedComponents;
+
+                        if (!$building->save()) {
+                            $failure = 'persistence_failed';
+                            throw new \RuntimeException($failure);
+                        }
+
+                        $reward = $completion['finishedReward'];
+                        if (is_string($reward) && $reward !== '') {
+                            addGiftByName(
+                                $uid,
+                                $reward,
+                                1,
+                                $uid,
+                                self::constructionRewardExtraData($reward),
+                            );
+                        }
+
+                        return $completion;
+                    },
+                );
+
+                if ($completion === false) {
+                    $data['data'] = ['success' => false, 'error' => $failure ?? 'transform_failed'];
+                    break;
+                }
+
+                $data['data'] = [
+                    'success' => true,
+                    'finishedName' => $completion['finishedName'],
+                    'gift' => $completion['finishedReward'],
+                ];
                 break;
 
             case ACTION_OPEN:

@@ -151,6 +151,11 @@ class WorldObject extends Model
             $className,
             $state,
         );
+        $state = self::normalizeLegacyOrchardState(
+            $itemName,
+            $className,
+            $state,
+        );
         $obj->state = self::normalizeLegacyTreeState($className, $state);
         $obj->deleted = $this->deleted;
         $obj->tempId = $this->temp_id;
@@ -162,7 +167,12 @@ class WorldObject extends Model
         $obj->isJumbo = $this->is_jumbo;
         $obj->isProduceItem = $this->is_produce_item;
         $contents = $this->contents;
-        $obj->contents = is_array($contents) ? $contents : JsonHelper::safeDecode($contents, true, []);
+        $obj->contents = self::normalizeConstructionContents(
+            $itemName,
+            $className,
+            $obj->state,
+            is_array($contents) ? $contents : JsonHelper::safeDecode($contents, true, []),
+        );
         $obj->expansionLevel = $this->expansion_level;
         $expansionParts = $this->expansion_parts;
         $obj->expansionParts = is_object($expansionParts) ? $expansionParts : JsonHelper::safeDecode($expansionParts, false, new \stdClass());
@@ -199,6 +209,16 @@ class WorldObject extends Model
             'StorageBuilding',
             'InventoryCellar',
             'OrchardConstructionBuilding',
+            // Pigpens extend AnimalStorageBuilding -> StorageBuilding.  They
+            // are not FeatureBuildings, so without this explicit completed
+            // flag the client reloads a finished pen as an unfinished
+            // expansion and asks for parts again.
+            'PigpenBuilding',
+            // An uncompleted Pig Pen is also a StorageBuilding. It must send
+            // isFullyBuilt=false on reload; otherwise an empty contents list
+            // makes Flash promote it to `built` and render the completed pen
+            // even though the server still has a construction object.
+            'PigpenConstructionBuilding',
             // Chicken Coops inherit HarvestableStorageBuilding's construction
             // renderer. A fully populated coop can otherwise be serialized
             // as an unfinished footprint/shadow after a reload.
@@ -207,7 +227,162 @@ class WorldObject extends Model
             $this->enrichStorageBuildingData($obj);
         }
 
+        // Mutable animal crates are per-instance breeding rewards. Their
+        // item name identifies only the crate tier; the adult animal and
+        // accumulated feed are stored in the metadata transferred from the
+        // source Pet Run at placement time. Flash expects adultCode at the
+        // top level when it reconstructs the crate after a reload.
+        if ($className === 'MutableAnimalCrate') {
+            $this->enrichMutableAnimalCrateData($obj);
+        }
+
+        // Breeding babies are placed from Giftbox with their DNA at the
+        // object top level. MutableAnimalBaby.loadObject reads the same
+        // top-level contract after reload, so retain it independently of the
+        // generic building fields.
+        if (in_array($className, ['MutableAnimal', 'MutableAnimalBaby'], true)) {
+            $components = is_object($this->components) ? $this->components : new \stdClass();
+            $mutableState = $components->mutableAnimalState ?? null;
+            // Before adult breeding rewards were handled explicitly, PHP's
+            // string-to-object cast stored their raw DNA under `scalar`.
+            // Recover that already-saved envelope on reload so affected new
+            // sheep regain their actual pattern rather than the default coat.
+            if ((!is_object($mutableState) || !is_object($mutableState->dna ?? null))
+                && is_string($components->scalar ?? null)) {
+                $legacyDna = JsonHelper::safeDecode($components->scalar, false, null);
+                if (is_object($legacyDna)
+                    && isset($legacyDna->G, $legacyDna->B, $legacyDna->P)) {
+                    $mutableState = (object) ['dna' => $legacyDna];
+                }
+            }
+            // Older breeding rewards were placed before their DNA envelope
+            // was persisted. Keep those legacy babies actionable after a
+            // reload instead of handing Flash a null state (which makes
+            // Complete/Feed no-op and causes the baby to revert visually).
+            if ($className === 'MutableAnimalBaby'
+                && (!is_object($mutableState) || !is_object($mutableState->dna ?? null))) {
+                $mutableState = (object) ['dna' => $this->fallbackMutableAnimalBabyDna($itemName)];
+            }
+            if (is_object($mutableState)) {
+                $obj->mutableAnimalState = $mutableState;
+            }
+        }
+
+        // MutableAnimalBaby inherits ConstructionBuilding.  Its Flash
+        // click handler only opens the feed/complete menu when the object is
+        // in `construction` or `built` state and is not fully built.  Older
+        // reloads converted `built` to `bare`, which made a partially fed
+        // piglet silently unclickable after refresh.  Keep the construction
+        // contract explicit for both legacy `bare` rows and normal rows.
+        if ($className === 'MutableAnimalBaby') {
+            if ($obj->state === 'bare' || $obj->state === '' || $obj->state === null) {
+                $obj->state = 'construction';
+            }
+            $obj->isFullyBuilt = false;
+        }
+
         return $obj;
+    }
+
+    private function fallbackMutableAnimalBabyDna(string $itemName): \stdClass
+    {
+        // Legacy lamb/piglet rows do not retain the original gender. Use a
+        // stable female fallback so the recovered object can complete into a
+        // valid adult instead of changing outcome on every reload.
+        $gender = 'F';
+
+        return (object) [
+            'N' => '',
+            'U' => '',
+            'G' => $gender,
+            'B' => (object) ['H' => ['0', '0'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+            'P' => (object) ['T' => ['a'], 'H' => ['0', '0'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        ];
+    }
+
+    private function enrichMutableAnimalCrateData(\stdClass $obj): void
+    {
+        $components = is_object($this->components) ? $this->components : new \stdClass();
+        $rawMetadata = $components->mutableAnimalCrateMetadata ?? null;
+        $metadata = is_string($rawMetadata)
+            ? JsonHelper::safeDecode($rawMetadata, false, new \stdClass())
+            : (is_object($rawMetadata) ? $rawMetadata : new \stdClass());
+
+        if (is_string($metadata->adultCode ?? null) && $metadata->adultCode !== '') {
+            $obj->adultCode = $metadata->adultCode;
+        }
+        if (is_array($metadata->storageContent ?? null) && empty($obj->contents)) {
+            $obj->contents = $metadata->storageContent;
+        }
+        if (($metadata->fullyBuilt ?? false) === true) {
+            $obj->isFullyBuilt = true;
+        }
+    }
+
+    /**
+     * Flash's FeaturedRenderFMutableObject expects each mutable-animal
+     * storage entry to be the raw JSON DNA string.  Older writes stored the
+     * TStoreItem wrapper ({@code {"type":"..."}}) as an AMF object; Flash
+     * stringifies that object as "[object Object]" and then fails with
+     * JSONTokenizer "Unexpected o" while loading the farm.
+     */
+    private static function normalizeStorageMetadata($raw): \stdClass
+    {
+        $source = is_object($raw) ? $raw : new \stdClass();
+        $metadata = new \stdClass();
+        foreach (get_object_vars($source) as $key => $entries) {
+            if (!is_array($entries)) {
+                $entries = [$entries];
+            }
+            $normalized = [];
+            foreach ($entries as $entry) {
+                if (is_object($entry)) {
+                    if (isset($entry->type) && is_string($entry->type)) {
+                        $entry = $entry->type;
+                    } else {
+                        $entry = json_encode($entry);
+                    }
+                } elseif (is_array($entry)) {
+                    if (isset($entry['type']) && is_string($entry['type'])) {
+                        $entry = $entry['type'];
+                    } else {
+                        $entry = json_encode($entry);
+                    }
+                }
+                if (is_string($entry)) {
+                    $trimmed = trim($entry);
+                    // MutableAnimalState.createFromPhpString only accepts a
+                    // JSON object. Discard stale "Array"/"[object Object]"
+                    // values rather than sending them into Flash's decoder.
+                    if ($trimmed === '' || $trimmed === 'null') {
+                        $normalized[] = $entry;
+                    } elseif ($trimmed[0] === '{' && is_array(json_decode($trimmed, true))) {
+                        $normalized[] = $trimmed;
+                    }
+                }
+            }
+
+            // Mutable-animal renderers look up storage by the exact
+            // itemCode:DNA-hash key from featuredItems. Older rows used only
+            // itemCode:, so promote valid entries while retaining a fallback
+            // bucket for values whose DNA cannot be decoded.
+            $baseCode = explode(':', (string) $key, 2)[0];
+            foreach ($normalized as $entry) {
+                $targetKey = (string) $key;
+                if ($baseCode !== '' && str_ends_with((string) $key, ':')) {
+                    $dna = json_decode($entry, true);
+                    $hash = self::mutableAnimalStateHash($dna);
+                    if ($hash !== null) {
+                        $targetKey = $baseCode . ':' . $hash;
+                    }
+                }
+                $existing = $metadata->{$targetKey} ?? [];
+                $existing = is_array($existing) ? $existing : [];
+                $existing[] = $entry;
+                $metadata->{$targetKey} = $existing;
+            }
+        }
+        return $metadata;
     }
 
     private function enrichCraftingCottageData(\stdClass $obj, ?int $uid): void
@@ -277,6 +452,96 @@ class WorldObject extends Model
     }
 
     /**
+     * StorageBuilding adds an item's defaultItem entries when a building is
+     * first placed. Its compact Flash save object intentionally omits those
+     * entries, so construction sites otherwise reload with m_count=0. That
+     * makes ConstructionBuilding.displayStorageDialog() return before the
+     * Ask for Parts window can open. Keep the server boundary equivalent to
+     * Flash by materializing the configured starter part for construction
+     * objects on both read and write paths.
+     */
+    private static function normalizeConstructionContents(
+        ?string $itemName,
+        ?string $className,
+        ?string $state,
+        $contents,
+    ): array {
+        $contents = is_array($contents) ? array_values($contents) : [];
+        if ($state !== 'construction'
+            || !is_string($className)
+            || !str_ends_with($className, 'ConstructionBuilding')
+            || !is_string($itemName)
+            || $itemName === '') {
+            return $contents;
+        }
+
+        $constructionItem = Item::findByName($itemName);
+        if (!is_array($constructionItem)) {
+            return $contents;
+        }
+
+        $defaultPart = $constructionItem['defaultItem'] ?? null;
+        if (is_object($defaultPart)) {
+            $defaultPart = get_object_vars($defaultPart);
+        }
+        if (!is_array($defaultPart)) {
+            return $contents;
+        }
+
+        $defaultName = $defaultPart['name'] ?? null;
+        if (!is_string($defaultName) || $defaultName === '') {
+            return $contents;
+        }
+
+        $partItem = Item::findByName($defaultName);
+        if (is_object($partItem)) {
+            $partItem = get_object_vars($partItem);
+        }
+        $defaultCode = is_array($partItem) ? ($partItem['code'] ?? null) : null;
+        if (!is_string($defaultCode) || $defaultCode === '') {
+            return $contents;
+        }
+
+        $needed = max(1, (int) ($defaultPart['amount'] ?? 1));
+        $matchingIndexes = [];
+        $current = 0;
+        foreach ($contents as $index => $content) {
+            $code = is_object($content)
+                ? ($content->itemCode ?? null)
+                : ($content['itemCode'] ?? null);
+            if ($code !== $defaultCode) {
+                continue;
+            }
+
+            $matchingIndexes[] = $index;
+            $current += max(0, (int) (is_object($content)
+                ? ($content->numItem ?? 0)
+                : ($content['numItem'] ?? 0)));
+        }
+
+        if ($current >= $needed) {
+            return $contents;
+        }
+
+        $missing = $needed - $current;
+        if ($matchingIndexes !== []) {
+            $index = $matchingIndexes[0];
+            if (is_object($contents[$index])) {
+                $contents[$index]->numItem = (int) ($contents[$index]->numItem ?? 0) + $missing;
+            } else {
+                $contents[$index]['numItem'] = (int) ($contents[$index]['numItem'] ?? 0) + $missing;
+            }
+        } else {
+            $contents[] = [
+                'itemCode' => $defaultCode,
+                'numItem' => $needed,
+            ];
+        }
+
+        return $contents;
+    }
+
+    /**
      * Feature buildings such as animal pens inherit the Flash storage
      * implementation, but identify themselves as FeatureBuilding in world
      * state. The Flash client expects these fields at the top level rather
@@ -292,8 +557,12 @@ class WorldObject extends Model
         }
 
         $obj->paintColor = $components->paintColor ?? null;
-        $obj->storageMetadata = $components->storageMetadata ?? new \stdClass();
+        $obj->storageMetadata = self::normalizeStorageMetadata($components->storageMetadata ?? new \stdClass());
         $obj->featuredItems = $components->featuredItems ?? new \stdClass();
+        // AnimalBreedingState is a FeatureBuilding component, but Flash
+        // reads it from the world object itself.  The breeding queue must
+        // therefore cross the persistence boundary as top-level data.
+        $obj->extraDataState = $components->extraDataState ?? new \stdClass();
 
         // Older habitat saves have their animals safely in `contents` but no
         // featured-slot map. FeatureBuilding renders its occupants only from
@@ -334,6 +603,108 @@ class WorldObject extends Model
             }
             $obj->featuredItems = $featuredItems;
         }
+
+        // Older writes could retain a slot map, but with the generic
+        // "itemCode:" hash that identifies no particular mutable-animal DNA
+        // record. Rehydrate those hashes from storageMetadata on every load;
+        // this repairs already-affected sheep without requiring the player to
+        // remove and re-store each animal.
+        $obj->featuredItems = self::rehydrateMutableAnimalFeaturedHashes(
+            $obj->featuredItems,
+            $obj->storageMetadata,
+        );
+    }
+
+    private static function rehydrateMutableAnimalFeaturedHashes($featuredItems, $storageMetadata): \stdClass
+    {
+        $featuredItems = is_object($featuredItems) ? $featuredItems : new \stdClass();
+        $storageMetadata = is_object($storageMetadata) ? $storageMetadata : new \stdClass();
+        $candidates = [];
+
+        foreach (get_object_vars($storageMetadata) as $metadataKey => $entries) {
+            $itemCode = explode(':', (string) $metadataKey, 2)[0];
+            if ($itemCode === '') {
+                continue;
+            }
+            $entries = is_array($entries) ? $entries : [$entries];
+            foreach ($entries as $entry) {
+                if (is_object($entry) && isset($entry->type) && is_string($entry->type)) {
+                    $entry = $entry->type;
+                }
+                if (is_string($entry)) {
+                    $entry = json_decode($entry, true);
+                } elseif (is_object($entry)) {
+                    $entry = get_object_vars($entry);
+                }
+                $hash = self::mutableAnimalStateHash($entry);
+                if ($hash !== null) {
+                    $candidates[$itemCode][] = $itemCode . ':' . $hash;
+                }
+            }
+        }
+
+        $available = [];
+        foreach ($candidates as $hashes) {
+            foreach ($hashes as $hash) {
+                $available[$hash] = ($available[$hash] ?? 0) + 1;
+            }
+        }
+        foreach (get_object_vars($featuredItems) as $entry) {
+            $itemCode = is_object($entry) ? ($entry->itemCode ?? null) : ($entry['itemCode'] ?? null);
+            $metaHash = is_object($entry) ? ($entry->metaHash ?? null) : ($entry['metaHash'] ?? null);
+            if (is_string($itemCode) && is_string($metaHash)
+                && $metaHash !== '' && $metaHash !== $itemCode . ':') {
+                if (($available[$metaHash] ?? 0) > 0) {
+                    --$available[$metaHash];
+                }
+            }
+        }
+
+        foreach (get_object_vars($featuredItems) as $slot => $entry) {
+            $itemCode = is_object($entry) ? ($entry->itemCode ?? null) : ($entry['itemCode'] ?? null);
+            if (!is_string($itemCode) || $itemCode === '') {
+                continue;
+            }
+            $metaHash = is_object($entry) ? ($entry->metaHash ?? null) : ($entry['metaHash'] ?? null);
+            if (is_string($metaHash) && $metaHash !== '' && $metaHash !== $itemCode . ':') {
+                continue;
+            }
+            foreach (($candidates[$itemCode] ?? []) as $candidate) {
+                if (($available[$candidate] ?? 0) <= 0) {
+                    continue;
+                }
+                if (is_object($entry)) {
+                    $entry->metaHash = $candidate;
+                } else {
+                    $entry['metaHash'] = $candidate;
+                }
+                $featuredItems->{$slot} = $entry;
+                --$available[$candidate];
+                break;
+            }
+        }
+
+        return $featuredItems;
+    }
+
+    private static function mutableAnimalStateHash($dna): ?string
+    {
+        if (!is_array($dna) || !isset($dna['G'], $dna['B'], $dna['P'])) {
+            return null;
+        }
+
+        $state = (string) $dna['G'];
+        foreach (['B', 'P'] as $trait) {
+            foreach (['H', 'S', 'V'] as $channel) {
+                $values = $dna[$trait][$channel] ?? ['', ''];
+                $state .= ($values[0] ?? '') . ',' . ($values[1] ?? '');
+            }
+            if ($trait === 'P') {
+                $state .= $dna['P']['T'][0] ?? '';
+            }
+        }
+
+        return substr(md5($state), 0, 8);
     }
 
     public static function getCraftTypeFromItemName(?string $itemName): ?string
@@ -408,10 +779,30 @@ class WorldObject extends Model
                 $components = is_array($components) ? (object) $components : new \stdClass();
             }
 
-            foreach (['featuredItems', 'storageMetadata', 'paintColor'] as $field) {
-                if (property_exists($obj, $field) && !property_exists($components, $field)) {
+            foreach (['featuredItems', 'storageMetadata', 'paintColor', 'extraDataState'] as $field) {
+                if (!property_exists($obj, $field)) {
+                    continue;
+                }
+
+                // Flash commonly echoes a complete FeatureBuilding with an
+                // empty components envelope while carrying the authoritative
+                // storage/slot state at the object top level. Prefer a
+                // meaningful top-level value, but do not let an empty echo
+                // erase metadata that was already present in components.
+                if (!property_exists($components, $field)
+                    || (!self::hasMeaningfulValue($components->{$field})
+                        && self::hasMeaningfulValue($obj->{$field}))) {
                     $components->{$field} = $obj->{$field};
                 }
+            }
+        }
+
+        if (in_array($className, ['MutableAnimal', 'MutableAnimalBaby'], true)) {
+            if (!is_object($components)) {
+                $components = is_array($components) ? (object) $components : new \stdClass();
+            }
+            if (property_exists($obj, 'mutableAnimalState')) {
+                $components->mutableAnimalState = $obj->mutableAnimalState;
             }
         }
 
@@ -426,10 +817,14 @@ class WorldObject extends Model
             'direction' => $obj->direction ?? 0,
             'state' => self::normalizeLegacyTreeState(
                 $className,
-                self::normalizeLegacyAnimalBreedingState(
+                self::normalizeLegacyOrchardState(
                     $itemName,
                     $className,
-                    $state,
+                    self::normalizeLegacyAnimalBreedingState(
+                        $itemName,
+                        $className,
+                        $state,
+                    ),
                 ),
             ),
             'deleted' => $obj->deleted ?? false,
@@ -441,7 +836,12 @@ class WorldObject extends Model
             'is_big_plot' => $obj->isBigPlot ?? false,
             'is_jumbo' => $obj->isJumbo ?? false,
             'is_produce_item' => $obj->isProduceItem ?? false,
-            'contents' => JsonHelper::safeEncode($obj->contents ?? null),
+            'contents' => JsonHelper::safeEncode(self::normalizeConstructionContents(
+                $itemName,
+                $className,
+                $state,
+                $obj->contents ?? [],
+            )),
             'expansion_level' => $obj->expansionLevel ?? 1,
             'expansion_parts' => JsonHelper::safeEncode($obj->expansionParts ?? null),
             'equipment_parts_count' => $obj->m_equipmentPartsCount ?? 0,
@@ -465,6 +865,21 @@ class WorldObject extends Model
         }
 
         return $data;
+    }
+
+    private static function hasMeaningfulValue($value): bool
+    {
+        if ($value === null) {
+            return false;
+        }
+        if (is_string($value)) {
+            return trim($value) !== '';
+        }
+        if (is_array($value) || is_object($value)) {
+            return count((array) $value) > 0;
+        }
+
+        return true;
     }
 
     /**
@@ -503,6 +918,28 @@ class WorldObject extends Model
                 'xhworchard_featurebuilding_finished',
                 'xuk_sheep_pen_finished',
             ], true);
+    }
+
+    /**
+     * Ordinary completed orchards use OrchardFeatureBuilding's `bare`/
+     * `ripe` lifecycle. Older world snapshots could write the crop-style
+     * `grown` state, which has no OrchardFeatureBuilding renderer and leaves
+     * only the placement shadow visible after reload.
+     */
+    private static function normalizeLegacyOrchardState(
+        ?string $itemName,
+        ?string $className,
+        ?string $state,
+    ): ?string {
+        if (
+            $itemName !== 'orchard_featurebuilding_finished'
+            || $className !== 'OrchardFeatureBuilding'
+            || $state !== 'grown'
+        ) {
+            return $state;
+        }
+
+        return 'bare';
     }
 
     /**

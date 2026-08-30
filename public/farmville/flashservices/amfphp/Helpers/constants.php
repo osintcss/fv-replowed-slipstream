@@ -155,6 +155,7 @@ define('ACTION_PLACE_MESSAGE', 'placeMessage');
 define('ACTION_DELETE_MESSAGE_SIGN', 'deleteMessageSign');
 define('ACTION_EXPAND_WITH_CURRENCY', 'ExpandWithCurrency');
 define('ACTION_COMPLETE_NOW', 'CompleteNow');
+define('ACTION_TRANSFORM_BUILDING', 'TransformBuilding');
 define('ACTION_OPEN', 'open');
 
 define('ACTION_UPGRADE_STORAGE', 'upgradeStorage');

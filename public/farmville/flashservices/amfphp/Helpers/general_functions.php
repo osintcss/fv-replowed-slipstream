@@ -143,8 +143,22 @@
 
         $giftbox[$itemCode][0] -= $quantity;
 
+        // Keep per-item metadata aligned with the remaining quantity.  The
+        // Flash StorageItem trims metadata from the front of the stack when
+        // quantity decreases; mirror that behavior on the persisted Giftbox
+        // so patterned/instance-specific gifts cannot inherit sold metadata.
+        if (isset($giftbox[$itemCode][2]) && is_array($giftbox[$itemCode][2])) {
+            while (count($giftbox[$itemCode][2]) > $giftbox[$itemCode][0]) {
+                array_shift($giftbox[$itemCode][2]);
+            }
+        }
+
         if ($giftbox[$itemCode][0] <= 0) {
             unset($giftbox[$itemCode]);
+        } elseif (isset($giftbox[$itemCode][1])
+            && is_array($giftbox[$itemCode][1])
+            && count($giftbox[$itemCode][1]) > 0) {
+            array_shift($giftbox[$itemCode][1]);
         }
 
         saveGiftBox($uid, $giftbox);
@@ -1777,6 +1791,28 @@
 
         return WorldObject::where('world_id', $worldId)
             ->where('item_name', 'LIKE', $ringPrefix . '%')
+            ->where('item_name', 'NOT LIKE', '%box%')
+            ->where('deleted', false)
+            ->exists();
+    }
+
+    /**
+     * Turbo Rings grant infinite Turbo only in the world where they are
+     * placed.  The Flash client receives that fact through FeatureOptions;
+     * it does not infer it from the decoration while loading the world.
+     */
+    function hasTurboRing($uid, $worldType = null) {
+        if ($worldType === null) {
+            $worldType = getCurrentWorldType($uid);
+        }
+
+        $worldId = getWorldId($uid, $worldType);
+        if (!$worldId) {
+            return false;
+        }
+
+        return WorldObject::where('world_id', $worldId)
+            ->where('item_name', 'LIKE', '%turboring%')
             ->where('item_name', 'NOT LIKE', '%box%')
             ->where('deleted', false)
             ->exists();
