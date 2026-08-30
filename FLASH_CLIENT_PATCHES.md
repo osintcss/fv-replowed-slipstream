@@ -15,7 +15,7 @@ size, or the successful-expansion path.
 The patch was compiled and then re-exported with JPEXS Free Flash Decompiler
 26.2.1 to verify that the resulting SWF contains the fault handler.
 
-## Plow: send the completed action without the normal batch delay
+## Farm actions: send completed state changes without the normal batch delay
 
 ### Symptom
 
@@ -47,7 +47,7 @@ sending the first AMF batch.
 
 ### Targeted change
 
-In `Classes.Plot.plow()`, change only the `TPlow` enqueue call:
+The first patch changed the manual `Classes.Plot.plow()` enqueue call:
 
 ```actionscript
 // Existing
@@ -58,9 +58,18 @@ TransactionManager.addTransaction(new TPlow(this, energySource, energy, energyMe
 ```
 
 The second argument makes `TransactionManager` call its send routine
-immediately. It does not send before the avatar action, alter plow costs or
-state transitions, or globally disable batching for planting, harvesting, and
-other actions.
+immediately. It does not send before the avatar action or alter the action's
+costs or state transition.
+
+The scope was subsequently extended only to farm state mutations that a player
+could lose by reloading immediately after the visual action completes:
+
+- manual plot actions: plow, clear withered, clear, harvest, and plant;
+- vehicle actions: plow, plot removal, plant, harvest, and combine.
+
+All other transactions remain batched. In particular, social, gift, reward,
+onboarding, targeting, and post-load work must not be changed merely to make
+them send sooner.
 
 ### Investigation method
 
@@ -80,11 +89,10 @@ the PHP implementation:
 4. Server-side plow audit logs were used only to confirm the distinction
    between “request never sent” and “request sent but failed to persist.”
 
-After editing, re-export the SWF and decompile the patched `Classes.Plot` once
-to confirm the added `true`. Regression test: manually plow one plot, wait for
-the avatar action to complete, reload immediately, and confirm the plot
-remains plowed. Also verify ordinary planting and harvesting still batch as
-before.
+After editing, re-export the SWF and decompile the patched `Classes.Plot` and
+`AvatarMode.AMMultiPlotAction` once to confirm the added `true` arguments.
+Regression-test each affected manual action and one vehicle action: wait for
+the animation to complete, reload immediately, and confirm the state remains.
 
 ### Patch/repack workflow
 
@@ -145,7 +153,7 @@ Then point `swfLocation` in `resources/views/game.blade.php` at the same
 revisioned filename:
 
 ```text
-/farmville/embeds/Flash/v855037.855026/FarmGame-10-plowdispatch1.swf?restore_original=1
+/farmville/embeds/Flash/v855037.855026/FarmGame-10-farmactiondispatch2.swf?restore_original=1
 ```
 
 For the next client change, use a new descriptive revision name in both places
