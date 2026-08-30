@@ -206,11 +206,12 @@ class DiscordStatus extends Command
         $cachePing = $healthCheck['cache_ping'] ?? null;
 
         $location = env('DISCORD_STATUS_SERVER_LOCATION', 'Unknown');
+        $downloadsUrl = env('DISCORD_STATUS_DOWNLOADS_URL') ?: $appUrl;
 
         return [
             'embeds' => [[
                 'title' => "{$emojis[$status]} FarmVille Host Status: {$status}",
-                'description' => "**Join:** {$appUrl}\n**Downloads:** {$appUrl}",
+                'description' => "**Join:** {$appUrl}\n**Downloads:** {$downloadsUrl}",
                 'color' => $colors[$status],
                 'fields' => [
                     [
