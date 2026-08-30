@@ -4,6 +4,7 @@ use App\Models\User;
 use App\Models\DiscordIdentity;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Auth;
 
 test('discord authorization requests the guild membership scope', function () {
     config([
@@ -109,6 +110,10 @@ test('launcher discord sign-in returns a one-time handoff token', function () {
     $consume->assertRedirect(route('play'));
     $this->assertAuthenticatedAs($user);
 
+    // The consume route is intentionally behind the guest middleware. Log
+    // out before replaying the one-time token so the controller, rather than
+    // RedirectIfAuthenticated, can report the expired handoff.
+    Auth::logout();
     $replay = $this->get(route('discord.launcher.consume', ['token' => $query['token']]));
     $replay->assertRedirect(route('login'))
         ->assertSessionHasErrors(['discord']);
