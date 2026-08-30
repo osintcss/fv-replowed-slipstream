@@ -5,9 +5,32 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use App\Models\PlayerMeta;
 
 class NeighborController extends Controller
 {
+    private const AUTO_ACCEPT_META_KEY = 'auto_accept_neighbor_requests';
+
+    public static function autoAcceptNeighborRequests(string|int $uid): bool
+    {
+        $value = PlayerMeta::getValue($uid, self::AUTO_ACCEPT_META_KEY);
+        if ($value === false || trim($value) === '') {
+            return true;
+        }
+
+        $normalized = strtolower(trim($value));
+        if (in_array($normalized, ['0', 'false', 'off', 'no'], true)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public static function setAutoAcceptNeighborRequests(string|int $uid, bool $enabled): void
+    {
+        PlayerMeta::setValue($uid, self::AUTO_ACCEPT_META_KEY, $enabled ? '1' : '0');
+    }
+
     public function getNeighborsData()
     {
         $user = Auth::user();
@@ -257,87 +280,11 @@ class NeighborController extends Controller
         
         $neighborId = $validated['neighbor_id'];
         $user = Auth::user();
-
-        $pendingMeta = DB::table('playermeta')
-            ->where('uid', $user->uid)
-            ->where('meta_key', 'pending_neighbors')
-            ->value('meta_value');
-        
-        $pendingIds = $pendingMeta ? unserialize($pendingMeta, ['allowed_classes' => false]) : [];
-
-        $pendingIds = array_values(array_filter($pendingIds, function($id) use ($neighborId) {
-            return $id != $neighborId;
-        }));
-
-        if (empty($pendingIds)) {
-            DB::table('playermeta')
-                ->where('uid', $user->uid)
-                ->where('meta_key', 'pending_neighbors')
-                ->delete();
-        } else {
-            DB::table('playermeta')
-                ->where('uid', $user->uid)
-                ->where('meta_key', 'pending_neighbors')
-                ->update(['meta_value' => serialize($pendingIds)]);
+        if (!DB::table('users')->where('uid', $neighborId)->exists()) {
+            return response()->json(['error' => 'Neighbor not found'], 404);
         }
 
-        $currentMeta = DB::table('playermeta')
-            ->where('uid', $user->uid)
-            ->where('meta_key', 'current_neighbors')
-            ->value('meta_value');
-        
-        $currentIds = $currentMeta ? unserialize($currentMeta, ['allowed_classes' => false]) : [];
-        
-        if (!in_array($neighborId, $currentIds)) {
-            $currentIds[] = $neighborId;
-            
-            $exists = DB::table('playermeta')
-                ->where('uid', $user->uid)
-                ->where('meta_key', 'current_neighbors')
-                ->exists();
-            
-            if ($exists) {
-                DB::table('playermeta')
-                    ->where('uid', $user->uid)
-                    ->where('meta_key', 'current_neighbors')
-                    ->update(['meta_value' => serialize($currentIds)]);
-            } else {
-                DB::table('playermeta')->insert([
-                    'uid' => $user->uid,
-                    'meta_key' => 'current_neighbors',
-                    'meta_value' => serialize($currentIds)
-                ]);
-            }
-        }
-
-        $neighborCurrentMeta = DB::table('playermeta')
-            ->where('uid', $neighborId)
-            ->where('meta_key', 'current_neighbors')
-            ->value('meta_value');
-        
-        $neighborCurrentIds = $neighborCurrentMeta ? unserialize($neighborCurrentMeta, ['allowed_classes' => false]) : [];
-        
-        if (!in_array($user->uid, $neighborCurrentIds)) {
-            $neighborCurrentIds[] = $user->uid;
-            
-            $neighborExists = DB::table('playermeta')
-                ->where('uid', $neighborId)
-                ->where('meta_key', 'current_neighbors')
-                ->exists();
-            
-            if ($neighborExists) {
-                DB::table('playermeta')
-                    ->where('uid', $neighborId)
-                    ->where('meta_key', 'current_neighbors')
-                    ->update(['meta_value' => serialize($neighborCurrentIds)]);
-            } else {
-                DB::table('playermeta')->insert([
-                    'uid' => $neighborId,
-                    'meta_key' => 'current_neighbors',
-                    'meta_value' => serialize($neighborCurrentIds)
-                ]);
-            }
-        }
+        DB::transaction(fn () => $this->acceptNeighborPair((string) $user->uid, $neighborId));
         
         return response()->json(['success' => true, 'message' => 'Neighbor request accepted successfully']);
     }
@@ -373,11 +320,25 @@ class NeighborController extends Controller
     public function sendNeighborRequest(Request $request)
     {
         $user = Auth::user();
-        $neighborId = $request->input('neighbor_id');
+        $neighborId = (string) $request->input('neighbor_id', '');
 
         $neighborExists = DB::table('users')->where('uid', $neighborId)->exists();
         if (!$neighborExists) {
             return response()->json(['error' => 'User not found'], 404);
+        }
+
+        if ($neighborId === (string) $user->uid) {
+            return response()->json(['error' => 'You cannot add yourself as a neighbor'], 422);
+        }
+
+        if (self::autoAcceptNeighborRequests($neighborId)) {
+            DB::transaction(fn () => $this->acceptNeighborPair($neighborId, (string) $user->uid));
+
+            return response()->json([
+                'success' => true,
+                'accepted' => true,
+                'message' => 'Neighbor request accepted automatically',
+            ]);
         }
 
         $pendingMeta = DB::table('playermeta')
@@ -386,6 +347,7 @@ class NeighborController extends Controller
             ->value('meta_value');
         
         $pendingIds = $pendingMeta ? unserialize($pendingMeta, ['allowed_classes' => false]) : [];
+        $pendingIds = is_array($pendingIds) ? $pendingIds : [];
         
         if (!in_array($user->uid, $pendingIds)) {
             $pendingIds[] = $user->uid;
@@ -410,5 +372,49 @@ class NeighborController extends Controller
         }
         
         return response()->json(['success' => true, 'message' => 'Neighbor request sent successfully']);
+    }
+
+    private function acceptNeighborPair(string $receiverId, string $requesterId): void
+    {
+        $this->removePendingNeighbor($receiverId, $requesterId);
+        $this->addCurrentNeighbor($receiverId, $requesterId);
+        $this->addCurrentNeighbor($requesterId, $receiverId);
+    }
+
+    private function removePendingNeighbor(string $uid, string $neighborId): void
+    {
+        $pendingMeta = DB::table('playermeta')
+            ->where('uid', $uid)
+            ->where('meta_key', 'pending_neighbors')
+            ->value('meta_value');
+        $pendingIds = $pendingMeta ? unserialize($pendingMeta, ['allowed_classes' => false]) : [];
+        $pendingIds = is_array($pendingIds)
+            ? array_values(array_filter($pendingIds, fn ($id) => (string) $id !== $neighborId))
+            : [];
+
+        if (empty($pendingIds)) {
+            DB::table('playermeta')->where('uid', $uid)->where('meta_key', 'pending_neighbors')->delete();
+        } else {
+            DB::table('playermeta')->where('uid', $uid)->where('meta_key', 'pending_neighbors')
+                ->update(['meta_value' => serialize($pendingIds)]);
+        }
+    }
+
+    private function addCurrentNeighbor(string $uid, string $neighborId): void
+    {
+        $currentMeta = DB::table('playermeta')
+            ->where('uid', $uid)
+            ->where('meta_key', 'current_neighbors')
+            ->value('meta_value');
+        $currentIds = $currentMeta ? unserialize($currentMeta, ['allowed_classes' => false]) : [];
+        $currentIds = is_array($currentIds) ? $currentIds : [];
+
+        if (!in_array($neighborId, array_map('strval', $currentIds), true)) {
+            $currentIds[] = $neighborId;
+            DB::table('playermeta')->updateOrInsert(
+                ['uid' => $uid, 'meta_key' => 'current_neighbors'],
+                ['meta_value' => serialize($currentIds)],
+            );
+        }
     }
 }

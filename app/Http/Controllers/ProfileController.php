@@ -8,7 +8,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Redirect;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\View\View;
 use Illuminate\Http\JsonResponse;
 use App\Models\UserMeta;
@@ -46,8 +45,7 @@ class ProfileController extends Controller
         $validated = $request->validate([
             'firstName' => 'nullable|string|max:255',
             'lastName' => 'nullable|string|max:255',
-            'current_password' => 'nullable|required_with:new_password',
-            'new_password' => 'nullable|min:8|confirmed',
+            'auto_accept_neighbor_requests' => 'sometimes|boolean',
         ]);
 
         $nameChanged = false;
@@ -67,12 +65,11 @@ class ProfileController extends Controller
             $user->save();
         }
 
-        if (!empty($validated['current_password']) && !empty($validated['new_password'])) {
-            if (!Hash::check($validated['current_password'], $user->password)) {
-                return response()->json(['success' => false, 'message' => 'Current password is incorrect'], 422);
-            }
-            $user->password = Hash::make($validated['new_password']);
-            $user->save();
+        if (array_key_exists('auto_accept_neighbor_requests', $validated)) {
+            NeighborController::setAutoAcceptNeighborRequests(
+                $user->uid,
+                (bool) $validated['auto_accept_neighbor_requests'],
+            );
         }
 
         $userMeta->save();
@@ -81,7 +78,8 @@ class ProfileController extends Controller
             'success' => true,
             'message' => 'Settings updated successfully',
             'firstName' => $userMeta->firstName,
-            'lastName' => $userMeta->lastName
+            'lastName' => $userMeta->lastName,
+            'autoAcceptNeighborRequests' => NeighborController::autoAcceptNeighborRequests($user->uid),
         ]);
     }
 

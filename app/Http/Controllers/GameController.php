@@ -18,6 +18,7 @@ class GameController extends Controller
             'neighborIds' => $neighborsData['neighborIds'],
             'neighborsBase64' => $neighborsData['neighborsBase64'],
             'user' => $user,
+            'autoAcceptNeighborRequests' => NeighborController::autoAcceptNeighborRequests($user->uid),
             'fotdImages' => $this->getFotdImages()
         ]);
     }
@@ -34,6 +35,7 @@ class GameController extends Controller
             'neighborIds' => $neighborsData['neighborIds'],
             'neighborsBase64' => $neighborsData['neighborsBase64'],
             'user' => $user,
+            'autoAcceptNeighborRequests' => NeighborController::autoAcceptNeighborRequests($user->uid),
             'isLauncher' => true,
             'fotdImages' => $this->getFotdImages()
         ]);
