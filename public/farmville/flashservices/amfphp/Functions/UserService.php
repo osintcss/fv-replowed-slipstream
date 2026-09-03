@@ -147,10 +147,14 @@ class UserService{
 
     public static function getMOTD(){
         // PAOK is the retired Project Unicorn / Gagaville onboarding MOTD.
-        // Return a successful empty result rather than a different MOTD so the
-        // client simply continues startup without rendering that one popup.
+        // TGetMOTD forwards motdData to ItemMembershipManager.onGetMOTD(),
+        // which unconditionally reads motd["motdSeenFlag"]. Keep the expected
+        // non-null object shape, but use a sentinel that cannot match a
+        // configured membership MOTD so the retired popup is not surfaced.
         $data["data"] = array(
-            "motdData" => null,
+            "motdData" => array(
+                "motdSeenFlag" => "__disabled_motd__",
+            ),
         );
 
         return $data;
