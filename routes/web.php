@@ -6,7 +6,6 @@ use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
-use App\Http\Controllers\AssetsController;
 use App\Http\Controllers\NeighborController;
 use App\Http\Controllers\GameController;
 use App\Http\Controllers\AdminController;
@@ -122,13 +121,6 @@ Route::get('/dashboard', function () {
 })->middleware(['auth', 'verified', 'discord.member'])->name('dashboard');
 
 Route::get('/game', [GameController::class, 'index'])->middleware(['auth', 'verified', 'discord.member'])->name('game');
-
-Route::middleware(['auth', 'discord.member'])->group(function () {
-    Route::post('/download-file', [AssetsController::class, 'downloadAssets'])->name('download.file');
-    Route::get('/download-progress', [AssetsController::class, 'getProgress'])->name('download.progress');
-    Route::post('/extract-file', [AssetsController::class, 'extractAssets'])->name('extract.file');
-    Route::get('/extract-progress', [AssetsController::class, 'extractProgress'])->name('extract.progress');
-});
 
 Route::middleware(['auth', 'verified', 'discord.member', 'admin'])->group(function () {
     Route::get('/admin', [AdminController::class, 'index'])->name('admin');
