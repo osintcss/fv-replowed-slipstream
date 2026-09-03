@@ -355,7 +355,10 @@ class AnimalBreedingService
         $storageMetadata = isset($components->storageMetadata) && is_object($components->storageMetadata)
             ? $components->storageMetadata : new \stdClass();
         $candidateEntries = [];
-        if (isset($storageMetadata->{$hash}) && is_array($storageMetadata->{$hash})) {
+        $hasExactMetadataKey = isset($storageMetadata->{$hash})
+            && is_array($storageMetadata->{$hash})
+            && $storageMetadata->{$hash} !== [];
+        if ($hasExactMetadataKey) {
             $candidateEntries = $storageMetadata->{$hash};
         }
         $baseKey = explode(':', $hash, 2)[0] . ':';
@@ -368,7 +371,12 @@ class AnimalBreedingService
                 $metadata = $metadata->type;
             }
             $decoded = is_string($metadata) ? json_decode($metadata, true) : self::normalizeDna($metadata);
-            if (is_array($decoded) && $hashSuffix !== '' && self::mutableStateHash($decoded) === $hashSuffix) {
+            // The key is the persisted identity used by the feature-slot
+            // protocol. Trust an exact keyed record even when its DNA was
+            // serialized by an older client with a slightly different hash
+            // input; recomputing it here makes a valid pig look unbreedable.
+            if (is_array($decoded) && $hashSuffix !== ''
+                && ($hasExactMetadataKey || self::mutableStateHash($decoded) === $hashSuffix)) {
                 return $decoded;
             }
             if (is_array($decoded) && !str_contains($hash, ':')) {

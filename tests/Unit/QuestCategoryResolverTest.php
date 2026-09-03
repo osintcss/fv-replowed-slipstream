@@ -28,6 +28,21 @@ final class QuestCategoryResolverTest extends TestCase
         self::assertContains('animalBreedingAll', QuestCategoryResolver::categories('animal_breeding_aviary_finished'));
     }
 
+    public function test_it_maps_ordinary_cow_pastures_to_the_pasture_habitat_category(): void
+    {
+        self::assertContains(
+            'pastureHabitat',
+            QuestCategoryResolver::categories('xbb_pasture_finished', [
+                'className' => 'FeatureBuilding',
+                'storageType' => (object) ['itemClass' => 'animal_dairy_pen'],
+            ]),
+        );
+        self::assertContains(
+            'pastureHabitat',
+            QuestCategoryResolver::categories('xjm_pastures_finished'),
+        );
+    }
+
     public function test_it_normalizes_all_prefixed_task_categories(): void
     {
         self::assertSame('Peanut', QuestCategoryResolver::taskCategory('allPeanut'));

@@ -111,6 +111,21 @@ final class QuestCategoryResolver
             }
         }
 
+        // The original cow-pasture items use names such as
+        // `xbb_pasture_finished` rather than the newer
+        // `animal_breeding_*pasture_finished` family.  Their imported data
+        // identifies them as dairy storage buildings, but does not expose a
+        // quest category.  Both forms satisfy the legacy `pastureHabitat`
+        // harvest objective.
+        $storageType = $itemData['storageType'] ?? null;
+        $storageItemClass = is_object($storageType)
+            ? ($storageType->itemClass ?? null)
+            : (is_array($storageType) ? ($storageType['itemClass'] ?? null) : null);
+        if ($storageItemClass === 'animal_dairy_pen'
+            || preg_match('/(?:^|_)pastures?(?:_|$)/', $normalizedItemName)) {
+            $categories[] = 'pastureHabitat';
+        }
+
         return array_values(array_unique($categories));
     }
 

@@ -63,3 +63,25 @@ it('requires exact persisted DNA for one female and one male parent', function (
         ->and(breedingPrivate('validatedParents')->invoke(null, ['sheeppen_ewe:missing', $maleHash], $components))
         ->toBeNull();
 });
+
+it('trusts a persisted metadata key when legacy DNA hashing differs', function (): void {
+    $female = [
+        'G' => 'F',
+        'B' => ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => ['T' => ['a'], 'H' => ['20', '20'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+    ];
+    $male = [
+        'G' => 'M',
+        'B' => ['H' => ['30', '30'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => ['T' => ['b'], 'H' => ['40', '40'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+    ];
+    $femaleHash = 'sheeppen_ewe:12345678';
+    $maleHash = 'sheeppen_ram:87654321';
+    $components = (object) ['storageMetadata' => (object) [
+        $femaleHash => [json_encode($female)],
+        $maleHash => [json_encode($male)],
+    ]];
+
+    expect(breedingPrivate('validatedParents')->invoke(null, [$femaleHash, $maleHash], $components))
+        ->toBe([$female, $male]);
+});

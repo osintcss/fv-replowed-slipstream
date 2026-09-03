@@ -8,6 +8,7 @@ use App\Models\Quest;
 define('META_QUEST_ACTIVE', 'quest_active');
 define('META_QUEST_COMPLETED', 'quest_completed');
 define('META_QUEST_COMPLETED_REPLAYABLE', 'quest_completed_replayable');
+define('MAX_ACTIVE_QUESTS', 6);
 
 function getQuestByName($questName) {
     static $questCache = [];
@@ -70,6 +71,32 @@ function setActiveQuests($uid, $quests) {
 function getActiveQuestIds($uid) {
     $activeQuests = getActiveQuests($uid);
     return array_keys($activeQuests);
+}
+
+/**
+ * Remove legacy dialog-only quest entries that were left active by older
+ * server responses. New dialog-only quests are completed atomically by
+ * FarmQuestService, so an active entry of this kind is stale state rather
+ * than a playable objective. This helper is deliberately opt-in: callers can
+ * repair existing accounts without discarding normal in-progress quests.
+ */
+function removeStaleViewDialogQuests($uid): array {
+    $activeQuests = getActiveQuests($uid);
+    $removed = [];
+
+    foreach ($activeQuests as $questName => $state) {
+        $quest = getQuestByName($questName);
+        if (isViewDialogOnlyQuest($quest)) {
+            unset($activeQuests[$questName]);
+            $removed[] = $questName;
+        }
+    }
+
+    if ($removed !== []) {
+        setActiveQuests($uid, $activeQuests);
+    }
+
+    return $removed;
 }
 
 function getCompletedQuests($uid) {
@@ -483,6 +510,13 @@ function startQuestIfEligible($uid, $questName, $playerLevel = 1) {
 
     $activeQuests = getActiveQuests($uid);
     if (isset($activeQuests[$questName])) {
+        return null;
+    }
+
+    // Flash's quest manager only supports six active entries. Saving a
+    // seventh leaves the client with a blocked counter and no usable quest
+    // panel after reload.
+    if (count($activeQuests) >= MAX_ACTIVE_QUESTS) {
         return null;
     }
 
