@@ -48,7 +48,11 @@ class EquipmentWorldService
             ]);
         }
 
-        if ($plotCount > 0) {
+        // A duplicate coordinate in one plow sweep is one visible plot, not
+        // two independent actions.  Charge plows after their deduplicated
+        // world write succeeds; the other equipment actions retain their
+        // established request-count fuel handling below.
+        if ($action !== ACTION_PLOW && $plotCount > 0) {
             UserResources::removeEnergy($uid, $plotCount);
         }
 
@@ -79,6 +83,7 @@ class EquipmentWorldService
         // coordinates let us distinguish a rejected write from a plot that
         // was never submitted by the client.
         $acceptedPositions = [];
+        $seenPlowPositions = [];
 
         foreach ($plotBundle as $key => $plotData) {
             if (is_array($plotData)) {
@@ -86,15 +91,35 @@ class EquipmentWorldService
             }
 
             if ($action === ACTION_PLOW) {
+                $posX = isset($plotData->position) ? ($plotData->position->x ?? ($plotData->position['x'] ?? null)) : null;
+                $posY = isset($plotData->position) ? ($plotData->position->y ?? ($plotData->position['y'] ?? null)) : null;
+
+                if ($posX !== null && $posY !== null) {
+                    $positionKey = $posX . ',' . $posY;
+                    if (isset($seenPlowPositions[$positionKey])) {
+                        // Preserve the response-array index expected by
+                        // TEquipmentAction, but do not run a second local
+                        // mutation for the same square.  Without this guard
+                        // the first entry is queued for INSERT and the second
+                        // is queued for UPDATE, causing the atomic write to
+                        // roll back because that row does not yet exist.
+                        $results[] = null;
+                        $skippedPositions[] = [
+                            'x' => $posX,
+                            'y' => $posY,
+                            'reason' => 'duplicate_plow_position',
+                        ];
+                        continue;
+                    }
+                    $seenPlowPositions[$positionKey] = true;
+                }
+
                 $plotObj = self::createPlotObject($plotData);
                 if ($plotObj === null) {
                     $results[] = null;
                     $skippedPositions[] = ['reason' => 'invalid_plot_payload'];
                     continue;
                 }
-
-                $posX = isset($plotData->position) ? ($plotData->position->x ?? ($plotData->position['x'] ?? null)) : null;
-                $posY = isset($plotData->position) ? ($plotData->position->y ?? ($plotData->position['y'] ?? null)) : null;
 
                 $foundKey = findByPosition($positionIndex, $posX, $posY);
 
@@ -401,6 +426,10 @@ class EquipmentWorldService
             } else {
                 $results = array_fill(0, $plotCount, null);
             }
+        }
+
+        if ($worldPersisted && $action === ACTION_PLOW && $plowCount > 0) {
+            UserResources::removeEnergy($uid, $plowCount);
         }
 
         // Bulk equipment actions take a different server route than individual

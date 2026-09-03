@@ -265,6 +265,7 @@ class WorldObject extends Model
             }
             if (is_object($mutableState)) {
                 $obj->mutableAnimalState = $mutableState;
+                self::normalizeMutableAnimalGender($obj, $mutableState);
             }
         }
 
@@ -282,6 +283,22 @@ class WorldObject extends Model
         }
 
         return $obj;
+    }
+
+    /** Keep legacy pig/sheep item names consistent with their DNA gender. */
+    private static function normalizeMutableAnimalGender(\stdClass $obj, \stdClass $mutableState): void
+    {
+        $gender = is_object($mutableState->dna ?? null)
+            ? strtoupper((string) ($mutableState->dna->G ?? '')) : '';
+        if (!in_array($gender, ['M', 'F'], true)) {
+            return;
+        }
+
+        $obj->itemName = match ((string) ($obj->itemName ?? '')) {
+            'pigpen_male', 'pigpen_female' => $gender === 'M' ? 'pigpen_male' : 'pigpen_female',
+            'sheeppen_ram', 'sheeppen_ewe' => $gender === 'M' ? 'sheeppen_ram' : 'sheeppen_ewe',
+            default => $obj->itemName,
+        };
     }
 
     private function fallbackMutableAnimalBabyDna(string $itemName): \stdClass
@@ -622,7 +639,7 @@ class WorldObject extends Model
         $candidates = [];
 
         foreach (get_object_vars($storageMetadata) as $metadataKey => $entries) {
-            $itemCode = explode(':', (string) $metadataKey, 2)[0];
+            [$itemCode, $keyHash] = array_pad(explode(':', (string) $metadataKey, 2), 2, '');
             if ($itemCode === '') {
                 continue;
             }
@@ -636,7 +653,13 @@ class WorldObject extends Model
                 } elseif (is_object($entry)) {
                     $entry = get_object_vars($entry);
                 }
-                $hash = self::mutableAnimalStateHash($entry);
+                // The metadata key is the persisted per-animal identity. A
+                // legacy row may use only `itemCode:`, in which case derive
+                // the key once from the DNA. Do not recompute an already
+                // hashed key: older clients used a compatible but not
+                // byte-for-byte identical hash input, and recomputing it
+                // causes a valid pig to change colour on reload.
+                $hash = $keyHash !== '' ? $keyHash : self::mutableAnimalStateHash($entry);
                 if ($hash !== null) {
                     $candidates[$itemCode][] = $itemCode . ':' . $hash;
                 }
@@ -649,13 +672,15 @@ class WorldObject extends Model
                 $available[$hash] = ($available[$hash] ?? 0) + 1;
             }
         }
-        foreach (get_object_vars($featuredItems) as $entry) {
+        $preservedSlots = [];
+        foreach (get_object_vars($featuredItems) as $slot => $entry) {
             $itemCode = is_object($entry) ? ($entry->itemCode ?? null) : ($entry['itemCode'] ?? null);
             $metaHash = is_object($entry) ? ($entry->metaHash ?? null) : ($entry['metaHash'] ?? null);
             if (is_string($itemCode) && is_string($metaHash)
                 && $metaHash !== '' && $metaHash !== $itemCode . ':') {
                 if (($available[$metaHash] ?? 0) > 0) {
                     --$available[$metaHash];
+                    $preservedSlots[(string) $slot] = true;
                 }
             }
         }
@@ -666,9 +691,21 @@ class WorldObject extends Model
                 continue;
             }
             $metaHash = is_object($entry) ? ($entry->metaHash ?? null) : ($entry['metaHash'] ?? null);
-            if (is_string($metaHash) && $metaHash !== '' && $metaHash !== $itemCode . ':') {
+            if (is_string($metaHash)
+                && ($preservedSlots[(string) $slot] ?? false)) {
                 continue;
             }
+            // Preserve non-canonical explicit hashes used by older, non-
+            // mutable feature records.  A canonical eight-digit animal hash
+            // that is no longer represented in storageMetadata is stale and
+            // must be replaced with an available DNA-backed hash.
+            if (is_string($metaHash)
+                && $metaHash !== ''
+                && $metaHash !== $itemCode . ':'
+                && !preg_match('/^'.preg_quote((string) $itemCode, '/').':[a-f0-9]{8}$/', $metaHash)) {
+                continue;
+            }
+            $assigned = false;
             foreach (($candidates[$itemCode] ?? []) as $candidate) {
                 if (($available[$candidate] ?? 0) <= 0) {
                     continue;
@@ -680,7 +717,18 @@ class WorldObject extends Model
                 }
                 $featuredItems->{$slot} = $entry;
                 --$available[$candidate];
+                $assigned = true;
                 break;
+            }
+            if (!$assigned
+                && is_string($metaHash)
+                && preg_match('/^'.preg_quote((string) $itemCode, '/').':[a-f0-9]{8}$/', $metaHash)) {
+                if (is_object($entry)) {
+                    $entry->metaHash = $itemCode . ':';
+                } else {
+                    $entry['metaHash'] = $itemCode . ':';
+                }
+                $featuredItems->{$slot} = $entry;
             }
         }
 

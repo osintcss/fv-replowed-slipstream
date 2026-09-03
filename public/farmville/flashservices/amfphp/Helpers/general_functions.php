@@ -1665,10 +1665,16 @@
                 ->where('object_id', (int)$objectId)
                 ->update($data);
 
-            // A client may still hold a valid object after an interrupted
-            // full-world save removed its row. Restore that one object rather
-            // than reporting a successful update that wrote nothing.
-            if ($affectedRows === 0) {
+            // MySQL reports zero affected rows both when the object is absent
+            // and when it already holds the exact values we submitted. Only
+            // restore a missing row. Treating an unchanged update as absent
+            // attempted a duplicate insert on the unique (world_id,
+            // object_id) key, which rejected the whole Flash action.
+            $objectExists = WorldObject::where('world_id', $worldId)
+                ->where('object_id', (int)$objectId)
+                ->exists();
+
+            if ($affectedRows === 0 && !$objectExists) {
                 WorldObject::create(array_merge($data, [
                     'world_id' => $worldId,
                     'object_id' => (int) $objectId,

@@ -9,6 +9,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/mutable_animal_completion.php";
 
 use App\Helpers\JsonHelper;
 use App\Models\PlayerMeta;
+use App\Models\UserMeta;
 use App\Models\WorldObject;
 use App\Support\CraftingCottages;
 use App\Support\WorldPersistence;
@@ -46,9 +47,12 @@ class WorldService
     }
 
     /**
-     * Persist the inventory side of TUseConsumable's optimistic operation.
-     * The effect itself remains owned by the client, while the item count is
-     * authoritative on the server and survives reloads.
+     * Consume a stored item and persist its player-resource effect together.
+     *
+     * TUseConsumable removes Giftbox items optimistically in Flash and then
+     * calls this action.  Resolve the item's reward from the server catalogue
+     * and keep the inventory decrement plus the balance update in one
+     * transaction so a retry cannot spend an item without granting its value.
      */
     private static function consumeUseItem($playerObj, $request, $extraParams): array
     {
@@ -63,8 +67,17 @@ class WorldService
         $item = is_string($itemName) && $itemName !== ''
             ? getItemByName($itemName, 'db')
             : false;
-        if ((!is_string($itemCode) || $itemCode === '') && is_array($item)) {
-            $itemCode = $item['code'] ?? null;
+        if (!is_array($item) && is_string($itemCode) && $itemCode !== '') {
+            $item = getItemByCode($itemCode);
+        }
+        if (is_object($item)) {
+            $item = (array) $item;
+        }
+        if (is_array($item) && isset($item['code']) && $item['code'] !== '') {
+            // The client-provided code is only a lookup hint.  The catalogue
+            // owns the code so an item name/code mismatch cannot redirect the
+            // reward to a different stored item.
+            $itemCode = (string) $item['code'];
         }
         if (!is_string($itemCode) || $itemCode === '') {
             return ['success' => false, 'consumed' => 0, 'error' => 'Consumable has no storage code.'];
@@ -77,6 +90,11 @@ class WorldService
         if ($itemCount <= 0) {
             return ['success' => false, 'consumed' => 0, 'error' => 'Invalid consumable quantity.'];
         }
+
+        $targetUser = self::flashValue($extraParams, 'targetUser', $uid);
+        $isOwnWorldUse = $targetUser === null
+            || (string) $targetUser === ''
+            || (string) $targetUser === (string) $uid;
 
         $storageIsPersisted = in_array($storageId, [
             GIFTBOX_ID,
@@ -92,7 +110,14 @@ class WorldService
         }
 
         try {
-            $consumed = \DB::transaction(function () use ($uid, $itemCode, $itemCount, $storageId) {
+            $transactionResult = \DB::transaction(function () use (
+                $uid,
+                $item,
+                $itemCode,
+                $itemCount,
+                $storageId,
+                $isOwnWorldUse,
+            ) {
                 if (in_array($storageId, [GIFTBOX_ID, (int) GIFTBOX_STORAGE_KEY], true)) {
                     PlayerMeta::query()
                         ->where('uid', $uid)
@@ -109,7 +134,45 @@ class WorldService
                     PlayerMeta::clearCache($uid, 'inventory_storage');
                 }
 
-                return consumeStoredItem($uid, $itemCode, $itemCount, $storageId);
+                // Match the lock order used by the fuel path (storage first,
+                // then user resources) to avoid deadlocks between concurrent
+                // Giftbox actions.
+                $userMeta = UserMeta::query()
+                    ->where('uid', $uid)
+                    ->lockForUpdate()
+                    ->first();
+                if (!$userMeta || !consumeStoredItem($uid, $itemCode, $itemCount, $storageId)) {
+                    return false;
+                }
+
+                UserResources::invalidateCache($uid);
+                $resourceDeltas = self::consumableResourceDeltas($item, $itemCount, $uid);
+                if (($resourceDeltas['gold'] ?? 0) !== 0
+                    || ($resourceDeltas['xp'] ?? 0) !== 0
+                    || ($resourceDeltas['cash'] ?? 0) !== 0) {
+                    $updated = UserResources::batchUpdate(
+                        $uid,
+                        $resourceDeltas['gold'],
+                        $resourceDeltas['xp'],
+                        $resourceDeltas['cash'],
+                    );
+                    if (!$updated) {
+                        throw new \RuntimeException('Player resource update was not applied.');
+                    }
+                }
+
+                $unwitheredCount = 0;
+                if ($isOwnWorldUse && ($item['name'] ?? '') === 'consume_unwither') {
+                    $unwitheredCount = self::restoreWitheredPlots($uid);
+                }
+
+                return [
+                    'consumed' => $itemCount,
+                    'goldAdded' => $resourceDeltas['gold'],
+                    'xpAdded' => $resourceDeltas['xp'],
+                    'cashAdded' => $resourceDeltas['cash'],
+                    'unwitheredCount' => $unwitheredCount,
+                ];
             });
         } catch (\Throwable $e) {
             Logger::error(self::LOG, sprintf(
@@ -118,14 +181,155 @@ class WorldService
                 $itemCode,
                 $e->getMessage(),
             ));
-            $consumed = false;
+            if (in_array($storageId, [GIFTBOX_ID, (int) GIFTBOX_STORAGE_KEY], true)) {
+                PlayerMeta::clearCache($uid, 'giftbox');
+            } elseif ($storageId === HOME_INVENTORY_ID) {
+                PlayerMeta::clearCache($uid, 'inventory_storage');
+            }
+            UserResources::invalidateCache($uid);
+            $transactionResult = false;
         }
 
-        if (!$consumed) {
+        if ($transactionResult === false) {
             return ['success' => false, 'consumed' => 0, 'error' => 'Consumable is no longer available.'];
         }
 
-        return ['success' => true, 'consumed' => $itemCount];
+        return array_merge(
+            ['success' => true],
+            $transactionResult,
+        );
+    }
+
+    /**
+     * Apply the server-side half of the Flash CUnwither consumable.
+     *
+     * CUnwither updates plots optimistically in Flash, but its generic
+     * WorldService.performAction("use") request is the durable operation.
+     * Planted plots remain in that state in storage until their grow and
+     * wither windows have elapsed, so restore only those eligible plots.
+     */
+    private static function restoreWitheredPlots($uid): int
+    {
+        $worldType = getCurrentWorldType($uid);
+        $worldId = getWorldId($uid, $worldType);
+        if (!$worldId) {
+            return 0;
+        }
+
+        $currentTimeMs = getCurrentTimeMs();
+        $unwitheredCount = 0;
+        $plots = WorldObject::query()
+            ->where('world_id', $worldId)
+            ->where('class_name', 'Plot')
+            ->where('state', PLOT_STATE_PLANTED)
+            ->whereNotNull('item_name')
+            ->where('plant_time', '>', 0)
+            ->where('deleted', false)
+            ->get();
+
+        foreach ($plots as $plot) {
+            $itemData = getItemByName($plot->item_name, 'db');
+            if (!is_array($itemData) || !isset($itemData['growTime'])) {
+                continue;
+            }
+
+            $growTimeMs = calculateGrowTimeMs((float) $itemData['growTime']);
+            if ($currentTimeMs < ($plot->plant_time + ($growTimeMs * 2))) {
+                continue;
+            }
+
+            $updated = WorldObject::query()
+                ->where('id', $plot->id)
+                ->where('state', PLOT_STATE_PLANTED)
+                ->update([
+                    'state' => PLOT_STATE_GROWN,
+                    'plant_time' => calculateFullyGrownPlantTime((float) $itemData['growTime']),
+                ]);
+            $unwitheredCount += $updated;
+        }
+
+        invalidateWorldCache($uid, $worldType);
+        return $unwitheredCount;
+    }
+
+    /**
+     * Return authoritative balance deltas for the reward consumables whose
+     * Flash implementations normally update only local state.
+     */
+    private static function consumableResourceDeltas($item, int $itemCount, $uid): array
+    {
+        if (!is_array($item)) {
+            return ['gold' => 0, 'xp' => 0, 'cash' => 0];
+        }
+
+        $className = strtolower(trim((string) ($item['className'] ?? '')));
+        if ($className === 'ccoins') {
+            return [
+                'gold' => self::positiveItemAmount($item['coins'] ?? 0) * $itemCount,
+                'xp' => 0,
+                'cash' => 0,
+            ];
+        }
+
+        if ($className === 'cxp') {
+            return [
+                'gold' => 0,
+                'xp' => self::positiveItemAmount($item['xp'] ?? 0) * $itemCount,
+                'cash' => 0,
+            ];
+        }
+
+        if ($className === 'ccash') {
+            return [
+                'gold' => 0,
+                'xp' => 0,
+                'cash' => self::positiveItemAmount($item['cash'] ?? 0) * $itemCount,
+            ];
+        }
+
+        if ($className === 'cxpbook') {
+            return [
+                'gold' => 0,
+                'xp' => self::xpBookAmount($uid, $itemCount),
+                'cash' => 0,
+            ];
+        }
+
+        return ['gold' => 0, 'xp' => 0, 'cash' => 0];
+    }
+
+    private static function positiveItemAmount($value): int
+    {
+        if (!is_numeric($value)) {
+            return 0;
+        }
+
+        return max(0, (int) $value);
+    }
+
+    /**
+     * CXPBook fills the XP gap to the next level for each book in sequence.
+     * Calculate all books while the player's resource row is locked so a
+     * concurrent use cannot calculate against the same pre-book XP value.
+     */
+    private static function xpBookAmount($uid, int $itemCount): int
+    {
+        $currentXp = UserResources::getXp($uid);
+        $xpToAdd = 0;
+
+        for ($i = 0; $i < $itemCount; $i++) {
+            $currentLevel = UserResources::getLevelForXp($currentXp);
+            $nextLevelXp = UserResources::getXpForLevel($currentLevel + 1);
+            $neededXp = max(0, min(UserResources::XP_MAX, $nextLevelXp) - $currentXp);
+            if ($neededXp <= 0) {
+                break;
+            }
+
+            $xpToAdd += $neededXp;
+            $currentXp += $neededXp;
+        }
+
+        return $xpToAdd;
     }
 
     /** Keep all object-ID actions compatible with Flash's same-batch temp IDs. */
@@ -170,12 +374,45 @@ class WorldService
      * place/store sequence; never let it render more copies of an item than
      * are actually stored or hide a stored item completely.
      */
-    private static function reconcileFeaturedItemsForContents($contents, $featuredItems): \stdClass
+    private static function reconcileFeaturedItemsForContents($contents, $featuredItems, $storageMetadata = null): \stdClass
     {
         $featuredItems = is_object($featuredItems) ? $featuredItems : new \stdClass();
         if (!is_array($contents) || empty($contents)) {
             return new \stdClass();
         }
+
+        // Mutable animals use the metadata key as their stable identity.  A
+        // delayed Flash compaction request can contain a hash for an animal
+        // that was already withdrawn, while omitting a valid hash that is
+        // still in storage.  Keep the slot count from `contents`, but only
+        // preserve a hash when the authoritative metadata still contains it.
+        // This prevents a stale slot from making a valid animal unbreedable
+        // after reload.
+        $metadataHashes = [];
+        if (is_object($storageMetadata)) {
+            foreach (get_object_vars($storageMetadata) as $metadataKey => $entries) {
+                [$code, $suffix] = array_pad(explode(':', (string) $metadataKey, 2), 2, '');
+                if ($code === '' || $suffix === '') {
+                    continue;
+                }
+                $entries = is_array($entries) ? $entries : [$entries];
+                if ($entries !== []) {
+                    $metadataHashes[$code][$metadataKey] = count($entries);
+                }
+            }
+        }
+
+        $takeMetadataHash = static function (string $code) use (&$metadataHashes): ?string {
+            foreach ($metadataHashes[$code] ?? [] as $hash => $count) {
+                if ($count <= 0) {
+                    continue;
+                }
+                --$metadataHashes[$code][$hash];
+                return (string) $hash;
+            }
+
+            return null;
+        };
 
         $remaining = [];
         $orderedCodes = [];
@@ -199,11 +436,29 @@ class WorldService
             if (!is_string($code) || ($remaining[$code] ?? 0) <= 0) {
                 continue;
             }
+            $metaHash = is_object($entry)
+                ? ($entry->metaHash ?? null)
+                : ($entry['metaHash'] ?? null);
+            $hasMetadata = isset($metadataHashes[$code]);
+            $isUsableHash = is_string($metaHash)
+                && $metaHash !== ''
+                && $metaHash !== $code . ':'
+                && isset($metadataHashes[$code][$metaHash])
+                && $metadataHashes[$code][$metaHash] > 0;
+            if ($isUsableHash) {
+                --$metadataHashes[$code][$metaHash];
+            } elseif ($hasMetadata) {
+                $metaHash = $takeMetadataHash($code);
+                if ($metaHash === null) {
+                    $metaHash = $code . ':';
+                }
+            }
+            if (!is_string($metaHash) || $metaHash === '') {
+                $metaHash = $code . ':';
+            }
             $result->{(string) $slot} = (object) [
                 'itemCode' => $code,
-                'metaHash' => is_object($entry)
-                    ? ($entry->metaHash ?? ($code . ':'))
-                    : ($entry['metaHash'] ?? ($code . ':')),
+                'metaHash' => $metaHash,
             ];
             --$remaining[$code];
         }
@@ -216,9 +471,10 @@ class WorldService
             while (isset($result->{(string) $slot})) {
                 ++$slot;
             }
+            $metaHash = $takeMetadataHash($code);
             $result->{(string) $slot} = (object) [
                 'itemCode' => $code,
-                'metaHash' => $code . ':',
+                'metaHash' => $metaHash ?? $code . ':',
             ];
             --$remaining[$code];
             ++$slot;
@@ -1706,6 +1962,7 @@ class WorldService
                             $components->featuredItems = self::reconcileFeaturedItemsForContents(
                                 $building->contents,
                                 $featuredItems,
+                                $components->storageMetadata ?? null,
                             );
                             $building->components = $components;
                             $building->save();
@@ -1781,7 +2038,31 @@ class WorldService
                                 unset($featured->{$slotKey});
                             }
 
-                            $components->featuredItems = $featured;
+                            // Resolve the slot against the building's
+                            // authoritative contents and metadata. A blank
+                            // or stale hash from Flash must not become a
+                            // generic slot that rebinds to another pig on the
+                            // next reload.
+                            $hasStoredItem = false;
+                            foreach ((array) ($building->contents ?? []) as $content) {
+                                $contentCode = is_object($content)
+                                    ? ($content->itemCode ?? null)
+                                    : ($content['itemCode'] ?? null);
+                                $contentCount = is_object($content)
+                                    ? (int) ($content->numItem ?? 0)
+                                    : (int) ($content['numItem'] ?? 0);
+                                if ($contentCode === (string) $itemCode && $contentCount > 0) {
+                                    $hasStoredItem = true;
+                                    break;
+                                }
+                            }
+                            $components->featuredItems = $hasStoredItem
+                                ? self::reconcileFeaturedItemsForContents(
+                                    $building->contents,
+                                    $featured,
+                                    $components->storageMetadata ?? null,
+                                )
+                                : $featured;
                             $building->components = $components;
                             $building->save();
 

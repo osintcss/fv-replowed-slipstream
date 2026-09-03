@@ -125,6 +125,22 @@ it('updates only the requested world object', function (): void {
     $this->assertDatabaseHas('world_objects', ['world_id' => $world->id, 'object_id' => 202, 'state' => 'grown', 'item_name' => 'pumpkin']);
 });
 
+it('accepts an unchanged world-object update without attempting a duplicate insert', function (): void {
+    $world = persistenceTestWorld();
+    persistenceTestObject($world, 203);
+
+    expect(WorldPersistence::updateObject(
+        $world->uid,
+        $world->type,
+        persistenceTestFlashObject(203),
+    ))->toBeTrue();
+
+    expect(WorldObject::query()
+        ->where('world_id', $world->id)
+        ->where('object_id', 203)
+        ->count())->toBe(1);
+});
+
 it('serializes a completed pigpen with its authoritative storage state', function (): void {
     $world = persistenceTestWorld();
     $pigpen = persistenceTestObject($world, 250, [
@@ -235,6 +251,86 @@ it('preserves mutable animal pattern hashes when rebuilding feature slots', func
     $building->setAttribute('components', $components);
     expect($building->toFlashObject()->featuredItems->{'0'}->metaHash)
         ->toMatch('/^sheeppen_ewe:[a-f0-9]{8}$/');
+
+    // A canonical-looking hash from a withdrawn animal is stale, even though
+    // older non-canonical hashes (such as `keepme` above) remain untouched.
+    $components->featuredItems->{'0'}->metaHash = 'sheeppen_ewe:deadbeef';
+    $building->setAttribute('components', $components);
+    expect($building->toFlashObject()->featuredItems->{'0'}->metaHash)
+        ->toMatch('/^sheeppen_ewe:[a-f0-9]{8}$/')
+        ->not->toBe('sheeppen_ewe:deadbeef');
+});
+
+it('treats a hashed storage metadata key as the animal identity', function (): void {
+    $world = persistenceTestWorld();
+    $dna = [
+        'G' => 'F',
+        'B' => ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => ['T' => ['c'], 'H' => ['20', '20'], 'S' => ['9', '9'], 'V' => ['9', '9']],
+    ];
+    $building = persistenceTestObject($world, 253, [
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'xuk_sheep_pen_finished',
+        'contents' => [
+            ['itemCode' => 'sheeppen_ewe', 'numItem' => 1],
+        ],
+        'components' => (object) [
+            'featuredItems' => (object) [
+                '0' => (object) ['itemCode' => 'sheeppen_ewe', 'metaHash' => 'sheeppen_ewe:12345678'],
+            ],
+            // The suffix is the persisted identity even when its digest was
+            // produced from a legacy representation of the same DNA.
+            'storageMetadata' => (object) [
+                'sheeppen_ewe:12345678' => [json_encode($dna)],
+            ],
+        ],
+    ]);
+
+    expect($building->toFlashObject()->featuredItems->{'0'}->metaHash)
+        ->toBe('sheeppen_ewe:12345678');
+});
+
+it('normalizes a legacy mutable animal name from its persisted DNA gender', function (): void {
+    $world = persistenceTestWorld();
+    $animal = persistenceTestObject($world, 254, [
+        'class_name' => 'MutableAnimal',
+        'item_name' => 'pigpen_male',
+        'components' => (object) [
+            'mutableAnimalState' => (object) [
+                'dna' => (object) [
+                    'G' => 'F',
+                    'B' => (object) ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+                    'P' => (object) ['T' => ['a'], 'H' => ['20', '20'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+                ],
+            ],
+        ],
+    ]);
+
+    expect($animal->toFlashObject()->itemName)->toBe('pigpen_female');
+});
+
+it('canonicalizes a mismatched mutable animal before storage', function (): void {
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    $world = persistenceTestWorld();
+    $animal = persistenceTestObject($world, 255, [
+        'class_name' => 'MutableAnimal',
+        'item_name' => 'pigpen_male',
+        'components' => (object) [
+            'mutableAnimalState' => (object) [
+                'dna' => (object) [
+                    'G' => 'F',
+                    'B' => (object) ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+                    'P' => (object) ['T' => ['a'], 'H' => ['20', '20'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+                ],
+            ],
+        ],
+    ]);
+
+    $canonical = new ReflectionMethod('Player', 'canonicalMutableAnimalItemName');
+    $canonical->setAccessible(true);
+
+    expect($canonical->invoke(null, $animal))->toBe('pigpen_female');
 });
 
 it('allows DNA-backed breeders and the base pig sow in a finished pig pen', function (): void {

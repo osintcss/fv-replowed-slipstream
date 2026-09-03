@@ -250,13 +250,17 @@ class Player {
         $storageMetadata = isset($components->storageMetadata) && is_object($components->storageMetadata)
             ? $components->storageMetadata : new \stdClass();
         foreach (get_object_vars($storageMetadata) as $metadataKey => $entries) {
-            $baseCode = explode(':', (string) $metadataKey, 2)[0];
+            [$baseCode, $keyHash] = array_pad(explode(':', (string) $metadataKey, 2), 2, '');
             if ($baseCode === '') {
                 continue;
             }
             $entries = is_array($entries) ? $entries : [$entries];
             foreach ($entries as $metadata) {
-                $hash = self::mutableAnimalMetadataHash($metadata);
+                // A hashed storageMetadata key is the stable identity used
+                // by Flash. Preserve it verbatim; recomputing from the JSON
+                // can produce a different digest for legacy DNA encodings
+                // and makes a pig appear as a different colour after reload.
+                $hash = $keyHash !== '' ? $keyHash : self::mutableAnimalMetadataHash($metadata);
                 if ($hash !== null) {
                     $metadataHashes[$baseCode][] = $baseCode . ':' . $hash;
                 }
@@ -371,6 +375,27 @@ class Player {
 
     private static function isBasePigpenSow(WorldObject $animal): bool {
         return $animal->class_name === 'Animal' && $animal->item_name === 'pig';
+    }
+
+    /** Return the generic breeding item name implied by a mutable DNA gender. */
+    private static function canonicalMutableAnimalItemName(WorldObject $animal): ?string {
+        if ($animal->class_name !== 'MutableAnimal') {
+            return null;
+        }
+
+        $components = is_object($animal->components) ? $animal->components : new \stdClass();
+        $mutableState = $components->mutableAnimalState ?? null;
+        $dna = is_object($mutableState) ? ($mutableState->dna ?? null) : null;
+        $gender = is_object($dna) ? strtoupper((string) ($dna->G ?? '')) : '';
+        if (!in_array($gender, ['M', 'F'], true)) {
+            return null;
+        }
+
+        return match ((string) $animal->item_name) {
+            'pigpen_male', 'pigpen_female' => $gender === 'M' ? 'pigpen_male' : 'pigpen_female',
+            'sheeppen_ram', 'sheeppen_ewe' => $gender === 'M' ? 'sheeppen_ram' : 'sheeppen_ewe',
+            default => null,
+        };
     }
 
     /** Default female traits for an ordinary Pig stored in the Pig Pen. */
@@ -1242,7 +1267,27 @@ class Player {
                     throw new \RuntimeException("Stored resource {$resourceId} no longer exists");
                 }
 
-                if ($storedItemName !== null && $resource->item_name !== $storedItemName) {
+                $canonicalItemName = self::canonicalMutableAnimalItemName($resource);
+                $correctedMutableName = false;
+                if ($canonicalItemName !== null && $canonicalItemName !== $resource->item_name) {
+                    Logger::warning('World', sprintf(
+                        'Corrected mutable animal gender before storage: uid=%s resourceId=%d old=%s new=%s',
+                        $this->uid,
+                        $resourceId,
+                        (string) $resource->item_name,
+                        $canonicalItemName,
+                    ));
+                    $resource->item_name = $canonicalItemName;
+                    $correctedMutableName = true;
+                    $canonicalItem = getItemByName($canonicalItemName, 'db');
+                    if (is_array($canonicalItem) && is_string($canonicalItem['code'] ?? null)) {
+                        $itemCode = $canonicalItem['code'];
+                    }
+                }
+
+                if ($storedItemName !== null
+                    && $resource->item_name !== $storedItemName
+                    && !$correctedMutableName) {
                     throw new \RuntimeException("Stored resource {$resourceId} does not match requested item");
                 }
             }
@@ -1293,8 +1338,19 @@ class Player {
             // than in the compact contents count. Keep that per-instance
             // metadata beside the count so a later withdrawal or breeding
             // request can recover the same traits after a reload.
-            if (($storedMetadata !== null
-                    && in_array($storedClassName, ['MutableAnimal', 'MutableAnimalBaby'], true))
+            $effectiveStoredMetadata = $storedMetadata;
+            if ($effectiveStoredMetadata === null && $resource !== null
+                && in_array($resource->class_name, ['MutableAnimal', 'MutableAnimalBaby'], true)) {
+                $resourceComponents = is_object($resource->components) ? $resource->components : new \stdClass();
+                $resourceState = $resourceComponents->mutableAnimalState ?? null;
+                $resourceDna = is_object($resourceState) ? ($resourceState->dna ?? null) : null;
+                if (is_object($resourceDna)) {
+                    $effectiveStoredMetadata = json_encode($resourceDna);
+                }
+            }
+
+            if (($effectiveStoredMetadata !== null
+                    && ($resource === null || in_array($resource->class_name, ['MutableAnimal', 'MutableAnimalBaby'], true)))
                 || $isBasePigpenSow) {
                 $components = is_object($storedBuilding->components)
                     ? $storedBuilding->components : new \stdClass();
@@ -1305,7 +1361,7 @@ class Player {
                 // wrapper makes Flash coerce it to "[object Object]" and
                 // fail JSON parsing during the next world load.
                 $metadataValue = $isBasePigpenSow
-                    ? json_encode(self::basePigpenSowDna()) : $storedMetadata;
+                    ? json_encode(self::basePigpenSowDna()) : $effectiveStoredMetadata;
                 if (!$isBasePigpenSow) {
                     if (is_object($metadataValue) && isset($metadataValue->type) && is_string($metadataValue->type)) {
                         $metadataValue = $metadataValue->type;

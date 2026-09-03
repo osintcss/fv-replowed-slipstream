@@ -88,7 +88,48 @@ class UserResources{
         return self::loadResources($uid)['xp'] ?? 0;
     }
 
+    /**
+     * Return the XP threshold for a player level.
+     *
+     * Keeping the threshold table here lets server-side rewards such as an
+     * XP book use the same progression as getLevelForXp without maintaining a
+     * second copy of the level data in each feature handler.
+     */
+    public static function getXpForLevel(int $level): int
+    {
+        $level = max(1, $level);
+        $thresholds = self::xpThresholds();
+
+        if (isset($thresholds[$level])) {
+            return $thresholds[$level];
+        }
+
+        // After level 100 the client advances by 100,000 XP per level.
+        return 1_500_000 + (($level - 101) * 100_000);
+    }
+
     public static function getLevelForXp($xp) {
+        $thresholds = self::xpThresholds();
+
+        $xp = (int) $xp;
+        $level = 1;
+
+        for ($i = 100; $i >= 1; $i--) {
+            if ($xp >= $thresholds[$i]) {
+                $level = $i;
+                break;
+            }
+        }
+
+        if ($xp >= 1500000) {
+            $level = 100 + (int) floor(($xp - 1500000) / 100000) + 1;
+        }
+
+        return $level;
+    }
+
+    private static function xpThresholds(): array
+    {
         static $thresholds = [
             1=>0, 2=>15, 3=>30, 4=>70, 5=>140, 6=>250, 7=>400, 8=>600, 9=>850, 10=>1150,
             11=>1500, 12=>1900, 13=>2400, 14=>3000, 15=>3700, 16=>4500, 17=>5400, 18=>6400,
@@ -108,21 +149,7 @@ class UserResources{
             100=>1387500
         ];
 
-        $xp = (int) $xp;
-        $level = 1;
-
-        for ($i = 100; $i >= 1; $i--) {
-            if ($xp >= $thresholds[$i]) {
-                $level = $i;
-                break;
-            }
-        }
-
-        if ($xp >= 1500000) {
-            $level = 100 + (int) floor(($xp - 1500000) / 100000) + 1;
-        }
-
-        return $level;
+        return $thresholds;
     }
 
     public static function removeGold($uid, $amount){
