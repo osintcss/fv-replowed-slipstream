@@ -39,12 +39,13 @@ $baseUrl = rtrim((string) config('app.url'), '/');
             50% { transform: scale(1.1); }
         }
 
-        .btn-market {
-            background: linear-gradient(180deg, #f59e0b, #d97706);
+        .btn-profile {
+            background: linear-gradient(180deg, #6366f1, #4f46e5);
             color: white; border: none; padding: 5px 14px; border-radius: 5px;
-            cursor: pointer; font-size: 12px; font-weight: 600;
+            cursor: pointer; display: inline-block; text-decoration: none;
+            font-size: 12px; font-weight: 600;
         }
-        .btn-market:hover { background: linear-gradient(180deg, #fbbf24, #f59e0b); }
+        .btn-profile:hover { background: linear-gradient(180deg, #818cf8, #6366f1); }
         .user-dropdown {
             position: relative;
             display: inline-block;
@@ -653,7 +654,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                 </div>
                 <button type="button" class="btn-world-shop" onclick="openWorldShop()">🌍 World Shop</button>
                 <button type="button" class="btn-neighbors" onclick="openNeighborModal()">Add Neighbors</button>
-                <button type="button" class="btn-market" onclick="openMarket()">Open Market</button>
+                <a href="{{ route('profile.edit') }}" class="btn-profile">Profile</a>
                 <form method="POST" action="{{ route('worlds.return-home') }}" style="margin: 0;">
                     @csrf
                     <button type="submit" class="btn-return-home" title="Return to your home farm if travel gets stuck">Return Home</button>
