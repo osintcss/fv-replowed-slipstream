@@ -63,16 +63,16 @@ class FBRequestService{
         ];
         set_meta($uid, 'sent_ask_item_requests', serialize(array_slice($history, -100)));
 
-        // Facebook delivery is unavailable in this deployment.  For the
-        // Pig Pen construction flow, replace the missing friend response
-        // with the requested construction-part requirement in Giftbox.  Do
-        // not grant arbitrary item names or use the number of selected
-        // friends as a multiplier; the requirement comes from the same
-        // storageConfig asset used by the Flash client.
-        $constructionPartGranted = self::grantOfflineConstructionPart(
+        // Facebook delivery is unavailable in this deployment. Replace the
+        // missing friend response with one legitimate feature part in
+        // Giftbox. Pig Pen keeps its existing requirement-aware behaviour;
+        // other features are validated against their own item definition so
+        // an arbitrary item name cannot become a free Giftbox grant.
+        $offlineItemGranted = self::grantOfflineRequestedItem(
             $uid,
             $itemName,
             $featureName,
+            count($requestIds),
         );
 
         // The generic MFS "Ask Your Friends" dialog is also used by quest
@@ -129,19 +129,19 @@ class FBRequestService{
                 $itemName,
                 $featureName,
                 count($requestIds),
-                $constructionPartGranted,
+                $offlineItemGranted,
             )
         );
 
-        if ($constructionPartGranted > 0) {
+        if ($offlineItemGranted > 0) {
             Logger::debug(
                 'FBRequestService',
                 sprintf(
-                    'Offline construction part fulfilment: uid=%s item=%s feature=%s amount=%d',
+                    'Offline item request fulfilment: uid=%s item=%s feature=%s amount=%d',
                     $uid,
                     $itemName,
                     $featureName,
-                    $constructionPartGranted,
+                    $offlineItemGranted,
                 )
             );
         }
@@ -169,17 +169,112 @@ class FBRequestService{
     }
 
     /**
-     * Award the remaining configured construction-part quantity for the
-     * Pig Pen's offline Ask Friends request. Keep the feature check narrow so
-     * this compatibility path cannot turn arbitrary social requests into
-     * Giftbox grants.
+     * Fulfil an offline Ask Friends request with a legitimate feature part.
+     *
+     * Pig Pen has a legacy requirement-aware fallback. Other feature parts
+     * are granted one at a time because the request IDs identify selected
+     * friends, not confirmed deliveries. The item must be a BuildingPart
+     * referenced by the requested feature's storage or expansion data.
      */
-    private static function grantOfflineConstructionPart($uid, string $itemName, string $featureName): int
+    private static function grantOfflineRequestedItem(
+        $uid,
+        string $itemName,
+        string $featureName,
+        int $requestCount,
+    ): int
     {
-        if ($featureName !== 'pigpen') {
+        if ($featureName === 'pigpen') {
+            return self::grantOfflinePigpenConstructionPart($uid, $itemName);
+        }
+
+        // questR4R has its own active-task fulfilment below. Do not also put
+        // a generic copy of that quest item in Giftbox.
+        if ($featureName === '' || $featureName === 'questR4R' || $requestCount <= 0) {
             return 0;
         }
 
+        $featureItem = getItemByName($featureName, 'db');
+        $item = getItemByName($itemName, 'db');
+        if (!is_array($featureItem) || !is_array($item)
+            || ($item['className'] ?? null) !== 'BuildingPart'
+            || !self::featureUsesConstructionPart($featureItem, $itemName)) {
+            return 0;
+        }
+
+        $itemCode = $item['code'] ?? '';
+        if (!is_string($itemCode) || $itemCode === '') {
+            return 0;
+        }
+
+        // One submission represents one completed offline ask. Do not use
+        // the selected-friend count as a multiplier: the server has no
+        // confirmed friend responses to justify granting that many items.
+        $quantity = 1;
+        addGiftByCode($uid, $itemCode, $quantity, $uid, [
+            'source' => 'offline_feature_part_ask',
+            'featureName' => $featureName,
+            'itemName' => $itemName,
+        ]);
+
+        return $quantity;
+    }
+
+    /**
+     * Check the same feature metadata the Flash client uses to identify a
+     * construction/expansion part. Supports storage-config buildings and
+     * FeatureBuilding expansion parts such as Black Rose and Biofuel Pump.
+     */
+    private static function featureUsesConstructionPart(array $featureItem, string $itemName): bool
+    {
+        $storageType = $featureItem['storageType'] ?? null;
+        $storageClass = is_array($storageType)
+            ? ($storageType['itemClass'] ?? null)
+            : (is_object($storageType) ? ($storageType->itemClass ?? null) : null);
+        if (StorageConfig::constructionRequirements($storageClass)[$itemName] ?? 0) {
+            return true;
+        }
+
+        $features = $featureItem['features'] ?? null;
+        $featureList = is_array($features)
+            ? ($features['feature'] ?? [])
+            : (is_object($features) ? ($features->feature ?? []) : []);
+        $featureList = is_array($featureList) ? $featureList : [$featureList];
+
+        foreach ($featureList as $feature) {
+            $featureName = is_array($feature)
+                ? ($feature['name'] ?? null)
+                : (is_object($feature) ? ($feature->name ?? null) : null);
+            if ($featureName !== 'expand') {
+                continue;
+            }
+
+            $upgrades = is_array($feature)
+                ? ($feature['upgrade'] ?? [])
+                : (is_object($feature) ? ($feature->upgrade ?? []) : []);
+            $upgrades = is_array($upgrades) ? $upgrades : [$upgrades];
+            foreach ($upgrades as $upgrade) {
+                $parts = is_array($upgrade)
+                    ? ($upgrade['part'] ?? [])
+                    : (is_object($upgrade) ? ($upgrade->part ?? []) : []);
+                $parts = is_array($parts) ? $parts : [$parts];
+                foreach ($parts as $part) {
+                    $partName = is_array($part)
+                        ? ($part['name'] ?? null)
+                        : (is_object($part) ? ($part->name ?? null) : null);
+                    if ($partName === $itemName) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /** Award the remaining configured construction-part quantity for Pig Pen. */
+    private static function grantOfflinePigpenConstructionPart($uid, string $itemName): int
+    {
+        $featureName = 'pigpen';
         $buildingItem = getItemByName($featureName, 'db');
         $storageType = is_array($buildingItem)
             ? ($buildingItem['storageType'] ?? null)
