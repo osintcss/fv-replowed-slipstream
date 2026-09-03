@@ -146,10 +146,11 @@ class UserService{
     }
 
     public static function getMOTD(){
+        // PAOK is the retired Project Unicorn / Gagaville onboarding MOTD.
+        // Return a successful empty result rather than a different MOTD so the
+        // client simply continues startup without rendering that one popup.
         $data["data"] = array(
-            "motdData" => array(
-                "name" => "PAOK",
-            )
+            "motdData" => null,
         );
 
         return $data;
