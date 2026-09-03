@@ -36,6 +36,73 @@ require_once AMFPHP_ROOTPATH . "Functions/InGameConsoleService.php";
 
 class FlashService {
 
+    private static function readValue($value, $key, $default = null)
+    {
+        if (is_array($value) && array_key_exists($key, $value)) {
+            return $value[$key];
+        }
+
+        if (is_object($value) && isset($value->{$key})) {
+            return $value->{$key};
+        }
+
+        return $default;
+    }
+
+    private static function summarizeObject($object)
+    {
+        if (!is_array($object) && !is_object($object)) {
+            return null;
+        }
+
+        $position = self::readValue($object, 'position');
+        $summary = [];
+
+        foreach (['id', 'className', 'itemName', 'state', 'plantTime'] as $field) {
+            $value = self::readValue($object, $field);
+            if ($value !== null) {
+                $summary[$field] = is_scalar($value) ? $value : gettype($value);
+            }
+        }
+
+        if (is_array($position) || is_object($position)) {
+            $summary['position'] = [];
+            foreach (['x', 'y', 'z'] as $axis) {
+                $value = self::readValue($position, $axis);
+                if ($value !== null) {
+                    $summary['position'][$axis] = is_scalar($value) ? $value : gettype($value);
+                }
+            }
+        }
+
+        return $summary;
+    }
+
+    private static function summarizeRequest($request)
+    {
+        $functionName = (string) self::readValue($request, 'functionName', '');
+        $params = self::readValue($request, 'params', []);
+        $summary = [
+            'function' => $functionName,
+            'sequence' => self::readValue($request, 'sequence'),
+            'param_count' => is_array($params) ? count($params) : null,
+        ];
+
+        if ($functionName === 'WorldService.performAction') {
+            $summary['action'] = is_array($params) ? ($params[0] ?? null) : null;
+            $summary['object'] = is_array($params) ? self::summarizeObject($params[1] ?? null) : null;
+        } elseif ($functionName === 'EquipmentWorldService.onUseEquipment') {
+            $plotBundle = is_array($params) ? ($params[2] ?? null) : null;
+            $summary['action'] = is_array($params) ? ($params[0] ?? null) : null;
+            $summary['item_name'] = is_array($params) ? ($params[3] ?? null) : null;
+            $summary['plot_count'] = is_array($plotBundle)
+                ? count($plotBundle)
+                : (is_object($plotBundle) ? count(get_object_vars($plotBundle)) : null);
+        }
+
+        return $summary;
+    }
+
     public function dispatchBatch($userData, $reqData, $params3) {
         $data = array();
         $player = null;
@@ -49,6 +116,18 @@ class FlashService {
             $market = new MarketTransactions($userData->zy_user);
         }
 
+        $uid = (string) $player->getUid();
+        $batchStart = microtime(true);
+        $requestSummaries = [];
+        foreach ($reqData as $request) {
+            $requestSummaries[] = self::summarizeRequest($request);
+        }
+
+        Logger::trace($uid, 'batch.received', [
+            'request_count' => count($reqData),
+            'requests' => $requestSummaries,
+        ]);
+
         // A new player needs an active story quest before the client can render
         // QuestComponent. This is idempotent for players who already have one.
         ensureAvailableStoryQuest($player->getUid());
@@ -57,6 +136,9 @@ class FlashService {
         Logger::debug('FlashService', "dispatchBatch: " . count($reqData) . " requests");
 
         foreach ($reqData as $key => $requ){
+            $requestStart = microtime(true);
+            $outcome = 'success';
+            $exceptionDetails = null;
             Logger::debug('FlashService', "Request[$key]: " . $requ->functionName);
 
             // Debug: Log purchase inputs so failed client transactions can be
@@ -96,15 +178,22 @@ class FlashService {
                     // loading.  A successful empty response is the legacy
                     // contract for an unavailable optional world.
                     $data[$key]['data'] = [];
+                    $outcome = 'optional_world_noop';
                 } else {
                     Logger::error("FlashService", "Method not found: " . $requ->functionName);
                     $data[$key]["errorType"] = 1;
                     $data[$key]["errorData"] = "Method not found";
+                    $outcome = 'method_not_found';
                 }
             }catch (\Throwable $e){
                 Logger::error("FlashService", $requ->functionName . " error: " . $e->getMessage());
                 $data[$key]["errorType"] = 1;
                 $data[$key]["errorData"] = "Server error: " . $e->getMessage();
+                $outcome = 'exception';
+                $exceptionDetails = [
+                    'class' => get_class($e),
+                    'message' => substr($e->getMessage(), 0, 300),
+                ];
             }
 
             // Quest actions can start, complete, or remove a quest. Build this
@@ -118,10 +207,47 @@ class FlashService {
             }
             $metadata['QuestComponent'] = $questComponentOverride ?? buildQuestComponent($player->getUid());
             $data[$key]['metadata'] = $metadata;
+
+            $responseData = $data[$key]['data'] ?? null;
+            $traceEntry = self::summarizeRequest($requ);
+            $traceEntry['index'] = $key;
+            $traceEntry['outcome'] = $outcome;
+            $traceEntry['duration_ms'] = round((microtime(true) - $requestStart) * 1000, 1);
+            $traceEntry['response_error_type'] = $data[$key]['errorType'] ?? null;
+            $traceEntry['response_data_type'] = gettype($responseData);
+            $traceEntry['response_data_count'] = is_array($responseData) ? count($responseData) : null;
+            if ($exceptionDetails !== null) {
+                $traceEntry['exception'] = $exceptionDetails;
+            }
+            Logger::trace($uid, 'request.completed', $traceEntry);
             
         } 
 
         $data = array_values($data);
+
+        $inputSequences = [];
+        foreach ($reqData as $request) {
+            $inputSequences[] = self::readValue($request, 'sequence');
+        }
+        $responseSequences = array_map(function ($response) {
+            return $response['sequenceNumber'] ?? null;
+        }, $data);
+        $responseErrorCount = 0;
+        foreach ($data as $response) {
+            if (($response['errorType'] ?? 0) !== 0) {
+                $responseErrorCount++;
+            }
+        }
+
+        Logger::trace($uid, 'batch.completed', [
+            'request_count' => count($reqData),
+            'response_count' => count($data),
+            'response_error_count' => $responseErrorCount,
+            'input_sequences' => $inputSequences,
+            'response_sequences' => $responseSequences,
+            'response_shape_ok' => count($reqData) === count($data) && $inputSequences === $responseSequences,
+            'duration_ms' => round((microtime(true) - $batchStart) * 1000, 1),
+        ]);
 
         return array(
             "errorType" => 0,
