@@ -11,6 +11,17 @@ class Quest extends Model
     protected $fillable = [
         'name',
         'category',
+        'priority',
+        'replay',
+        'skip',
+        'kill_quest',
+        'mem_store_id',
+        'prereqs',
+        'children',
+        'tasks',
+        'rewards',
+        'frontend',
+        'friend_reward',
         'data',
     ];
 
