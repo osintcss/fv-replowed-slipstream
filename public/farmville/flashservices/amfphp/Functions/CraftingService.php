@@ -611,16 +611,98 @@ class CraftingService
 
     public static function onUseCraftedGood($playerObj, $request, $market)
     {
-        $data = array();
-        $itemKey = $request->params[0] ?? null;
-
-        if ($itemKey) {
-            $uid = $playerObj->getUid();
-            removeFromInventory($uid, $itemKey, 1, "crafted");
+        $itemKey = (string) ($request->params[0] ?? '');
+        if ($itemKey === '') {
+            return ['data' => ['success' => false]];
         }
 
-        $data["data"] = array();
-        return $data;
+        $uid = $playerObj->getUid();
+        $keyParts = explode(':', $itemKey, 2);
+        $itemCode = (string) ($keyParts[0] ?? '');
+        $recipeLevel = max(1, (int) ($keyParts[1] ?? 1));
+        $recipe = getRecipeByProductItemCode($itemCode);
+        $onUse = $recipe['OnUse'] ?? null;
+
+        $fuelMultiplier = is_array($onUse) ? (float) ($onUse['fuel'] ?? 1.0) : 0.0;
+        $baseFuel = $recipe
+            ? getCraftingRecipeFuel(
+                (string) ($recipe['id'] ?? ''),
+                (string) ($recipe['craft'] ?? ''),
+                $recipeLevel
+            )
+            : 0.0;
+        $configuredFuel = max(0.0, $baseFuel * $fuelMultiplier);
+        // UserMeta.energy is an integer column, matching the existing fuel
+        // and energy persistence paths. The shipped recipes produce whole
+        // energy units after their configured multipliers.
+        $fuelToAdd = (int) floor($configuredFuel);
+
+        $rewardItemCode = is_array($onUse) ? (string) ($onUse['itemCode'] ?? '') : '';
+        $rewardQuantity = is_array($onUse)
+            ? max(0, (int) ($onUse['giftQty'] ?? 1))
+            : 0;
+
+        try {
+            $consumed = \DB::transaction(function () use (
+                $uid,
+                $itemKey,
+                $fuelToAdd,
+                $rewardItemCode,
+                $rewardQuantity
+            ) {
+                if (!removeFromInventory($uid, $itemKey, 1, "crafted")) {
+                    return false;
+                }
+
+                if ($fuelToAdd > 0 && !UserResources::addEnergy($uid, $fuelToAdd)) {
+                    throw new \RuntimeException('Unable to persist crafted-good fuel reward.');
+                }
+
+                if ($rewardItemCode !== '' && $rewardQuantity > 0) {
+                    $rewardItem = getItemByCode($rewardItemCode);
+                    if (!$rewardItem) {
+                        throw new \RuntimeException("Configured crafted-good reward item not found: {$rewardItemCode}");
+                    }
+
+                    addGiftByCode($uid, $rewardItemCode, $rewardQuantity, '0', [
+                        'source' => 'crafted_good_use',
+                        'craftedGood' => $itemKey,
+                    ]);
+                }
+
+                return true;
+            });
+        } catch (\Throwable $e) {
+            Logger::error('CraftingService', sprintf(
+                'Use crafted good failed: uid=%s item=%s reason=%s',
+                $uid,
+                $itemKey,
+                $e->getMessage()
+            ));
+            $consumed = false;
+        }
+
+        if ($consumed) {
+            Logger::debug('CraftingService', sprintf(
+                'Crafted good used: uid=%s item=%s recipe=%s level=%d fuel=%d reward=%s x%d',
+                $uid,
+                $itemKey,
+                (string) ($recipe['id'] ?? ''),
+                $recipeLevel,
+                $fuelToAdd,
+                $rewardItemCode !== '' ? $rewardItemCode : 'none',
+                $rewardQuantity
+            ));
+        }
+
+        return [
+            'data' => [
+                'success' => (bool) $consumed,
+                'fuelAdded' => $consumed ? $fuelToAdd : 0,
+                'rewardItemCode' => $consumed ? $rewardItemCode : '',
+                'rewardQuantity' => $consumed ? $rewardQuantity : 0,
+            ],
+        ];
     }
 
     public static function onGetAddCraftingCrewReward($playerObj, $request, $market)

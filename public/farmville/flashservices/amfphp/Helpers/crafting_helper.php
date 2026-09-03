@@ -129,6 +129,17 @@ function getRecipeById($recipeId) {
                         'recipeXp' => (int) ($reward->OnSell['recipeXp'] ?? 0),
                     );
                 }
+                if (isset($reward->OnUse)) {
+                    $r['OnUse'] = array(
+                        'fuel' => isset($reward->OnUse['fuel'])
+                            ? (float) $reward->OnUse['fuel']
+                            : 1.0,
+                        'itemCode' => (string) ($reward->OnUse['itemCode'] ?? ''),
+                        'giftQty' => isset($reward->OnUse['giftQty'])
+                            ? (int) $reward->OnUse['giftQty']
+                            : 1,
+                    );
+                }
             }
 
             $r['Ingredients'] = array();
@@ -146,6 +157,106 @@ function getRecipeById($recipeId) {
     }
 
     return $recipes[$recipeId] ?? null;
+}
+
+/**
+ * Match the Flash client's CraftConfigSettings.getRecipeByProductItemCode().
+ * Crafted-good storage keys contain the product code plus recipe level (for
+ * example, "@v:1"), while the recipe catalog identifies the product in its
+ * OnFinish itemCode attribute.
+ */
+function getRecipeByProductItemCode(string $itemCode): ?array
+{
+    static $recipesByProduct = null;
+
+    if ($itemCode === '') {
+        return null;
+    }
+
+    if ($recipesByProduct === null) {
+        $recipesByProduct = [];
+        $xml = getCraftingConfigXml();
+        if (!$xml) {
+            return null;
+        }
+
+        foreach ($xml->recipes->CraftingRecipe as $recipeXml) {
+            $recipeId = (string) $recipeXml['id'];
+            $recipe = getRecipeById($recipeId);
+            $productItemCode = (string) ($recipe['OnFinish']['itemCode'] ?? '');
+            if ($productItemCode !== '' && !isset($recipesByProduct[$productItemCode])) {
+                $recipesByProduct[$productItemCode] = $recipe;
+            }
+        }
+    }
+
+    return $recipesByProduct[$itemCode] ?? null;
+}
+
+/**
+ * Return the base fuel amount for a crafted good at its recipe level. This
+ * follows CraftConfigSettings.getFuelRewardForGood(): recipe-specific levels
+ * take precedence, then craft-type levels, then the global recipe levels.
+ */
+function getCraftingRecipeFuel(string $recipeId, string $craftType, int $level): float
+{
+    $xml = getCraftingConfigXml();
+    if (!$xml) {
+        return 0.0;
+    }
+
+    $recipeXml = null;
+    foreach ($xml->recipes->CraftingRecipe as $candidate) {
+        if ((string) $candidate['id'] === $recipeId) {
+            $recipeXml = $candidate;
+            break;
+        }
+    }
+
+    $levels = [];
+    if ($recipeXml && isset($recipeXml->recipeLevels)) {
+        $levels = $recipeXml->recipeLevels->level;
+    }
+
+    if (count($levels) === 0) {
+        foreach ($xml->craftSkills->craftSkill as $craftSkill) {
+            if ((string) $craftSkill['id'] === $craftType) {
+                if (isset($craftSkill->recipeLevels)) {
+                    $levels = $craftSkill->recipeLevels->level;
+                }
+                break;
+            }
+        }
+    }
+
+    if (count($levels) === 0 && isset($xml->recipeLevels)) {
+        $levels = $xml->recipeLevels->level;
+    }
+
+    $fuel = null;
+    $maxFuel = null;
+    foreach ($levels as $levelXml) {
+        $levelNumber = (string) ($levelXml['num'] ?? '');
+        if ($levelNumber === 'max') {
+            if (isset($levelXml['fuel']) && is_numeric((string) $levelXml['fuel'])) {
+                $maxFuel = (float) $levelXml['fuel'];
+            }
+            continue;
+        }
+
+        if ((int) $levelNumber === $level
+            && isset($levelXml['fuel'])
+            && is_numeric((string) $levelXml['fuel'])) {
+            $fuel = (float) $levelXml['fuel'];
+            break;
+        }
+    }
+
+    if ($fuel === null) {
+        $fuel = $maxFuel ?? 0.0;
+    }
+
+    return max(0.0, $fuel);
 }
 
 /**

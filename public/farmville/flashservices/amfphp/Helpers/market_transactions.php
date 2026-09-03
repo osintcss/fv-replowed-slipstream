@@ -39,6 +39,103 @@ class MarketTransactions {
         return false;
     }
 
+    /**
+     * Harvest rewards are configured on a building's feature definition,
+     * rather than on the item itself.  The item records can be returned from
+     * the database with either arrays or stdClass values, so normalize both
+     * shapes here before looking up the reward item.
+     */
+    private static function harvestRewardName(array $itemData): ?string
+    {
+        $reward = $itemData['harvestReward'] ?? null;
+
+        if ($reward === null) {
+            $features = $itemData['features'] ?? null;
+            $featureList = [];
+
+            if (is_array($features)) {
+                $featureList = $features['feature'] ?? [];
+            } elseif (is_object($features)) {
+                $featureList = $features->feature ?? [];
+            }
+
+            if (is_object($featureList)) {
+                $featureList = [$featureList];
+            } elseif (is_array($featureList) && !array_key_exists(0, $featureList)) {
+                $featureList = [$featureList];
+            }
+
+            foreach ($featureList as $feature) {
+                if (is_array($feature)) {
+                    $candidate = $feature['harvestReward'] ?? null;
+                } elseif (is_object($feature)) {
+                    $candidate = $feature->harvestReward ?? null;
+                } else {
+                    $candidate = null;
+                }
+
+                if ($candidate !== null) {
+                    $reward = $candidate;
+                    break;
+                }
+            }
+        }
+
+        if (is_array($reward)) {
+            $reward = $reward['name'] ?? null;
+        } elseif (is_object($reward)) {
+            $reward = $reward->name ?? null;
+        }
+
+        $reward = is_string($reward) ? trim($reward) : '';
+        return $reward !== '' ? $reward : null;
+    }
+
+    private function grantHarvestReward(array $itemData, string $harvestedItemName, int $quantity = 1): ?array
+    {
+        if ($quantity <= 0) {
+            return null;
+        }
+
+        $rewardName = self::harvestRewardName($itemData);
+        if ($rewardName === null) {
+            return null;
+        }
+
+        $rewardItem = getItemByName($rewardName, "db");
+        $rewardCode = is_array($rewardItem) ? ($rewardItem['code'] ?? '') : '';
+        if (!is_string($rewardCode) || trim($rewardCode) === '') {
+            Logger::warning('MarketTransactions', sprintf(
+                'Harvest reward item missing: uid=%s harvested=%s reward=%s',
+                $this->uid,
+                $harvestedItemName,
+                $rewardName
+            ));
+            return null;
+        }
+
+        addGiftByCode($this->uid, $rewardCode, $quantity, $this->uid, [
+            'source' => 'harvest_reward',
+            'harvestedItem' => $harvestedItemName,
+            'rewardName' => $rewardName,
+        ]);
+
+        Logger::debug('MarketTransactions', sprintf(
+            'Harvest reward granted: uid=%s harvested=%s reward=%s code=%s quantity=%d',
+            $this->uid,
+            $harvestedItemName,
+            $rewardName,
+            $rewardCode,
+            $quantity
+        ));
+
+        return [
+            'name' => $rewardName,
+            'code' => $rewardCode,
+            'quantity' => $quantity,
+        ];
+    }
+
     public function harvestCrop(object $data){
         $res = getItemByName($data->itemName, "db");
 
@@ -47,14 +144,16 @@ class MarketTransactions {
             $success = UserResources::addGold($this->uid, $coinYield);
 
             $masteryLevelUp = processMastery($this->uid, $res, 1);
+            $harvestReward = $this->grantHarvestReward($res, (string) $data->itemName);
 
             return [
                 'success' => $success,
-                'masteryLevelUp' => $masteryLevelUp
+                'masteryLevelUp' => $masteryLevelUp,
+                'harvestReward' => $harvestReward
             ];
         }
 
-        return ['success' => false, 'masteryLevelUp' => null];
+        return ['success' => false, 'masteryLevelUp' => null, 'harvestReward' => null];
     }
 
     public function buyItem(object $data, ?string $currency = null){
