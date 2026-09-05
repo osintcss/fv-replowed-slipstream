@@ -1477,6 +1477,18 @@ class WorldService
                     ]];
                 }
 
+                // Harvest rewards are written to the server Giftbox by the
+                // market transaction. Return the refreshed storage snapshot
+                // as well, otherwise Flash keeps its pre-harvest count and
+                // opens the fuel dialog with x0 until the next reload.
+                if (is_array($transactionResult)
+                    && !empty($transactionResult['harvestReward'])) {
+                    $data['data']['harvestReward'] = $transactionResult['harvestReward'];
+                    $data['data']['storageData'] = [
+                        GIFTBOX_STORAGE_KEY => buildGiftBoxStorageData($uid),
+                    ];
+                }
+
                 if ($retId !== false && $serverItemName) {
                     $actionDrops = recordHarvestBushelDrops($uid, [$serverItemName => 1]);
                     if (!empty($actionDrops)) {

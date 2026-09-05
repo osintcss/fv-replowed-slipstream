@@ -18,6 +18,8 @@ beforeEach(function (): void {
     require_once AMFPHP_ROOTPATH.'Helpers/general_functions.php';
     require_once AMFPHP_ROOTPATH.'Helpers/crafting_helper.php';
     require_once AMFPHP_ROOTPATH.'Helpers/user_resources.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/market_transactions.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
     require_once AMFPHP_ROOTPATH.'Functions/FarmService.php';
     require_once AMFPHP_ROOTPATH.'Functions/WorldService.php';
 
@@ -87,6 +89,75 @@ it('consumes Giftbox fuel atomically with its energy grant', function (): void {
     $retry = FarmService::buyFuel($player, $request, null);
     expect($retry['data']['success'])->toBeFalse()
         ->and(UserMeta::where('uid', $uid)->value('energy'))->toBe(300);
+});
+
+it('returns a harvested fuel refill in the refreshed Giftbox storage data', function (): void {
+    [$uid] = consumablePersistencePlayer();
+    $world = UserWorld::query()->create([
+        'uid' => $uid,
+        'type' => 'farm',
+        'sizeX' => 12,
+        'sizeY' => 12,
+        'objects' => '[]',
+        'messageManager' => serialize(['messages' => [], 'allowSendEmails' => true]),
+    ]);
+
+    seedConsumableItem('biofuelpump_test', 'PMP1', [
+        'name' => 'biofuelpump_test',
+        'code' => 'PMP1',
+        'className' => 'FeatureBuilding',
+        'growTime' => '0',
+        'features' => [
+            'feature' => [[
+                'name' => 'harvester',
+                'className' => 'HarvestFManager',
+                'harvestReward' => ['name' => 'fuel1_test'],
+            ]],
+        ],
+    ]);
+    seedConsumableItem('fuel1_test', 'FUEL1', [
+        'name' => 'fuel1_test',
+        'code' => 'FUEL1',
+        'type' => 'fuel',
+        'count' => '1',
+    ]);
+
+    $oldPlantTime = getCurrentTimeMs() - 1;
+    $pump = WorldObject::query()->create([
+        'world_id' => $world->id,
+        'object_id' => 1,
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'biofuelpump_test',
+        'position_x' => 4,
+        'position_y' => 8,
+        'position_z' => 0,
+        'state' => HARVESTABLE_STATE_BARE,
+        'plant_time' => $oldPlantTime,
+        'deleted' => false,
+    ]);
+    PlayerMeta::setValue($uid, 'currentWorldType', 'farm');
+    invalidateWorldCache($uid, 'farm');
+
+    $clientObject = (object) [
+        'id' => 1,
+        'className' => 'FeatureBuilding',
+        'itemName' => 'biofuelpump_test',
+        'position' => (object) ['x' => 4, 'y' => 8, 'z' => 0],
+        'state' => HARVESTABLE_STATE_BARE,
+        'plantTime' => $oldPlantTime,
+        'components' => (object) [],
+    ];
+    $request = (object) ['params' => [ACTION_HARVEST, $clientObject, []]];
+
+    $result = WorldService::performAction(new Player($uid), $request, new MarketTransactions($uid));
+
+    expect($result['data']['harvestReward'])->toMatchArray([
+            'name' => 'fuel1_test',
+            'code' => 'FUEL1',
+            'quantity' => 1,
+        ])
+        ->and($result['data']['storageData'][GIFTBOX_STORAGE_KEY]['FUEL1'][0])->toBe(1)
+        ->and($pump->fresh()->state)->toBe(HARVESTABLE_STATE_BARE);
 });
 
 it('persists generic Giftbox consumable use', function (): void {

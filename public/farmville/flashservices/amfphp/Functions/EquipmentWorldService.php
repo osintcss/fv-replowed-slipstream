@@ -74,6 +74,7 @@ class EquipmentWorldService
         $plowCount = 0;
         $plantCount = 0;
         $harvestedItems = [];
+        $harvestRewards = [];
 
         $modifiedObjects = [];
         $newObjects = [];
@@ -436,6 +437,15 @@ class EquipmentWorldService
         // WorldService actions. Persist quest progress here only after the
         // affected plots have been saved, so a reload receives the same state.
         if ($worldPersisted) {
+            if (!empty($harvestedItems)) {
+                try {
+                    $harvestRewards = (new MarketTransactions($uid))
+                        ->grantHarvestRewardsBatch($harvestedItems);
+                } catch (\Throwable $e) {
+                    Logger::error('EquipmentWorldService', "Harvest reward error: " . $e->getMessage());
+                }
+            }
+
             $questUpdates = [];
 
             if ($plowCount > 0) {
@@ -518,8 +528,17 @@ class EquipmentWorldService
         if ($worldPersisted && !empty($harvestedItems)) {
             $actionDrops = recordHarvestBushelDrops($uid, array_count_values($harvestedItems));
             if (!empty($actionDrops)) {
-                $data['metadata'] = ['ActionDrops' => $actionDrops];
+                $data['metadata'] = ($data['metadata'] ?? []) + ['ActionDrops' => $actionDrops];
             }
+        }
+
+        if ($worldPersisted && !empty($harvestRewards)) {
+            $data['metadata'] = ($data['metadata'] ?? []) + [
+                'HarvestRewards' => $harvestRewards,
+            ];
+            $data['storageData'] = [
+                GIFTBOX_STORAGE_KEY => buildGiftBoxStorageData($uid),
+            ];
         }
         return $data;
     }

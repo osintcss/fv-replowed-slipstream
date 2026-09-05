@@ -136,6 +136,39 @@ class MarketTransactions {
         ];
     }
 
+    /**
+     * Equipment harvests are submitted as one bulk request, so they do not
+     * pass through newTransaction()/harvestCrop() one object at a time.
+     * Keep the reward lookup and Giftbox write shared with normal harvests.
+     */
+    public function grantHarvestRewardsBatch(array $itemNames): array
+    {
+        $itemCounts = [];
+
+        foreach ($itemNames as $itemName) {
+            if (!is_string($itemName) || trim($itemName) === '') {
+                continue;
+            }
+
+            $itemCounts[$itemName] = ($itemCounts[$itemName] ?? 0) + 1;
+        }
+
+        $rewards = [];
+        foreach ($itemCounts as $itemName => $quantity) {
+            $itemData = getItemByName($itemName, "db");
+            if (!is_array($itemData)) {
+                continue;
+            }
+
+            $reward = $this->grantHarvestReward($itemData, $itemName, $quantity);
+            if ($reward !== null) {
+                $rewards[] = $reward;
+            }
+        }
+
+        return $rewards;
+    }
+
     public function harvestCrop(object $data){
         $res = getItemByName($data->itemName, "db");
 
