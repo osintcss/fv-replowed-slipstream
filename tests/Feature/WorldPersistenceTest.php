@@ -342,22 +342,22 @@ it('rejects stale mutable-animal codes for finished breeding pens', function ():
     App\Models\Item::query()->create([
         'name' => 'pigpen_male',
         'code' => 'H!',
-        'data' => serialize(['type' => 'animal']),
+        'data' => serialize(['name' => 'pigpen_male', 'code' => 'H!', 'type' => 'animal']),
     ]);
     App\Models\Item::query()->create([
         'name' => 'pigpen_female',
         'code' => 'I!',
-        'data' => serialize(['type' => 'animal']),
+        'data' => serialize(['name' => 'pigpen_female', 'code' => 'I!', 'type' => 'animal']),
     ]);
     App\Models\Item::query()->create([
         'name' => 'sheeppen_ram',
         'code' => 'cx',
-        'data' => serialize(['type' => 'animal']),
+        'data' => serialize(['name' => 'sheeppen_ram', 'code' => 'cx', 'type' => 'animal']),
     ]);
     App\Models\Item::query()->create([
         'name' => 'sheeppen_ewe',
         'code' => 'cw',
-        'data' => serialize(['type' => 'animal']),
+        'data' => serialize(['name' => 'sheeppen_ewe', 'code' => 'cw', 'type' => 'animal']),
     ]);
     App\Models\Item::clearCache();
 

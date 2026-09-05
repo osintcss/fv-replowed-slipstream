@@ -15,6 +15,7 @@ test('profile page is displayed', function () {
 test('profile name can be updated without changing the email address', function () {
     $user = User::factory()->create();
     $originalEmail = $user->email;
+    $originalVerification = $user->email_verified_at;
 
     $response = $this
         ->actingAs($user)
@@ -31,7 +32,7 @@ test('profile name can be updated without changing the email address', function 
 
     $this->assertSame('Test User', $user->name);
     $this->assertSame($originalEmail, $user->email);
-    $this->assertNull($user->email_verified_at);
+    $this->assertEquals($originalVerification, $user->email_verified_at);
 });
 
 test('email verification status is unchanged when the email address is unchanged', function () {
