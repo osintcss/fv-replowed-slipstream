@@ -85,6 +85,24 @@ For an internet-facing deployment, edit the untracked `.env` file before
 starting the stack and set at least `APP_ENV=production`, `APP_DEBUG=false`,
 and unique database credentials.
 
+### Discord sign-in and server membership
+
+Sign-in and registration use Discord OAuth2. Set `DISCORD_CLIENT_ID`,
+`DISCORD_CLIENT_SECRET`, and an exactly matching `DISCORD_REDIRECT_URI` from
+the Discord Developer Portal. When `DISCORD_REQUIRED_GUILD_ID` is set, users
+must be members of that Discord server to sign in. Set it to your private
+Discord server ID in the deployment environment; do not commit that value.
+The OAuth application must
+request the `identify` and `guilds.members.read` scopes. Membership is checked
+at sign-in and the session must be reverified after
+`DISCORD_MEMBERSHIP_VERIFICATION_MINUTES` (7 days by default).
+
+The Electron launcher uses the same `DISCORD_REDIRECT_URI`. Its launcher OAuth
+start route stores a short-lived state record, completes the Discord exchange
+on the server, and relays a one-time handoff token to the launcher's loopback
+callback. No additional Discord redirect URI is required. The handoff token is
+valid for 60 seconds and is consumed once by `/auth/discord/launcher/consume`.
+
 ### Administrator access
 
 Administrator access is assigned to individual registered accounts; there is no
