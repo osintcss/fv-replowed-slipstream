@@ -135,6 +135,59 @@ class FarmQuestService
         ], "_questComponentOverride" => $questComponentOverride];
     }
 
+
+    public static function questManagerEndReplayableQuestChain($playerObj, $request, $market = null)
+    {
+        $uid = $playerObj->getUid();
+        $questName = $request->params[0] ?? null;
+
+        if (empty($questName)) {
+            return ["data" => ["success" => false, "error" => "Missing quest name"]];
+        }
+
+        $quest = getQuestByName($questName);
+        if (!$quest) {
+            return ["data" => ["success" => false, "error" => "Quest not found"]];
+        }
+
+        // The Quest Manager sends the chain's bubble name, while an active
+        // quest can also be a child in that chain. Resolve both forms to the
+        // same replayable root before removing saved active state.
+        $chainRoot = findQuestChainRoot($questName);
+        $rootQuest = getQuestByName($chainRoot);
+        if (!$rootQuest || empty($rootQuest['replay'])) {
+            return ["data" => ["success" => false, "error" => "Not a replayable quest chain"]];
+        }
+
+        $chainNames = getQuestChainNames($chainRoot);
+        $activeQuests = getActiveQuests($uid);
+        $removedQuests = [];
+
+        foreach ($chainNames as $chainQuestName) {
+            if (array_key_exists($chainQuestName, $activeQuests)) {
+                unset($activeQuests[$chainQuestName]);
+                $removedQuests[] = $chainQuestName;
+            }
+        }
+
+        if ($removedQuests !== []) {
+            setActiveQuests($uid, $activeQuests);
+        }
+
+        Logger::debug('FarmQuestService', sprintf(
+            'Ended replayable quest chain: uid=%s root=%s removed=%s',
+            $uid,
+            $chainRoot,
+            json_encode($removedQuests, JSON_UNESCAPED_SLASHES)
+        ));
+
+        return ["data" => [
+            "success" => true,
+            "removedQuests" => $removedQuests,
+            "quests" => buildQuestComponent($uid),
+        ]];
+    }
+
     
     public static function fullQuestRefresh($playerObj, $request, $market = null)
     {
