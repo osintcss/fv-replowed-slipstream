@@ -24,13 +24,13 @@ test('an administrator can impersonate a player and return to their own account'
         ->assertRedirect(route('play'));
 
     $this->assertAuthenticatedAs($player);
-    $this->assertSessionHas('impersonator_user_id', $administrator->id);
+    expect(session()->get('impersonator_user_id'))->toBe($administrator->id);
 
     $this->post('/admin/stop-impersonating')
         ->assertRedirect(route('admin'));
 
     $this->assertAuthenticatedAs($administrator);
-    $this->assertSessionMissing('impersonator_user_id');
+    expect(session()->has('impersonator_user_id'))->toBeFalse();
 });
 
 test('a non-administrator cannot impersonate a player', function () {
