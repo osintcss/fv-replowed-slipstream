@@ -46,6 +46,12 @@ $baseUrl = rtrim((string) config('app.url'), '/');
             font-size: 12px; font-weight: 600;
         }
         .btn-profile:hover { background: linear-gradient(180deg, #818cf8, #6366f1); }
+        .btn-stop-impersonating {
+            background: linear-gradient(180deg, #f59e0b, #d97706);
+            color: #1f2937; border: none; padding: 5px 14px; border-radius: 5px;
+            cursor: pointer; font-size: 12px; font-weight: 700;
+        }
+        .btn-stop-impersonating:hover { background: linear-gradient(180deg, #fbbf24, #f59e0b); }
         .user-dropdown {
             position: relative;
             display: inline-block;
@@ -655,6 +661,12 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                 <button type="button" class="btn-world-shop" onclick="openWorldShop()">🌍 World Shop</button>
                 <button type="button" class="btn-neighbors" onclick="openNeighborModal()">Add Neighbors</button>
                 <a href="{{ route('profile.edit') }}" class="btn-profile">Profile</a>
+                @if (session()->has('impersonator_user_id'))
+                    <form method="POST" action="{{ route('admin.stop-impersonating') }}" style="margin: 0;">
+                        @csrf
+                        <button type="submit" class="btn-stop-impersonating">Stop impersonating</button>
+                    </form>
+                @endif
                 <form method="POST" action="{{ route('worlds.return-home') }}" style="margin: 0;">
                     @csrf
                     <button type="submit" class="btn-return-home" title="Return to your home farm if travel gets stuck">Return Home</button>

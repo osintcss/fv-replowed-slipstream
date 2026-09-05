@@ -126,10 +126,15 @@ Route::middleware(['auth', 'verified', 'discord.member', 'admin'])->group(functi
     Route::get('/admin', [AdminController::class, 'index'])->name('admin');
     Route::post('/admin/lookup', [AdminController::class, 'lookupUser'])->name('admin.lookup');
     Route::post('/admin/update-currency', [AdminController::class, 'updateCurrency'])->name('admin.update-currency');
+    Route::post('/admin/impersonate', [AdminController::class, 'impersonate'])->name('admin.impersonate');
     Route::post('/admin/import-save', [AdminPlayerImportController::class, 'import'])
         ->name('admin.import-save')
         ->middleware('throttle:5,1');
 });
+
+Route::post('/admin/stop-impersonating', [AdminController::class, 'stopImpersonating'])
+    ->middleware(['auth', 'discord.member'])
+    ->name('admin.stop-impersonating');
 
 Route::get('/profile-pictures/discord/{uid}', [DiscordAvatarController::class, 'show'])
     ->whereNumber('uid')

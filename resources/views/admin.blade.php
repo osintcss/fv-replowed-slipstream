@@ -32,8 +32,12 @@
                         </form>
                     </section>
 
+                    @error('impersonation')
+                        <p class="mb-4 text-sm text-red-600 dark:text-red-400">{{ $message }}</p>
+                    @enderror
+
                     <div x-data="{
-                            email: '',
+                            query: '',
                             user: null,
                             error: '',
                             success: '',
@@ -45,12 +49,12 @@
                                 this.error = '';
                                 this.success = '';
                                 this.user = null;
-                                if (!this.email) return;
+                                if (!this.query) return;
                                 this.loading = true;
                                 fetch('{{ route('admin.lookup') }}', {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
-                                    body: JSON.stringify({ email: this.email })
+                                    body: JSON.stringify({ query: this.query })
                                 })
                                 .then(r => r.json().then(data => ({ ok: r.ok, data })))
                                 .then(({ ok, data }) => {
@@ -83,13 +87,13 @@
                                 .catch(() => { this.loading = false; this.error = 'Request failed.'; });
                             }
                         }">
-                            <h3 class="text-lg font-medium mb-4">User Currency Management</h3>
+                            <h3 class="text-lg font-medium mb-4">Player management</h3>
 
-                            {{-- Email Lookup --}}
+                            {{-- Player lookup --}}
                             <div class="mb-4">
-                                <label for="email" class="block text-sm font-medium mb-1">User Email</label>
+                                <label for="player-query" class="block text-sm font-medium mb-1">Player email, UID, or exact account name</label>
                                 <div class="flex gap-2 max-w-md">
-                                    <input type="email" x-model="email" id="email" placeholder="user@example.com"
+                                    <input type="text" x-model="query" id="player-query" placeholder="anita bucha or 5215154330"
                                         class="border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 focus:border-indigo-500 dark:focus:border-indigo-600 focus:ring-indigo-500 dark:focus:ring-indigo-600 rounded-md shadow-sm flex-1"
                                         @keydown.enter.prevent="lookup()">
                                     <button @click="lookup()" :disabled="loading"
@@ -111,6 +115,18 @@
                             <template x-if="user">
                                 <div class="border border-gray-200 dark:border-gray-700 rounded-lg p-4 max-w-md">
                                     <p class="mb-3"><strong x-text="user.name"></strong> (<span x-text="user.email"></span>)</p>
+
+                                    <div class="mb-4 rounded-md p-3" style="border: 1px solid #f59e0b; background: #fffbeb; color: #78350f;">
+                                        <p class="mb-2 text-sm font-medium">Test this player’s live game session</p>
+                                        <form method="POST" action="{{ route('admin.impersonate') }}">
+                                        @csrf
+                                        <input type="hidden" name="uid" :value="user.uid">
+                                        <button type="submit" onclick="return confirm('Open the game as this player? Their credentials will not be changed.');"
+                                            class="px-3 py-2 rounded-md text-xs font-semibold transition" style="background: #d97706; color: #ffffff; border: 0; cursor: pointer;">
+                                            Play as this player
+                                        </button>
+                                        </form>
+                                    </div>
 
                                     {{-- Cash --}}
                                     <div class="mb-4">
