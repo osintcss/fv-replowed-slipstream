@@ -164,3 +164,39 @@ Apache reads `.htaccess` per request, so no container restart is required.
 This delivery path was validated with the plow patch: after the filename
 revision was introduced, the normal walking-avatar plow sent its AMF action
 and survived the following reload.
+
+## Fuel refill harvest rewards and Gift Box count
+
+### Symptom and route
+
+The fuel-can quantity dialog is opened by `Widgets.Slots.GiftBox.GiftBoxSlot`.
+For a fuel item it passes `m_data.quantity` to
+`UseAllAmountSelectionWindow`, while the quantity input independently starts
+at `1`.  A newly harvested pump refill could therefore show `x0` beside the
+fuel icon even though the server had just written the refill to the Gift Box.
+The selected fuel can then follows `Classes.ZItem.FuelItem.onUse` through
+`Transactions.TBuyFuel.perform` to `FarmService.buyFuel(itemName, true)`.
+
+The server now returns an authoritative Gift Box snapshot with a successful
+harvest reward.  The client patch applies that snapshot in both relevant
+completion paths:
+
+- `Transactions.TWorldState.onComplete` refreshes the Gift Box after a normal
+  `WorldService.performAction("harvest", ...)` response;
+- `Transactions.TEquipmentAction.onComplete` refreshes it after a bulk
+  `EquipmentWorldService.onUseEquipment("harvest", ...)` response.
+
+The refresh is guarded to run once for a bulk harvest, including the combined
+harvest/plow/plant response.  The fuel-use request itself remains on the
+existing `FarmService.buyFuel` route; the fix corrects the stale pre-submit
+Gift Box count and the missing bulk-harvest reward.
+
+### FFDec patch/repack verification
+
+The patch was exported from and imported into the tracked
+`FarmGame-10.swf` with JPEXS Free Flash Decompiler 26.2.1.  Re-exporting
+`Transactions.TWorldState` and `Transactions.TEquipmentAction` from the
+patched file confirmed both `Global.player.refreshGiftBox(...)` handlers.
+The new client is served as
+`FarmGame-10-fuelrefill1.swf`; the revisioned URL is mapped to the tracked
+SWF in `public/.htaccess` and is selected by `resources/views/game.blade.php`.

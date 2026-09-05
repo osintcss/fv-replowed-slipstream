@@ -1592,7 +1592,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "master_assethash_url": "<?= $baseUrl ?>/farmville/assethash/v9/",
                             "masterysigns_amf_url": "<?= $baseUrl ?>/farmville/masterysigns/v1/",
                             "ITEMS_AMF_BUILD_TIME_REDUCTION": false,
-                            "swfLocation": "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FarmGame-10-farmactiondispatch2.swf?restore_original=1",
+                            "swfLocation": "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FarmGame-10-fuelrefill1.swf?restore_original=1",
                             "parts_count": 3,
                             "NO_FUEL_DAY_START_TIME": "1606723200",
                             "NO_FUEL_DAY_END_TIME": "1607328000",
