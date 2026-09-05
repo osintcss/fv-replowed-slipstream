@@ -9,6 +9,9 @@ class Item extends Model
 {
     protected $table = 'items';
 
+    // The imported legacy catalog has no created_at/updated_at columns.
+    public $timestamps = false;
+
     protected $fillable = [
         'name',
         'code',
