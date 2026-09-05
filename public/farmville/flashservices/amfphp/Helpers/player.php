@@ -70,6 +70,81 @@ class Player {
         return $states;
     }
 
+    /**
+     * The legacy Greenhouse is a separate seed-breeding feature.  Unlike the
+     * animal breeding skill state above, Flash constructs its runtime state
+     * exclusively from postInit.breedingState.  Omitting that entry makes
+     * GreenhouseWithdrawal dereference null during TPostInit for every farm
+     * that owns the completed building.
+     *
+     * Greenhouse projects are persisted separately in player metadata.  Send
+     * both that queue and the recipe genealogy because the Flash dialog
+     * unconditionally opens the first genealogy record when it is loaded.
+     */
+    public function getPostInitBreedingState(): ?array
+    {
+        $hasGreenhouse = WorldObject::query()
+            ->whereIn('world_id', UserWorld::query()
+                ->where('uid', $this->uid)
+                ->select('id'))
+            ->where('item_name', 'greenhousebuildable_finished')
+            ->where('deleted', false)
+            ->exists();
+
+        if (!$hasGreenhouse) {
+            return null;
+        }
+
+        $recipes = [
+            ['strapsberry', 'strawberry', 'raspberry'],
+            ['purpletomato', 'blueberry', 'tomato'],
+            ['long_onion', 'onion', 'leeks'],
+            ['sunpoppy', 'sunflowers', 'goldenpoppy'],
+            ['whiskeypete', 'rye', 'corn'],
+            ['firepeppers', 'peppers', 'jalapeno'],
+            ['squashkin', 'pumpkin', 'squash'],
+            ['redspinach', 'spinach', 'rhubarb'],
+            ['lilacdaffy', 'lilac', 'daffodils'],
+        ];
+        $genealogy = [];
+        foreach ($recipes as [$resultName, $firstName, $secondName]) {
+            $result = getItemByName($resultName, 'db');
+            $package = getItemByName($resultName . '_seedpackage', 'db');
+            $first = getItemByName($firstName, 'db');
+            $second = getItemByName($secondName, 'db');
+            if (!is_array($result) || !is_array($package) || !is_array($first) || !is_array($second)
+                || empty($package['code']) || empty($first['code']) || empty($second['code'])) {
+                continue;
+            }
+            $genealogy[] = [
+                // GreenhouseGenealogyDialog treats itemCode as a CSeedPackage:
+                // it derives the hybrid crop by stripping _seedpackage.
+                'itemCode' => $package['code'],
+                'ingredient' => [
+                    ['code' => $first['code']],
+                    ['code' => $second['code']],
+                ],
+            ];
+        }
+
+        $raw = get_meta($this->uid, 'greenhouse_breeding_state');
+        $saved = is_string($raw) ? (@unserialize($raw) ?: []) : [];
+        $trays = is_array($saved['trays'] ?? null) ? $saved['trays'] : [];
+
+        return [[
+            'featureName' => 'greenhousebuildable_finished',
+            'unlockStates' => array_map(static fn (): array => ['unlockState' => 2], $genealogy),
+            'genealogy' => $genealogy,
+            // FeatureBuilding uses levels 0–3 when it asks how many trays
+            // are unlocked.  Keep the first tray available and no project
+            // state active; the readiness check only needs this map/tray set.
+            'upgradeUnlockedTrays' => [0 => 1, 1 => 1, 2 => 4, 3 => 8],
+            'breedingDuration' => 259200,
+            'pvpStat' => 'greenhouse',
+            'trays' => $trays,
+        ]];
+    }
+
     public function lastPlacementWasIdempotentRetry(): bool {
         return $this->lastPlacementWasIdempotentRetry;
     }

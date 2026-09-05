@@ -41,6 +41,7 @@ class UserService{
         $playerLevel = 0;
         $completedQuests = [];
         $completedReplayableQuests = [];
+        $breedingState = null;
 
         if ($playerObj) {
             $uid = $playerObj->getUid();
@@ -64,6 +65,7 @@ class UserService{
             }
             $completedQuests = getCompletedQuests($uid);
             $completedReplayableQuests = buildCompletedReplayableQuestData($uid);
+            $breedingState = $playerObj->getPostInitBreedingState();
 
             $userMeta = UserMeta::where('uid', $uid)->first();
             if ($userMeta) {
@@ -98,7 +100,7 @@ class UserService{
                 "unlocked" => $unlockedAvatarItems,
                 "configurations" => $avatarConfigurations
             ),
-            "breedingState" => null,
+            "breedingState" => $breedingState,
             "w2wState" => null,
             "bestSellers" => null,
             "completedQuests" => $completedQuests,

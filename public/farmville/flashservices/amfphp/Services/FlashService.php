@@ -14,6 +14,7 @@ require_once AMFPHP_ROOTPATH . "Functions/FarmService.php";
 require_once AMFPHP_ROOTPATH . "Functions/CraftingService.php";
 require_once AMFPHP_ROOTPATH . "Functions/CaptureFeatureService.php";
 require_once AMFPHP_ROOTPATH . "Functions/AnimalBreedingService.php";
+require_once AMFPHP_ROOTPATH . "Functions/BreedingService.php";
 require_once AMFPHP_ROOTPATH . "Functions/SheepPenService.php";
 require_once AMFPHP_ROOTPATH . "Functions/FleaMarketService.php";
 require_once AMFPHP_ROOTPATH . "Functions/UserService.php";
