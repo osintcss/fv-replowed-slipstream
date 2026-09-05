@@ -35,6 +35,7 @@ _ide_helper*.php
 
 # Local recovery and analysis artifacts
 /backups
+/.tmp/
 /.tmp-*
 /tools
 /scripts/__pycache__
