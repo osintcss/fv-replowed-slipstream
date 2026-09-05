@@ -373,6 +373,28 @@ class Player {
         return ($metadata['G'] ?? null) === ($match[1] === 'male' ? 'M' : 'F');
     }
 
+    /** A finished Sheep Pen has the same DNA-backed storage contract as Pig Pen. */
+    private static function isValidSheeppenBreedingAnimal(WorldObject $animal): bool {
+        if ($animal->class_name !== 'MutableAnimal'
+            || !preg_match('/^sheeppen_(ram|ewe)(?:_|$)/', (string) $animal->item_name, $match)) {
+            return false;
+        }
+
+        $components = is_object($animal->components) ? $animal->components : new \stdClass();
+        $mutableState = $components->mutableAnimalState ?? null;
+        $dna = is_object($mutableState) ? ($mutableState->dna ?? null) : null;
+        if (!is_object($dna) && !is_array($dna)) {
+            return false;
+        }
+
+        $metadata = json_decode(json_encode($dna), true);
+        if (self::mutableAnimalMetadataHash($metadata) === null) {
+            return false;
+        }
+
+        return ($metadata['G'] ?? null) === ($match[1] === 'ram' ? 'M' : 'F');
+    }
+
     private static function isBasePigpenSow(WorldObject $animal): bool {
         return $animal->class_name === 'Animal' && $animal->item_name === 'pig';
     }
@@ -391,11 +413,14 @@ class Player {
             return null;
         }
 
-        return match ((string) $animal->item_name) {
-            'pigpen_male', 'pigpen_female' => $gender === 'M' ? 'pigpen_male' : 'pigpen_female',
-            'sheeppen_ram', 'sheeppen_ewe' => $gender === 'M' ? 'sheeppen_ram' : 'sheeppen_ewe',
-            default => null,
-        };
+        $itemName = (string) $animal->item_name;
+        if (preg_match('/^pigpen_(male|female)(?:_|$)/', $itemName)) {
+            return $gender === 'M' ? 'pigpen_male' : 'pigpen_female';
+        }
+        if (preg_match('/^sheeppen_(ram|ewe)(?:_|$)/', $itemName)) {
+            return $gender === 'M' ? 'sheeppen_ram' : 'sheeppen_ewe';
+        }
+        return null;
     }
 
     /** Default female traits for an ordinary Pig stored in the Pig Pen. */
@@ -410,14 +435,28 @@ class Player {
 
     /** Reject animals that can render in a pen but cannot participate in its breeding protocol. */
     private static function canStoreInFeatureBuilding(WorldObject $building, ?WorldObject $animal, string $itemCode): bool {
-        if ($building->item_name !== 'pigpenv2_finished') {
+        $featureName = (string) $building->item_name;
+        if (!in_array($featureName, ['pigpenv2_finished', 'xuk_sheep_pen_finished'], true)) {
             return true;
         }
-        if ($animal === null || !self::isValidPigpenBreedingAnimal($animal)) {
+        if ($animal === null) {
             return false;
         }
 
-        $item = getItemByName((string) $animal->item_name, 'db');
+        if ($featureName === 'pigpenv2_finished') {
+            if (!self::isValidPigpenBreedingAnimal($animal)) {
+                return false;
+            }
+        } elseif (!self::isValidSheeppenBreedingAnimal($animal)) {
+            return false;
+        }
+
+        $canonicalName = self::canonicalMutableAnimalItemName($animal);
+        if ($canonicalName === null) {
+            // The ordinary market Pig is the one non-mutable exception.
+            $canonicalName = (string) $animal->item_name;
+        }
+        $item = getItemByName($canonicalName, 'db');
         return is_array($item) && ($item['code'] ?? null) === $itemCode;
     }
 
@@ -1269,19 +1308,27 @@ class Player {
 
                 $canonicalItemName = self::canonicalMutableAnimalItemName($resource);
                 $correctedMutableName = false;
-                if ($canonicalItemName !== null && $canonicalItemName !== $resource->item_name) {
-                    Logger::warning('World', sprintf(
-                        'Corrected mutable animal gender before storage: uid=%s resourceId=%d old=%s new=%s',
-                        $this->uid,
-                        $resourceId,
-                        (string) $resource->item_name,
-                        $canonicalItemName,
-                    ));
-                    $resource->item_name = $canonicalItemName;
-                    $correctedMutableName = true;
+                if ($canonicalItemName !== null) {
                     $canonicalItem = getItemByName($canonicalItemName, 'db');
-                    if (is_array($canonicalItem) && is_string($canonicalItem['code'] ?? null)) {
-                        $itemCode = $canonicalItem['code'];
+                    $canonicalItemCode = is_array($canonicalItem) && is_string($canonicalItem['code'] ?? null)
+                        ? $canonicalItem['code'] : null;
+                    $nameMismatch = $canonicalItemName !== (string) $resource->item_name;
+                    $codeMismatch = $canonicalItemCode !== null && $canonicalItemCode !== (string) $itemCode;
+                    if ($nameMismatch || $codeMismatch) {
+                        Logger::warning('World', sprintf(
+                            'Canonicalized mutable animal before storage: uid=%s resourceId=%d oldName=%s newName=%s oldCode=%s newCode=%s',
+                            $this->uid,
+                            $resourceId,
+                            (string) $resource->item_name,
+                            $canonicalItemName,
+                            (string) $itemCode,
+                            (string) ($canonicalItemCode ?? $itemCode),
+                        ));
+                        $resource->item_name = $canonicalItemName;
+                        $correctedMutableName = true;
+                        if ($canonicalItemCode !== null) {
+                            $itemCode = $canonicalItemCode;
+                        }
                     }
                 }
 
@@ -1302,10 +1349,10 @@ class Player {
             }
             $isBasePigpenSow = $storedBuilding->item_name === 'pigpenv2_finished'
                 && $resource !== null && self::isBasePigpenSow($resource);
-            // Keep the same code Flash supplied.  PigpenDialog later sends
-            // that code back when it removes the pig from the pen; rewriting
-            // PI (Pig) to I! (pigpen_female) leaves the visual slot and its
-            // stored count out of sync with the removal request.
+            // The breeding-pen validator above has canonicalized mutable
+            // animals to the catalog code implied by DNA. Ordinary feature
+            // storage still preserves the client code for its legacy removal
+            // contract.
             $storageItemCode = (string) $itemCode;
 
             $contents = is_array($storedBuilding->contents) ? $storedBuilding->contents : [];

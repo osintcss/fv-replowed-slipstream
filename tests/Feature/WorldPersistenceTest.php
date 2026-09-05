@@ -333,6 +333,96 @@ it('canonicalizes a mismatched mutable animal before storage', function (): void
     expect($canonical->invoke(null, $animal))->toBe('pigpen_female');
 });
 
+it('rejects stale mutable-animal codes for finished breeding pens', function (): void {
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    // The production item catalog supplies these lookups. Seed the minimal
+    // equivalents here so the validator is tested against catalog codes,
+    // rather than relying on the client-supplied code.
+    App\Models\Item::query()->create([
+        'name' => 'pigpen_male',
+        'code' => 'H!',
+        'data' => serialize(['type' => 'animal']),
+    ]);
+    App\Models\Item::query()->create([
+        'name' => 'pigpen_female',
+        'code' => 'I!',
+        'data' => serialize(['type' => 'animal']),
+    ]);
+    App\Models\Item::query()->create([
+        'name' => 'sheeppen_ram',
+        'code' => 'cx',
+        'data' => serialize(['type' => 'animal']),
+    ]);
+    App\Models\Item::query()->create([
+        'name' => 'sheeppen_ewe',
+        'code' => 'cw',
+        'data' => serialize(['type' => 'animal']),
+    ]);
+    App\Models\Item::clearCache();
+
+    $world = persistenceTestWorld();
+    $pen = persistenceTestObject($world, 2514, [
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'pigpenv2_finished',
+        'state' => 'bare',
+    ]);
+    $dna = (object) [
+        'G' => 'M',
+        'B' => (object) ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => (object) ['T' => ['c'], 'H' => ['20', '20'], 'S' => ['9', '9'], 'V' => ['9', '9']],
+    ];
+    $boar = persistenceTestObject($world, 2515, [
+        'class_name' => 'MutableAnimal',
+        'item_name' => 'pigpen_male',
+        'components' => (object) ['mutableAnimalState' => (object) ['dna' => $dna]],
+    ]);
+
+    $validation = new ReflectionMethod('Player', 'canStoreInFeatureBuilding');
+    $validation->setAccessible(true);
+
+    expect($validation->invoke(null, $pen, $boar, 'H!'))->toBeTrue()
+        ->and($validation->invoke(null, $pen, $boar, 'I!'))->toBeFalse();
+
+    $sheepPen = persistenceTestObject($world, 2517, [
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'xuk_sheep_pen_finished',
+        'state' => 'bare',
+    ]);
+    $ram = persistenceTestObject($world, 2518, [
+        'class_name' => 'MutableAnimal',
+        'item_name' => 'sheeppen_ram',
+        'components' => (object) ['mutableAnimalState' => (object) ['dna' => $dna]],
+    ]);
+
+    expect($validation->invoke(null, $sheepPen, $ram, 'cx'))->toBeTrue()
+        ->and($validation->invoke(null, $sheepPen, $ram, 'cw'))->toBeFalse();
+});
+
+it('canonicalizes variant mutable-animal names from DNA gender', function (): void {
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    $world = persistenceTestWorld();
+    $animal = persistenceTestObject($world, 2516, [
+        'class_name' => 'MutableAnimal',
+        'item_name' => 'pigpen_male_light_green',
+        'components' => (object) [
+            'mutableAnimalState' => (object) [
+                'dna' => (object) [
+                    'G' => 'F',
+                    'B' => (object) ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+                    'P' => (object) ['T' => ['a'], 'H' => ['20', '20'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+                ],
+            ],
+        ],
+    ]);
+
+    $canonical = new ReflectionMethod('Player', 'canonicalMutableAnimalItemName');
+    $canonical->setAccessible(true);
+
+    expect($canonical->invoke(null, $animal))->toBe('pigpen_female');
+});
+
 it('allows DNA-backed breeders and the base pig sow in a finished pig pen', function (): void {
     require_once AMFPHP_ROOTPATH.'Helpers/player.php';
 
