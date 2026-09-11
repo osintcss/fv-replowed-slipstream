@@ -24,6 +24,12 @@
     <FilesMatch "\.(png|jpg|jpeg|gif|swf|svg)$">
         Header set Cache-Control "public, max-age=31536000, immutable"
     </FilesMatch>
+
+    # Legacy Pepper Flash rejects some SWF responses when the global
+    # nosniff policy is present. Keep nosniff for every other resource.
+    <FilesMatch "\.swf$">
+        Header always unset X-Content-Type-Options
+    </FilesMatch>
 </IfModule>
 
 # Cache all static files in the assets directory (including octet-stream)
@@ -40,12 +46,30 @@
 
     RewriteEngine On
 
+    # The bundled AMFphp test harness, examples, and documentation are not
+    # part of the production application. Keep their PHP entry points out of
+    # the public web root so they cannot be used as test gateways or write
+    # targets by an external request.
+    RewriteRule ^farmville/flashservices/(?:Tests|Examples|doc|docs)(?:/|$) - [R=404,L,NC]
+
     # A distinct filename gives the legacy Flash preloader and browser cache a
     # real client-build revision while serving the tracked patched SWF.
     RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-fuelrefill1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
     RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-farmactiondispatch2\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-coveemptyworld1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-floatingskullmask1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-gopherprogressguard3\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-worldscorepersist1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-worldscorepersist2\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-witcherhut1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
 
     RewriteRule ^farmville/xml/gz/v855038-locale-v3/en_US\.swf$ farmville/locale-contract.php [L]
+
+    # The recovered optimized asset is the same content-hashed Cove
+    # background requested by some client variants. Keep the ordinary logical
+    # path working when the extraction contains only the optimized directory.
+    RewriteCond %{DOCUMENT_ROOT}/farmville/assets/hashed/assets/opt/Environment/7ed449f2a87c572e9ff8b144b15e0b09.swf -f
+    RewriteRule ^farmville/assets/hashed/assets/Environment/7ed449f2a87c572e9ff8b144b15e0b09\.swf$ farmville/assets/hashed/assets/opt/Environment/7ed449f2a87c572e9ff8b144b15e0b09.swf [L]
 
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .

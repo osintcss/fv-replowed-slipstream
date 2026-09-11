@@ -1,5 +1,6 @@
 services:
   fv-replowed-slipstream:
+    restart: unless-stopped
     build:
       context: .
     image: fv-replowed-slipstream:local
@@ -8,7 +9,13 @@ services:
     ports:
       - "8000:80"
     volumes:
-      - ./public/farmville/assets:/var/www/html/public/farmville/assets
+      # Keep the large immutable asset tree off the SD-backed repository.
+      # Production sets FV_ASSETS_PATH to the mounted SSD; local development
+      # keeps the existing relative-path default.
+      - ${FV_ASSETS_PATH:-./public/farmville/assets}:/var/www/html/public/farmville/assets
+    command: >-
+      /bin/sh -c 'if [ "${FV_ASSETS_REQUIRE_SENTINEL:-0}" = "1" ] && [ ! -f /var/www/html/public/farmville/assets/.ssd-assets-ready ]; then
+      echo "FV_ASSETS_PATH is not mounted or is incomplete" >&2; exit 1; fi; exec apache2-foreground'
     depends_on:
       database:
         condition: service_healthy
@@ -58,6 +65,7 @@ services:
           - zynga4-a.akamaihd.net
 
   database:
+    restart: unless-stopped
     image: mariadb:10.11
     environment:
       MARIADB_DATABASE: ${DB_DATABASE:-farmvilledb}
@@ -75,6 +83,7 @@ services:
       retries: 30
 
   reverb:
+    restart: unless-stopped
     image: fv-replowed-slipstream:local
     command: php artisan reverb:start --host=0.0.0.0 --port=8080
     env_file:
@@ -97,6 +106,7 @@ services:
       - "8080:8080"
 
   scheduler:
+    restart: unless-stopped
     image: fv-replowed-slipstream:local
     command: php artisan schedule:work
     env_file:

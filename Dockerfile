@@ -46,6 +46,15 @@ COPY bootstrap ./bootstrap
 COPY config ./config
 COPY database ./database
 COPY public ./public
+# These upstream AMFphp test/example trees are not runtime assets. The same
+# paths are excluded from the build context and removed defensively in case a
+# builder uses an older or broader ignore configuration.
+RUN rm -rf public/farmville/flashservices/Tests \
+    public/farmville/flashservices/tests \
+    public/farmville/flashservices/Examples \
+    public/farmville/flashservices/examples \
+    public/farmville/flashservices/doc \
+    public/farmville/flashservices/docs
 COPY resources ./resources
 COPY routes ./routes
 COPY scripts ./scripts
@@ -60,6 +69,11 @@ RUN php scripts/patch-quest-settings.php
 # progression, but remove that unavailable social prerequisite from the XML
 # that Flash uses to populate the Market's Farm Expansions category.
 RUN php -d memory_limit=512M scripts/patch-farm-expansion-settings.php
+
+# Keep the XML fallback catalog aligned with the optimized item AMF. This is
+# required for clients outside the optimized-items experiment and for the AMF
+# retry path used by older Flash builds.
+RUN php -d memory_limit=512M scripts/patch-ugc-item-catalog.php
 
 # Some client experiment assignments request the reduced locale filename even
 # when the complete locale is the only archive asset available. Both contain
@@ -85,11 +99,19 @@ RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/
         ln -s v855038 public/farmville/xml/gz/v855038-locale-v3; \
     fi
 
+RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-locale-v4 ]; then \
+        ln -s v855038 public/farmville/xml/gz/v855038-locale-v4; \
+    fi
+
 # Flash's XML cache is keyed by path on some legacy players and ignores a
 # query-string revision. Give the patched item catalog a fresh path so a
 # rebuilt image cannot reuse the pre-patch expansion definitions.
 RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-expansions-v1 ]; then \
         ln -s v855038 public/farmville/xml/gz/v855038-expansions-v1; \
+    fi
+
+RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-expansions-v2 ]; then \
+        ln -s v855038 public/farmville/xml/gz/v855038-expansions-v2; \
     fi
 
 RUN mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \

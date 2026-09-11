@@ -7,6 +7,12 @@ node_modules
 vendor
 storage/logs
 public/farmville/assets
+public/farmville/flashservices/Tests
+public/farmville/flashservices/tests
+public/farmville/flashservices/Examples
+public/farmville/flashservices/examples
+public/farmville/flashservices/doc
+public/farmville/flashservices/docs
 backups
 *.bundle
 tests

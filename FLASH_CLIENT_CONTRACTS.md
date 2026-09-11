@@ -114,6 +114,48 @@ paths used by the preloader to the matching `en_US.swf` asset.
 Regression test: start a normal quest and a `*bubble*` intro. Both the intro
 bubbles and the objective panel must display text.
 
+### Asset-path false positive: Lighthouse Cove background
+
+**Incident note.** A Lighthouse Cove investigation initially concluded that
+`xcove_themeBackground_12.swf` was missing because this request returned 404:
+
+```text
+/farmville/assets/hashed/assets/Environment/7ed449f2a87c572e9ff8b144b15e0b09.swf
+```
+
+That conclusion was wrong. The file was present both in the extracted asset
+collection and in production under the optimized-SWF path:
+
+```text
+/farmville/assets/hashed/assets/opt/Environment/7ed449f2a87c572e9ff8b144b15e0b09.swf
+```
+
+The file is 50,525 bytes and its MD5 is
+`7ed449f2a87c572e9ff8b144b15e0b09`, matching the asset-hash filename. The
+archived WARC CDX entry also records the captured asset under
+`assets/opt/Environment`, so this was a path-selection error, not an asset
+recovery failure.
+
+The shipped client can rewrite `assets/` to `assets/opt/` for the optimized SWF
+experiment, and it has a separate `opt_qa` candidate. Therefore a 404 for the
+ordinary path does not prove that an asset is absent.
+
+Asset investigation checklist:
+
+1. Record the logical path requested by the client, including filename case.
+2. Resolve it through the matching `assethash.master.amf.gz` rather than
+   guessing a hash or checking only the unhashed path.
+3. Check the normal, `opt`, and `opt_qa` hashed paths, preserving the exact
+   case of directories such as `Environment`.
+4. Verify that any discovered file's MD5 matches the hash filename.
+5. Only call the asset missing after checking the actual runtime request and
+   the archive CDX/WARC source. A wrong candidate path, optimized asset path,
+   or persisted client state can produce the same symptom.
+
+This incident is distinct from the legacy FeatureBuilding shadow incident
+documented below: that failure was caused by incompatible persisted object
+state, while this one was caused by checking the wrong asset path.
+
 ### Coin farm expansions and incremental gates
 
 **Verified/implemented.** Coin farm-expansion entries in the archived item

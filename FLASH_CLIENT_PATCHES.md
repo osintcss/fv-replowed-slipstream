@@ -1,5 +1,18 @@
 # Flash client patches
 
+## Gopher Garden progression during world attachment
+
+`GopherImageProgressionFObject` can be asked to redraw a placed Gopher Garden
+while `CaptureFeatureManager` is still initializing. The released client
+assumed that the capture component and its `capturedCount` object already
+existed, so a reload could raise Error #1009 from `getCapturedBreakdown()` and
+stop the farm from loading. The targeted client patch treats that transient
+state as an empty count, allowing the building to render at level zero; the
+normal saved count is still used once the feature data is available.
+
+The patched SWF is served as `FarmGame-10-gopherprogressguard3.swf` and keeps
+the existing server-side capture data and progression behavior unchanged.
+
 ## Farm expansion: rejected cash purchase
 
 `FarmGame-10.swf` contains `Transactions.TExpandFarm`. The original transaction
@@ -165,6 +178,51 @@ This delivery path was validated with the plow patch: after the filename
 revision was introduced, the normal walking-avatar plow sent its AMF action
 and survived the following reload.
 
+## Empty travel worlds: load terrain when no objects exist
+
+### Symptom
+
+Traveling to a newly claimed Lighthouse Cove could show the Cove name and
+player HUD while rendering only the default green grass plane. The Cove world
+record and its `fisherman` tile set were present; the world simply had no
+placed objects yet.
+
+### Root cause and targeted change
+
+The released `Managers.WorldManager.onUserInit` only called
+`Global.world.loadObject(resultData.world)` when
+`worldData.objectsArray.length > 0`. An empty world therefore remained in the
+default world initialized earlier in `WorldInit`, so its world metadata and
+terrain theme were never applied.
+
+The patch keeps the existing validity guard but removes the length test:
+
+```actionscript
+if(Boolean(worldData.objectsArray))
+{
+   Global.world.loadObject(worldData);
+   expansionData = Global.farmGameSettingsManager.getExpansionData(this.currentWorldType);
+   this.m_currentWorldPlotLimits = expansionData ? expansionData.plotLimits : null;
+}
+```
+
+This preserves the existing behavior for populated worlds and lets an empty
+world construct its map, background, and tile set. It does not create any
+objects or alter the saved world.
+
+### FFDec patch/repack verification
+
+`Managers.WorldManager` was exported from `FarmGame-10.swf`, patched, and
+imported into a separate SWF. Re-exporting that class from the rebuilt SWF
+confirmed that `Global.world.loadObject(worldData)` is reached whenever
+`objectsArray` exists, including an empty array.
+
+The client is delivered under the new revisioned URL
+`FarmGame-10-coveemptyworld1.swf`; `public/.htaccess` maps that URL to the
+tracked patched SWF and `resources/views/game.blade.php` selects it. The
+revision is required because the legacy preloader treats game SWFs as
+immutable and may ignore query-string-only cache busting.
+
 ## Fuel refill harvest rewards and Gift Box count
 
 ### Symptom and route
@@ -200,3 +258,34 @@ patched file confirmed both `Global.player.refreshGiftBox(...)` handlers.
 The new client is served as
 `FarmGame-10-fuelrefill1.swf`; the revisioned URL is mapped to the tracked
 SWF in `public/.htaccess` and is selected by `resources/views/game.blade.php`.
+
+## World-score persistence
+
+The Flash client keeps world score in `Player.worldScores`, but the server's
+InitUser payload did not include that map. Quest score rewards were also being
+stored under `world_score_main` when the caller omitted the optional world
+argument. The server now returns the saved score and level for each unlocked or
+active world, resolves omitted quest rewards against `currentWorldType`, and
+persists the level reported by `TWorldScoreLevelUp`.
+
+`Transactions.TWorldScoreLevelUp` was patched so its
+`updateWorldScoreLevelUp` call sends the score unit, current level, and current
+score. `Player.addWorldScore` now queues that sync after every positive score
+gain, rather than only when a level-up occurs. The resulting client is served
+as `FarmGame-10-worldscorepersist2.swf`; the revisioned URL is mapped to the
+tracked SWF in `public/.htaccess` and selected by `resources/views/game.blade.php`.
+
+## Witcher Hut shadow-only rendering
+
+The Sleepy Hollow Witcher Hut is a `CraftingCottageBuilding` with craft type
+`xshcrafttype`. The saved object is fully built and its SWF asset is present,
+but the normal-world client looked up a player craft-state entry that does not
+exist for this event-only craft type. That returned craft level `0`, causing
+`StorageBuilding` to request `construct_0`; the catalog only provides
+`built_0` through `built_4`, so the client rendered the placement shadow alone.
+
+`CraftingCottageBuilding` now falls back to the object's saved `craftLevel`
+(level 1 for the existing Witcher Hut) and safely reports one slot when no
+craft-state/config entry exists. The resulting client is served as
+`FarmGame-10-witcherhut1.swf`; the revisioned URL is mapped to the tracked SWF
+in `public/.htaccess` and selected by `resources/views/game.blade.php`.
