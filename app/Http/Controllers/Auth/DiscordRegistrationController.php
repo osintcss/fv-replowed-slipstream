@@ -68,7 +68,7 @@ class DiscordRegistrationController extends Controller
                     'uid' => $user->uid,
                     'firstName' => $firstName,
                     'lastName' => $lastName,
-                    'profile_picture' => url('/profile-pictures/discord/'.$user->uid).'?v=2',
+                    'profile_picture' => url('/profile-pictures/discord/'.$user->uid).'?v=3',
                 ]);
                 UserAvatar::create(['uid' => $user->uid]);
                 DiscordIdentity::create([

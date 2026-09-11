@@ -284,7 +284,7 @@ class DiscordAuthenticatedSessionController extends Controller
     {
         $identity->update(['avatar_url' => $avatarUrl]);
         $identity->user->userMeta()?->update([
-            'profile_picture' => url('/profile-pictures/discord/'.$identity->user->uid).'?v=2',
+            'profile_picture' => url('/profile-pictures/discord/'.$identity->user->uid).'?v=3',
         ]);
     }
 

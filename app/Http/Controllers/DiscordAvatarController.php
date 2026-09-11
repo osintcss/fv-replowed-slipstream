@@ -24,38 +24,47 @@ class DiscordAvatarController extends Controller
         $cachePath = 'discord-avatar-cache/'.sha1($avatarUrl.'-50x50-jpeg');
         $disk = Storage::disk('local');
 
-        if (!$disk->exists($cachePath)) {
-            try {
-                $remote = Http::timeout(5)->get($avatarUrl);
-                $contentType = strtolower((string) $remote->header('Content-Type'));
-
-                if (!$remote->successful() || !str_starts_with($contentType, 'image/') || strlen($remote->body()) > 2_000_000) {
-                    return $this->placeholder();
-                }
-
-                $thumbnail = (new ImageManager(new GdDriver()))
-                    ->read($remote->body())
-                    ->cover(50, 50)
-                    ->encode(new JpegEncoder(quality: 90));
-
-                $disk->put($cachePath, (string) $thumbnail);
-            } catch (\Throwable) {
-                return $this->placeholder();
-            }
+        if ($disk->exists($cachePath)) {
+            return response($disk->get($cachePath), 200, [
+                'Content-Type' => 'image/jpeg',
+                'Cache-Control' => 'public, max-age=86400',
+            ]);
         }
 
-        return response($disk->get($cachePath), 200, [
-            'Content-Type' => 'image/jpeg',
-            'Cache-Control' => 'public, max-age=86400',
-        ]);
+        try {
+            $remote = Http::timeout(5)->get($avatarUrl);
+            $contentType = strtolower((string) $remote->header('Content-Type'));
+
+            if (!$remote->successful() || !str_starts_with($contentType, 'image/') || strlen($remote->body()) > 2_000_000) {
+                return $this->placeholder();
+            }
+
+            $thumbnail = (new ImageManager(new GdDriver()))
+                ->read($remote->body())
+                ->cover(50, 50)
+                ->encode(new JpegEncoder(quality: 90));
+
+            $disk->put($cachePath, (string) $thumbnail);
+
+            return response((string) $thumbnail, 200, [
+                'Content-Type' => 'image/jpeg',
+                'Cache-Control' => 'public, max-age=86400',
+            ]);
+        } catch (\Throwable) {
+            return $this->placeholder();
+        }
     }
 
     private function placeholder(): Response
     {
-        return response(
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#e5e7eb"/><circle cx="50" cy="38" r="18" fill="#9ca3af"/><path d="M18 92c4-22 20-32 32-32s28 10 32 32" fill="#9ca3af"/></svg>',
-            200,
-            ['Content-Type' => 'image/svg+xml', 'Cache-Control' => 'public, max-age=3600'],
-        );
+        $placeholder = (new ImageManager(new GdDriver()))
+            ->create(50, 50)
+            ->fill('#e5e7eb')
+            ->encode(new JpegEncoder(quality: 85));
+
+        return response((string) $placeholder, 200, [
+            'Content-Type' => 'image/jpeg',
+            'Cache-Control' => 'public, max-age=3600',
+        ]);
     }
 }
