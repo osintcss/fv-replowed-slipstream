@@ -63,7 +63,11 @@ function getCraftingConfigXml(): ?\SimpleXMLElement
     }
     $loaded = true;
 
-    $basePath = $_SERVER['DOCUMENT_ROOT'] . "/farmville/xml/gz/v855038/crafting.xml";
+    $documentRoot = $_SERVER['DOCUMENT_ROOT'] ?? '';
+    if ($documentRoot === '' && function_exists('base_path')) {
+        $documentRoot = base_path('public');
+    }
+    $basePath = rtrim($documentRoot, '/\\') . "/farmville/xml/gz/v855038/crafting.xml";
     $compressed = @file_get_contents($basePath . '.gz');
     if ($compressed !== false) {
         $contents = @gzuncompress($compressed);
@@ -379,6 +383,14 @@ function getCraftingInventory($uid, $storageType = null) {
 
     $rows = $query->get();
     foreach ($rows as $row) {
+        // CraftingState.initCraftingStateFromInitUser() classifies entries
+        // from this response as bushels. The Flash client defaults an
+        // unknown item code to the market-stall bucket, so leaking crafted
+        // goods or unrelated inventory rows here inflates bushel capacity.
+        if (getCraftingInventoryBucket($row->item_code) === null) {
+            continue;
+        }
+
         $items[] = array(
             "itemCode" => $row->item_code,
             "quantity" => (int) $row->quantity,
@@ -480,20 +492,280 @@ function getCraftingSiloCapacity($uid, $worldType = null): int {
         });
 }
 
+/**
+ * Return the player's durable market-stall world object.
+ *
+ * Market-stall expansion is a feature-level state in Flash, but the server
+ * stores the completed level alongside the placed world object. Keeping this
+ * lookup here gives InitUser and inventory admission one authoritative source.
+ */
+function getMarketStallObject($uid, $worldType = null): ?WorldObject
+{
+    if (!is_numeric($uid)) {
+        return null;
+    }
+
+    $worldType = $worldType ?: getCurrentWorldType($uid);
+    $worldId = getWorldId($uid, $worldType);
+    if (!$worldId) {
+        return null;
+    }
+
+    return WorldObject::query()
+        ->where('world_id', $worldId)
+        ->where('deleted', false)
+        ->where(function ($query): void {
+            $query->where('class_name', 'MarketStallBuilding')
+                ->orWhere('item_name', 'marketstall');
+        })
+        ->orderBy('id')
+        ->first();
+}
+
+/**
+ * Convert the generic one-based world-object level to the zero-based feature
+ * level used by FeatureExpansionState. A newly placed market stall is stored
+ * at world level 1 and therefore has the base 400-bushel capacity.
+ */
+function getMarketStallExpansionLevel($uid, $worldType = null): int
+{
+    $stall = getMarketStallObject($uid, $worldType);
+    if (!$stall) {
+        return 0;
+    }
+
+    return max(0, (int) $stall->expansion_level - 1);
+}
+
+/**
+ * Build the FeatureOptions payload consumed by MarketStallBuilding and
+ * FeatureExpansionState. WorldObject stores expansion-part keys by item code;
+ * Flash stores them by item name.
+ */
+function getMarketStallFeatureOptions($uid, $worldType = null): array
+{
+    $stall = getMarketStallObject($uid, $worldType);
+    $parts = [];
+
+    if ($stall) {
+        $rawParts = $stall->expansion_parts;
+        if (is_string($rawParts)) {
+            $decodedParts = json_decode($rawParts, true);
+            $rawParts = is_array($decodedParts) ? $decodedParts : [];
+        } elseif (is_object($rawParts)) {
+            $rawParts = get_object_vars($rawParts);
+        }
+
+        foreach (is_array($rawParts) ? $rawParts : [] as $partKey => $quantity) {
+            $partName = (string) $partKey;
+            $partItem = getItemByCode($partName);
+            if (is_array($partItem) && !empty($partItem['name'])) {
+                $partName = (string) $partItem['name'];
+            }
+
+            $parts[$partName] = max(0, (int) $quantity);
+        }
+    }
+
+    return [
+        'exp_level' => getMarketStallExpansionLevel($uid, $worldType),
+        'exp_parts' => $parts,
+    ];
+}
+
+/**
+ * Match CraftingManager.getCraftTypeofBushel(). The server's storage_type
+ * column is not included in craftingItems, so Flash classifies each entry
+ * from the item subtype instead.
+ */
+function getCraftingInventoryBucket(?string $itemCode): ?string
+{
+    static $bucketByCode = [];
+
+    if (!is_string($itemCode) || $itemCode === '') {
+        return null;
+    }
+
+    if (array_key_exists($itemCode, $bucketByCode)) {
+        return $bucketByCode[$itemCode];
+    }
+
+    $itemData = getItemByCode($itemCode);
+    if (!is_array($itemData)) {
+        return $bucketByCode[$itemCode] = null;
+    }
+
+    $itemType = (string) ($itemData['type'] ?? '');
+    $className = (string) ($itemData['className'] ?? '');
+    if ($itemType !== 'bushel' && $className !== 'CBushel') {
+        return $bucketByCode[$itemCode] = null;
+    }
+
+    $subtype = strtolower((string) ($itemData['subtype'] ?? $itemData['subType'] ?? ''));
+    $bucket = match ($subtype) {
+        'animal', 'tree' => 'silo',
+        'lab' => 'lab',
+        'unsharable' => 'unsharable',
+        'village' => 'village',
+        default => 'stall',
+    };
+
+    return $bucketByCode[$itemCode] = $bucket;
+}
+
+/**
+ * Return the market-stall capacity advertised by crafting.xml plus the
+ * player's durable expansion level. Keep this in one place so InitUser and
+ * server-side admission checks cannot disagree with one another.
+ */
+function getMarketStallCapacity($uid = null, $worldType = null): int
+{
+    $xml = getCraftingConfigXml();
+    $baseCapacity = $xml && isset($xml->featureConfig->globalInventoryBushelCapacity)
+        ? (int) $xml->featureConfig->globalInventoryBushelCapacity
+        : 400;
+    $expansionCapacity = $xml && isset($xml->featureConfig->marketStallExpansionCapacity)
+        ? (int) $xml->featureConfig->marketStallExpansionCapacity
+        : 25;
+
+    $capacity = max(0, $baseCapacity);
+    if (is_numeric($uid)) {
+        $capacity += max(0, $expansionCapacity) * getMarketStallExpansionLevel($uid, $worldType);
+    }
+
+    return $capacity;
+}
+
+function getCraftingInventoryBucketCapacity($uid, string $bucket): ?int
+{
+    return match ($bucket) {
+        'stall' => getMarketStallCapacity($uid),
+        'silo' => getCraftingSiloCapacity($uid),
+        'unsharable' => 400,
+        // The current server does not advertise a village-storage capacity.
+        default => null,
+    };
+}
+
+function getCraftingInventoryBucketQuantity($rows, string $bucket): int
+{
+    $quantity = 0;
+
+    foreach ($rows as $row) {
+        if (getCraftingInventoryBucket($row->item_code) !== $bucket) {
+            continue;
+        }
+
+        $quantity += max(0, (int) $row->quantity);
+    }
+
+    return $quantity;
+}
+
 function addToInventory($uid, $itemCode, $quantity, $storageType = "silo") {
-    if (!is_numeric($uid) || $quantity <= 0) return false;
+    if (!is_numeric($uid) || !is_string($itemCode) || $itemCode === '' || $quantity <= 0) {
+        return false;
+    }
 
-    // Do not assign a DB expression through an Eloquent model attribute here.
-    // `quantity` is integer-cast, so Eloquent attempts to cast the Expression
-    // before it sends the update and the Flash request fails.  Create the row
-    // with a real value, then use the query builder's atomic increment.
-    $inventory = CraftingInventory::firstOrCreate(
-        ['uid' => $uid, 'item_code' => $itemCode, 'storage_type' => $storageType],
-        ['quantity' => 0]
-    );
-    CraftingInventory::whereKey($inventory->getKey())->increment('quantity', (int) $quantity);
+    $quantity = (int) $quantity;
+    $bucket = getCraftingInventoryBucket($itemCode);
 
-    return true;
+    return \DB::transaction(function () use ($uid, $itemCode, $quantity, $storageType, $bucket): bool {
+        // Lock the user's inventory rows while checking and writing. This
+        // prevents two concurrent rewards from both passing the same capacity
+        // check and overshooting the limit.
+        \App\Models\User::where('uid', $uid)->lockForUpdate()->first();
+        $rows = CraftingInventory::where('uid', $uid)
+            ->lockForUpdate()
+            ->get();
+
+        if ($bucket !== null) {
+            $capacity = getCraftingInventoryBucketCapacity($uid, $bucket);
+            if ($capacity !== null
+                && getCraftingInventoryBucketQuantity($rows, $bucket) + $quantity > $capacity) {
+                return false;
+            }
+        }
+
+        $inventory = $rows->first(
+            static fn ($row): bool => (string) $row->item_code === $itemCode
+                && (string) $row->storage_type === (string) $storageType
+        );
+
+        if ($inventory) {
+            // Do not assign a DB expression through an Eloquent model
+            // attribute here. The integer cast rejects Expressions before the
+            // update is sent to the database.
+            CraftingInventory::whereKey($inventory->getKey())
+                ->increment('quantity', $quantity);
+        } else {
+            CraftingInventory::create([
+                'uid' => $uid,
+                'item_code' => $itemCode,
+                'quantity' => $quantity,
+                'storage_type' => $storageType,
+            ]);
+        }
+
+        return true;
+    });
+}
+
+/**
+ * Remove bushels from the authoritative inventory regardless of which legacy
+ * storage_type row contains them. Flash presents one merged crafting list, so
+ * a share request must use the same aggregate view and commit atomically.
+ */
+function removeBushelsFromInventory($uid, $itemCode, $quantity): bool
+{
+    if (!is_numeric($uid)
+        || !is_string($itemCode)
+        || $itemCode === ''
+        || !is_numeric($quantity)
+        || (int) $quantity <= 0
+        || getCraftingInventoryBucket($itemCode) === null) {
+        return false;
+    }
+
+    $quantity = (int) $quantity;
+
+    return \DB::transaction(function () use ($uid, $itemCode, $quantity): bool {
+        // addToInventory() serializes capacity checks on the same user row.
+        // Lock it here too so a share cannot race an incoming grant and leave
+        // the merged bushel count above the advertised capacity.
+        \App\Models\User::query()
+            ->where('uid', $uid)
+            ->lockForUpdate()
+            ->first();
+
+        $rows = CraftingInventory::query()
+            ->where('uid', $uid)
+            ->where('item_code', $itemCode)
+            ->where('quantity', '>', 0)
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get();
+
+        $available = $rows->sum(static fn ($row): int => max(0, (int) $row->quantity));
+        if ($available < $quantity) {
+            return false;
+        }
+
+        $remaining = $quantity;
+        foreach ($rows as $row) {
+            if ($remaining <= 0) {
+                break;
+            }
+
+            $remove = min($remaining, max(0, (int) $row->quantity));
+            CraftingInventory::query()
+                ->whereKey($row->getKey())
+                ->update(['quantity' => (int) $row->quantity - $remove]);
+            $remaining -= $remove;
+        }
+
+        return $remaining === 0;
+    });
 }
 
 /**

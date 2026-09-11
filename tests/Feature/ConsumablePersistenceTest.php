@@ -91,6 +91,73 @@ it('consumes Giftbox fuel atomically with its energy grant', function (): void {
         ->and(UserMeta::where('uid', $uid)->value('energy'))->toBe(300);
 });
 
+it('returns explicit errors when paid fuel cannot be purchased', function (): void {
+    [$uid, $player] = consumablePersistencePlayer();
+    UserMeta::where('uid', $uid)->update(['cash' => 0, 'gold' => 0]);
+
+    seedConsumableItem('cash_fuel_test', 'CF1', [
+        'name' => 'cash_fuel_test',
+        'code' => 'CF1',
+        'count' => '1.0',
+        'cash' => 3,
+    ]);
+    seedConsumableItem('gold_fuel_test', 'GF1', [
+        'name' => 'gold_fuel_test',
+        'code' => 'GF1',
+        'count' => '1.0',
+        'cost' => 5,
+    ]);
+
+    $cashResult = FarmService::buyFuel(
+        $player,
+        (object) ['params' => ['cash_fuel_test', false]],
+        null
+    );
+    $goldResult = FarmService::buyFuel(
+        $player,
+        (object) ['params' => ['gold_fuel_test', false]],
+        null
+    );
+
+    expect($cashResult['data'])->toMatchArray([
+            'success' => false,
+            'error' => 'insufficient_cash',
+        ])
+        ->and($cashResult['errorType'])->toBe(1)
+        ->and($cashResult['errorData'])->toBe('Not enough Farm Cash for fuel.')
+        ->and($goldResult['data'])->toMatchArray([
+            'success' => false,
+            'error' => 'insufficient_gold',
+        ])
+        ->and($goldResult['errorType'])->toBe(1)
+        ->and($goldResult['errorData'])->toBe('Not enough coins for fuel.')
+        ->and(UserMeta::where('uid', $uid)->value('energy'))->toBe(100)
+        ->and(UserMeta::where('uid', $uid)->value('cash'))->toBe(0)
+        ->and(UserMeta::where('uid', $uid)->value('gold'))->toBe(0);
+});
+
+it('charges paid fuel and grants its energy atomically', function (): void {
+    [$uid, $player] = consumablePersistencePlayer();
+    UserMeta::where('uid', $uid)->update(['cash' => 5, 'gold' => 7]);
+    seedConsumableItem('paid_fuel_test', 'PF1', [
+        'name' => 'paid_fuel_test',
+        'code' => 'PF1',
+        'count' => '1.0',
+        'cash' => 3,
+    ]);
+
+    $result = FarmService::buyFuel(
+        $player,
+        (object) ['params' => ['paid_fuel_test', false]],
+        null
+    );
+
+    expect($result['data']['success'])->toBeTrue()
+        ->and(UserMeta::where('uid', $uid)->value('energy'))->toBe(200)
+        ->and(UserMeta::where('uid', $uid)->value('cash'))->toBe(2)
+        ->and(UserMeta::where('uid', $uid)->value('gold'))->toBe(7);
+});
+
 it('returns a harvested fuel refill in the refreshed Giftbox storage data', function (): void {
     [$uid] = consumablePersistencePlayer();
     $world = UserWorld::query()->create([

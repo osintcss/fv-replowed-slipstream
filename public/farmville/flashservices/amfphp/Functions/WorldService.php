@@ -6,6 +6,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
 require_once AMFPHP_ROOTPATH . "Helpers/quest_progress.php";
 require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
 require_once AMFPHP_ROOTPATH . "Helpers/mutable_animal_completion.php";
+require_once AMFPHP_ROOTPATH . "Helpers/ugc_helper.php";
 
 use App\Helpers\JsonHelper;
 use App\Models\PlayerMeta;
@@ -44,6 +45,102 @@ class WorldService
             return !in_array(strtolower(trim($value)), ['', '0', 'false', 'off', 'no'], true);
         }
         return $default;
+    }
+
+    /**
+     * MarketStallBuilding uses FeatureExpansionState rather than the generic
+     * item-catalog expand feature.  Its three expansion resources are still
+     * sent through TStoreItem/WorldService.store, so keep their persistence
+     * contract explicit instead of routing them through normal storage.
+     */
+    private static function isMarketStallExpansionPart(?string $itemName): bool
+    {
+        return in_array($itemName, [
+            'stall_awning',
+            'stall_basket',
+            'stall_pricecard',
+        ], true);
+    }
+
+    /** Persist one or more market-stall expansion resources atomically. */
+    private static function storeMarketStallExpansionPart(
+        $uid,
+        string $worldType,
+        int $buildingId,
+        string $itemName,
+        ?string $itemCode,
+        int $quantity,
+        bool $isGift,
+    ): array|false {
+        $partItemData = getItemByName($itemName, 'db');
+        if (!$partItemData && is_string($itemCode) && $itemCode !== '') {
+            $partItemData = getItemByCode($itemCode);
+        }
+        if (!$partItemData || empty($partItemData['code'])) {
+            return false;
+        }
+
+        $partCode = (string) $partItemData['code'];
+        $quantity = max(1, min(999, $quantity));
+        $cashCost = !$isGift
+            ? max(0, (int) ($partItemData['cash'] ?? 0)) * $quantity
+            : 0;
+
+        $result = WorldPersistence::transaction(
+            $uid,
+            $worldType,
+            function (int $worldId) use (
+                $uid,
+                $buildingId,
+                $itemName,
+                $partCode,
+                $quantity,
+                $cashCost,
+            ): array|false {
+                $building = WorldObject::query()
+                    ->where('world_id', $worldId)
+                    ->where('object_id', $buildingId)
+                    ->where('deleted', false)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($building === null
+                    || ($building->class_name !== 'MarketStallBuilding'
+                        && $building->item_name !== 'marketstall')) {
+                    return false;
+                }
+
+                if ($cashCost > 0 && !UserResources::removeCash($uid, $cashCost)) {
+                    return false;
+                }
+
+                $parts = $building->expansion_parts;
+                if (is_string($parts)) {
+                    $decodedParts = json_decode($parts, true);
+                    $parts = is_array($decodedParts) ? $decodedParts : [];
+                }
+                if (is_object($parts)) {
+                    $parts = get_object_vars($parts);
+                }
+                if (!is_array($parts)) {
+                    $parts = [];
+                }
+
+                $currentCount = max(0, (int) ($parts[$partCode] ?? 0));
+                $parts[$partCode] = min(999, $currentCount + $quantity);
+                $building->expansion_parts = (object) $parts;
+
+                return [
+                    'id' => $buildingId,
+                    'success' => true,
+                    'storedItemName' => $itemName,
+                    'storedItemCode' => $partCode,
+                    'quantity' => $quantity,
+                ];
+            },
+        );
+
+        return $result === false ? false : $result;
     }
 
     /**
@@ -754,6 +851,45 @@ class WorldService
                 ], true);
                 $isGiftboxPlacement = $extraParams !== null
                     && (bool) ($extraParams->isGift ?? false);
+                $ugcUuid = $extraParams !== null
+                    ? ugcReadValue($extraParams, 'metadata') : null;
+                $isUGCPlacement = is_string($ugcUuid) && $ugcUuid !== ''
+                    && ($className === 'UGCDecoration');
+                $ugcItemCode = null;
+                $isUgcGiftboxPlacement = $isUGCPlacement && $isGiftboxPlacement;
+
+                if ($isUGCPlacement) {
+                    $ugcState = ugcGetStateByUuid($playerObj->getUid(), $ugcUuid);
+                    $ugcItem = is_array($ugcState)
+                        ? ugcItemRecordByCode((string) ($ugcState['I'] ?? ''))
+                        : null;
+                    if (!is_array($ugcState)
+                        || !ugcIsBlueprint($ugcItem)
+                        || ($ugcItem['name'] ?? null) !== ($plantObj->itemName ?? null)) {
+                        return [
+                            'id' => 0,
+                            'data' => ['id' => 0, 'success' => false, 'error' => 'UGC item state is not available'],
+                        ];
+                    }
+
+                    $ugcItemCode = (string) ($ugcItem['code'] ?? '');
+                    if ($isUgcGiftboxPlacement
+                        && ($ugcItemCode === '' || !giftboxHasItemMetadata(
+                            $playerObj->getUid(),
+                            $ugcItemCode,
+                            $ugcUuid,
+                        ))) {
+                        return [
+                            'id' => 0,
+                            'data' => ['id' => 0, 'success' => false, 'error' => 'UGC item is no longer in Giftbox'],
+                        ];
+                    }
+
+                    // UGCDecoration.loadObject() reads this exact top-level
+                    // field on reload. WorldObject persists it inside its
+                    // components envelope and rehydrates it on serialization.
+                    $plantObj->ugcItemUUID = $ugcUuid;
+                }
                 $isBuildingWithdrawal = $isStorageWithdrawal > 0;
                 $isInventoryWithdrawal = $isStorageWithdrawal === HOME_INVENTORY_ID;
                 $withdrawnInventoryItemCode = null;
@@ -1081,9 +1217,33 @@ class WorldService
                     }
                 }
 
+                // TCreateUGCDecoration starts placement with isGift=true but
+                // containerId=0, so the generic storage-withdrawal branch
+                // does not consume the newly issued Giftbox entry. Remove
+                // only the UUID that produced this world object, and only
+                // after setWorld succeeds so failed placements can retry.
+                if ($isUgcGiftboxPlacement && $retId > 0 && $ugcItemCode !== null) {
+                    $withdrawnUgcMetadata = withdrawGiftboxItemByMetadata(
+                        $playerObj->getUid(),
+                        $ugcItemCode,
+                        $ugcUuid,
+                    );
+                    if ($withdrawnUgcMetadata === null) {
+                        Logger::error(self::LOG, sprintf(
+                            'UGC Giftbox entry disappeared during placement: uid=%s item=%s uuid=%s objectId=%s',
+                            $playerObj->getUid(),
+                            $ugcItemCode,
+                            $ugcUuid,
+                            $retId,
+                        ));
+                    }
+                }
+
                 // Placing an item already owned in a storage box must not be
                 // processed as a new market purchase.
-                if ($isStorageWithdrawal === 0 && !$playerObj->lastPlacementWasIdempotentRetry()) {
+                if ($isStorageWithdrawal === 0
+                    && !$isUGCPlacement
+                    && !$playerObj->lastPlacementWasIdempotentRetry()) {
                     try {
                         $currency = ($extraParams !== null && isset($extraParams->currency))
                             ? (string) $extraParams->currency : null;
@@ -1762,6 +1922,40 @@ class WorldService
                     $storageTarget = isset($extraParams->target) ? (int) $extraParams->target : null;
                     $buildingId = $buildingObj->id ?? null;
                     $buildingItemName = $buildingObj->itemName ?? null;
+                    $buildingClassName = $buildingObj->className ?? null;
+
+                    // Market-stall expansion parts are not normal storage
+                    // contents.  Flash has already added them to its
+                    // FeatureExpansionState and sends this store action only
+                    // to make that progress durable.
+                    if ($buildingId
+                        && ($buildingClassName === 'MarketStallBuilding'
+                            || $buildingItemName === 'marketstall')
+                        && self::isMarketStallExpansionPart($storedItemName)) {
+                        $marketPartResult = self::storeMarketStallExpansionPart(
+                            $playerObj->getUid(),
+                            $storeWorldType,
+                            (int) $buildingId,
+                            (string) $storedItemName,
+                            is_string($storedItemCode) ? $storedItemCode : null,
+                            $numToStore,
+                            self::flashBoolean($extraParams->isGift ?? false, false),
+                        );
+
+                        if ($marketPartResult === false) {
+                            return [
+                                'id' => 0,
+                                'data' => [
+                                    'id' => 0,
+                                    'success' => false,
+                                    'error' => 'Could not store market-stall expansion part',
+                                ],
+                            ];
+                        }
+
+                        $data['data'] = $marketPartResult;
+                        break;
+                    }
 
                     $isExpansionPartItem = false;
                     $buildingItemData = null;
@@ -2443,21 +2637,28 @@ class WorldService
                 }
 
                 $buildingItemData = getItemByName($itemName, "db");
-                if (!$buildingItemData || !hasExpandFeature($buildingItemData)) {
+                $buildingClassName = (string) ($building->className ?? '');
+                $isMarketStall = $buildingClassName === 'MarketStallBuilding'
+                    || $itemName === 'marketstall';
+                if ((!$buildingItemData || !hasExpandFeature($buildingItemData)) && !$isMarketStall) {
                     $data["data"] = array("success" => false);
                     break;
                 }
 
                 $currentLevel = (int)($building->expansionLevel ?? 1);
-                $upgradeData = getExpansionUpgradeData($buildingItemData, $currentLevel);
+                $upgradeData = $isMarketStall
+                    ? null
+                    : getExpansionUpgradeData($buildingItemData, $currentLevel);
 
-                if (!$upgradeData || !isset($upgradeData->part)) {
+                if (!$isMarketStall && (!$upgradeData || !isset($upgradeData->part))) {
                     $data["data"] = array("success" => false);
                     break;
                 }
 
                 $totalCashCost = 0;
-                $parts = is_array($upgradeData->part) ? $upgradeData->part : [$upgradeData->part];
+                $parts = $isMarketStall
+                    ? []
+                    : (is_array($upgradeData->part) ? $upgradeData->part : [$upgradeData->part]);
                 $expansionParts = $building->expansionParts ?? new \stdClass();
 
                 foreach ($parts as $part) {
@@ -2492,6 +2693,10 @@ class WorldService
                     throw new \Exception("Failed to save world (complete now) for uid=$uid");
                 }
                 trackStorageBuildingExpansionProgress($uid, $buildingItemData);
+                if ($isMarketStall) {
+                    $data['metadata']['FeatureOptions']['craftingmarketstall'] =
+                        getMarketStallFeatureOptions($uid, $worldType);
+                }
                 $data["data"] = array("success" => true);
                 break;
 
@@ -2851,8 +3056,20 @@ class WorldService
 
     public static function loadOwnWorld($playerObj, $request, $market = null)
     {
-        $loadType = $request->params[0] == "" ? 'farm' : $request->params[0];
-        $travelWorld = getWorldByType($playerObj->getUid(), $loadType);
+        $requestedType = $request->params[0] ?? '';
+        $loadType = is_string($requestedType) && trim($requestedType) !== ''
+            ? trim($requestedType)
+            : 'farm';
+        $uid = $playerObj->getUid();
+
+        // TWorldLoad supplies the destination as its first argument. The
+        // client normally filters this through WorldManager.unlockedWorldTypes,
+        // but the AMF endpoint must enforce that boundary server-side too.
+        if (!in_array($loadType, getUnlockedWorlds($uid), true)) {
+            throw new \RuntimeException("World is not unlocked: {$loadType}");
+        }
+
+        $travelWorld = getWorldByType($uid, $loadType);
         $data["data"] = array(
             "user" => array(
                 "currentWorldType" => $travelWorld["type"],
@@ -2864,13 +3081,20 @@ class WorldService
 
                 ),
                 "player" => array(
-                    "featureCredits" => getFeatureCreditsForClient($playerObj->getUid())
+                    "featureCredits" => getFeatureCreditsForClient($uid)
                 )
             ),
             "world" => $travelWorld
         );
 
-        set_meta($playerObj->getUid(), 'currentWorldType', $travelWorld["type"]);
+        set_meta($uid, 'currentWorldType', $travelWorld["type"]);
+
+        // Mistletoe Lane's original quest definitions are present in the
+        // imported quest catalog, but the Flash client expects the first
+        // event bubble to be seeded when the world is entered.
+        if ($travelWorld["type"] === 'winternord') {
+            ensureWinternordStoryQuest($uid);
+        }
 
         return $data;
     }
@@ -2882,7 +3106,10 @@ class WorldService
 
         $data["data"] = array(
             "user" => array(
-                "ugcItemData" => [],
+                // VisitorManager uses this map to resolve each
+                // UGCDecoration's ugcItemUUID while loading the neighbor's
+                // world snapshot.
+                "ugcItemData" => ugcLoadItemData($neighborUid),
                 "instanceDataStore" => [],
                 "currentWorldType" => $neighborWorldType
             ),

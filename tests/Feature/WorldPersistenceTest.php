@@ -454,6 +454,93 @@ it('allows DNA-backed breeders and the base pig sow in a finished pig pen', func
         ->and($validation->invoke(null, $ordinaryPig))->toBeTrue();
 });
 
+it('atomically transfers a base pig from feature storage and persists female DNA', function (): void {
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    App\Models\Item::query()->create([
+        'name' => 'pig',
+        'code' => 'PI',
+        'data' => serialize(['name' => 'pig', 'code' => 'PI', 'type' => 'animal']),
+    ]);
+    App\Models\Item::clearCache();
+
+    $world = persistenceTestWorld();
+    $femaleDna = [
+        'N' => '',
+        'G' => 'F',
+        'B' => ['H' => ['d5', 'd6'], 'S' => ['2', '2'], 'V' => ['f', 'f']],
+        'P' => ['H' => ['9', '9'], 'S' => ['e', 'e'], 'V' => ['f', 'f'], 'T' => ['f']],
+    ];
+    $maleDna = [
+        'G' => 'M',
+        'B' => ['H' => ['30', '30'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => ['T' => ['b'], 'H' => ['40', '40'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+    ];
+
+    $source = persistenceTestObject($world, 435, [
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'animal_breeding_livestock_finished',
+        'contents' => [
+            ['itemCode' => 'PI', 'numItem' => 2],
+            ['itemCode' => 'SH', 'numItem' => 1],
+        ],
+        'components' => (object) [
+            'featuredItems' => (object) [
+                '0' => (object) ['itemCode' => 'PI', 'metaHash' => 'PI:'],
+            ],
+        ],
+    ]);
+    $pen = persistenceTestObject($world, 448, [
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'pigpenv2_finished',
+        'contents' => [
+            ['itemCode' => 'H!', 'numItem' => 1],
+        ],
+        'components' => (object) [
+            'featuredItems' => (object) [
+                '1' => (object) ['itemCode' => 'H!', 'metaHash' => 'H!:def67890'],
+            ],
+            'storageMetadata' => (object) [
+                'H!:def67890' => [json_encode($maleDna)],
+            ],
+        ],
+    ]);
+    unset($source, $pen);
+    unset($GLOBALS['_world_cache']['900001:farm']);
+
+    $result = (new Player($world->uid))->storeItem(
+        (object) ['id' => 448],
+        (object) [
+            'resource' => 0,
+            'storedItemCode' => 'PI',
+            'storedItemName' => 'pig',
+            'storedClassName' => 'Animal',
+            'cameFromLocation' => 435,
+            'numToStore' => 1,
+            'metadata' => null,
+        ],
+    );
+
+    expect($result['success'] ?? false)->toBeTrue();
+
+    $source = WorldObject::query()->where('world_id', $world->id)->where('object_id', 435)->firstOrFail();
+    $pen = WorldObject::query()->where('world_id', $world->id)->where('object_id', 448)->firstOrFail();
+    expect($source->contents)->toContain(['itemCode' => 'PI', 'numItem' => 1])
+        ->and($source->contents)->toContain(['itemCode' => 'SH', 'numItem' => 1])
+        ->and($pen->contents)->toContain(['itemCode' => 'H!', 'numItem' => 1])
+        ->and($pen->contents)->toContain(['itemCode' => 'PI', 'numItem' => 1]);
+
+    $storageMetadata = $pen->components->storageMetadata;
+    $pigEntries = [];
+    foreach (get_object_vars($storageMetadata) as $key => $entries) {
+        if (str_starts_with((string) $key, 'PI:')) {
+            $pigEntries = array_merge($pigEntries, is_array($entries) ? $entries : [$entries]);
+        }
+    }
+    expect($pigEntries)->toHaveCount(1)
+        ->and(json_decode($pigEntries[0], true)['G'] ?? null)->toBe('F');
+});
+
 it('round-trips adult mutable-animal DNA across world serialization', function (): void {
     $world = persistenceTestWorld();
     $dna = (object) [

@@ -161,6 +161,19 @@ class WorldObject extends Model
         $obj->tempId = $this->temp_id;
         $obj->instanceDataStoreKey = $this->instance_data_store_key;
         $obj->components = $this->components ?? (object)[];
+
+        // UGCDecoration.loadObject() expects the UUID at the top level. Keep
+        // the durable copy inside the generic components envelope so this
+        // feature does not require a schema column for one Flash-only field.
+        if ($className === 'UGCDecoration') {
+            $components = is_object($obj->components)
+                ? $obj->components
+                : (is_array($obj->components) ? (object) $obj->components : new \stdClass());
+            $ugcUuid = $components->ugcItemUUID ?? null;
+            if (is_string($ugcUuid) && $ugcUuid !== '') {
+                $obj->ugcItemUUID = $ugcUuid;
+            }
+        }
         $obj->plantTime = $this->plant_time;
         $obj->buildTime = $this->build_time;
         $obj->isBigPlot = $this->is_big_plot;
@@ -817,6 +830,19 @@ class WorldObject extends Model
             $obj->className ?? 'Unknown',
             $obj->state ?? null,
         );
+
+        if ($className === 'UGCDecoration' || property_exists($obj, 'ugcItemUUID')) {
+            if (is_string($components)) {
+                $components = JsonHelper::safeDecode($components, false, new \stdClass());
+            }
+            if (!is_object($components)) {
+                $components = is_array($components) ? (object) $components : new \stdClass();
+            }
+            $ugcUuid = $obj->ugcItemUUID ?? null;
+            if (is_string($ugcUuid) && $ugcUuid !== '') {
+                $components->ugcItemUUID = $ugcUuid;
+            }
+        }
 
         // FeatureBuilding reload data keeps storage fields at the object top
         // level. A subsequent world update can echo those fields without a

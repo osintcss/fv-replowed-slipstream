@@ -85,3 +85,68 @@ it('trusts a persisted metadata key when legacy DNA hashing differs', function (
     expect(breedingPrivate('validatedParents')->invoke(null, [$femaleHash, $maleHash], $components))
         ->toBe([$female, $male]);
 });
+
+it('resolves a hashless base-pig identity from persisted DNA', function (): void {
+    $female = [
+        'G' => 'F',
+        'B' => ['H' => ['d5', 'd6'], 'S' => ['2', '2'], 'V' => ['f', 'f']],
+        'P' => ['H' => ['9', '9'], 'S' => ['e', 'e'], 'V' => ['f', 'f'], 'T' => ['f']],
+    ];
+    $male = [
+        'G' => 'M',
+        'B' => ['H' => ['30', '30'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => ['T' => ['b'], 'H' => ['40', '40'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+    ];
+    $components = (object) ['storageMetadata' => (object) [
+        'PI:abc12345' => [json_encode($female)],
+        'H!:def67890' => [json_encode($male)],
+    ]];
+
+    expect(breedingPrivate('validatedParents')->invoke(null, ['PI:', 'H!:def67890'], $components))
+        ->toBe([$female, $male]);
+});
+
+it('resolves a pattern variant code to its stored breeder identity', function (): void {
+    $female = [
+        'G' => 'F',
+        'B' => ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => ['T' => ['a'], 'H' => ['20', '20'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+    ];
+    $male = [
+        'G' => 'M',
+        'B' => ['H' => ['30', '30'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => ['T' => ['racestripes'], 'H' => ['40', '40'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+    ];
+    $components = (object) ['storageMetadata' => (object) [
+        'I!:03360107' => [json_encode($female)],
+        'H!:4c3e0ae5' => [json_encode($male)],
+    ]];
+    $contents = [
+        ['itemCode' => 'I!', 'numItem' => 1],
+        ['itemCode' => 'H!', 'numItem' => 1],
+    ];
+    $breedObjects = [
+        (object) ['hash' => '2]:4c3e0ae5'],
+        (object) ['hash' => 'I!:03360107'],
+    ];
+
+    expect(breedingPrivate('validatedBreedHashes')->invoke(null, $contents, $breedObjects, $components))
+        ->toBe(['H!:4c3e0ae5', 'I!:03360107']);
+});
+
+it('does not roll bright saturation or brightness into black', function (): void {
+    mt_srand(20260905);
+    $brightPink = [
+        'H' => ['d9', 'd9'],
+        'S' => ['f', 'f'],
+        'V' => ['f', 'f'],
+    ];
+    $childColor = breedingPrivate('childColor');
+
+    for ($i = 0; $i < 100; ++$i) {
+        $child = $childColor->invoke(null, $brightPink, 240, 16, 16);
+
+        expect(hexdec($child['S'][0]))->toBeGreaterThanOrEqual(14)
+            ->and(hexdec($child['V'][0]))->toBeGreaterThanOrEqual(14);
+    }
+});

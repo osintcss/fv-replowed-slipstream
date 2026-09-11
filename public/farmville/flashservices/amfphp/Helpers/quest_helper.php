@@ -268,7 +268,8 @@ function checkAndCompleteQuest($uid, $questName) {
     return true;
 }
 
-function completeQuest($uid, $questName, $worldType = 'main') {
+function completeQuest($uid, $questName, $worldType = null) {
+    $worldType = getWorldScoreWorldType($uid, $worldType);
     $activeQuests = getActiveQuests($uid);
     $quest = getQuestByName($questName);
 
@@ -339,7 +340,8 @@ function completeQuest($uid, $questName, $worldType = 'main') {
  * sent the normal reward/share acknowledgement. This is deliberately limited
  * to states already marked complete; in-progress quests are untouched.
  */
-function finalizePendingCompletedQuests($uid, $worldType = 'main') {
+function finalizePendingCompletedQuests($uid, $worldType = null) {
+    $worldType = getWorldScoreWorldType($uid, $worldType);
     $finalized = [];
 
     foreach (getActiveQuests($uid) as $questName => $state) {
@@ -379,7 +381,8 @@ function finalizePendingCompletedQuests($uid, $worldType = 'main') {
     return $finalized;
 }
 
-function grantQuestRewards($uid, $rewards, $worldType = 'main') {
+function grantQuestRewards($uid, $rewards, $worldType = null) {
+    $worldType = getWorldScoreWorldType($uid, $worldType);
     require_once AMFPHP_ROOTPATH . "Helpers/user_resources.php";
 
     $granted = [];
@@ -435,6 +438,11 @@ function grantQuestRewards($uid, $rewards, $worldType = 'main') {
 }
 
 function addWorldScore($uid, $worldType, $amount) {
+    $worldType = getWorldScoreWorldType($uid, $worldType);
+    if ($worldType === 'farm') {
+        return;
+    }
+
     $key = "world_score_$worldType";
     $current = (int)get_meta($uid, $key) ?: 0;
     set_meta($uid, $key, (string)($current + $amount));
@@ -708,4 +716,28 @@ function ensureAvailableStoryQuest($uid) {
     }
 
     return startQuestIfEligible($uid, $available[0]['name'], $playerLevel);
+}
+
+/**
+ * Start the first Mistletoe Lane story bubble when a player enters the
+ * world. The quest definitions are imported from the original client XML,
+ * but the old client expected the front end to seed this replayable chain;
+ * without that seed the world has no visible event objectives.
+ */
+function ensureWinternordStoryQuest($uid) {
+    if (getCurrentWorldType($uid) !== 'winternord') {
+        return null;
+    }
+
+    $activeQuests = getActiveQuests($uid);
+    foreach (array_keys($activeQuests) as $questName) {
+        if (str_starts_with((string) $questName, 'xwx')) {
+            return null;
+        }
+    }
+
+    $meta = \App\Models\UserMeta::where('uid', $uid)->first(['xp']);
+    $playerLevel = $meta ? getLevelForXp((int) $meta->xp) : 1;
+
+    return startQuestIfEligible($uid, 'xwxquestsbubble-01-001', $playerLevel);
 }

@@ -34,6 +34,8 @@ require_once AMFPHP_ROOTPATH . "Functions/IrrigationService.php";
 require_once AMFPHP_ROOTPATH . "Functions/FarmExpressZMCService.php";
 require_once AMFPHP_ROOTPATH . "Functions/PurchaseUnwitherService.php";
 require_once AMFPHP_ROOTPATH . "Functions/InGameConsoleService.php";
+require_once AMFPHP_ROOTPATH . "Functions/UGCDecoService.php";
+require_once AMFPHP_ROOTPATH . "Functions/UGCItemService.php";
 
 class FlashService {
 

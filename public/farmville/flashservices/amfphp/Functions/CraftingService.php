@@ -714,16 +714,45 @@ class CraftingService
 
     public static function onShareBushels($playerObj, $request, $market)
     {
-        $data = array();
-        $data["data"] = array();
-        return $data;
+        $bushelItemCode = $request->params[0] ?? null;
+        $quantity = $request->params[1] ?? 0;
+
+        if (!is_string($bushelItemCode)
+            || !is_numeric($quantity)
+            || (int) $quantity <= 0
+            || getCraftingInventoryBucket($bushelItemCode) === null) {
+            return ["data" => ["success" => false, "rewardUrl" => ""]];
+        }
+
+        $removed = removeBushelsFromInventory(
+            $playerObj->getUid(),
+            $bushelItemCode,
+            (int) $quantity,
+        );
+
+        return [
+            "data" => [
+                "success" => $removed,
+                // The offline build does not issue social reward URLs, but the
+                // Flash transaction requires the field to exist.
+                "rewardUrl" => "",
+            ],
+        ];
     }
 
     public static function onShareNoDeductBushels($playerObj, $request, $market)
     {
-        $data = array();
-        $data["data"] = array();
-        return $data;
+        $bushelItemCode = $request->params[0] ?? null;
+        $quantity = $request->params[1] ?? 0;
+
+        if (!is_string($bushelItemCode)
+            || !is_numeric($quantity)
+            || (int) $quantity <= 0
+            || getCraftingInventoryBucket($bushelItemCode) === null) {
+            return ["data" => ["success" => false, "rewardUrl" => ""]];
+        }
+
+        return ["data" => ["success" => true, "rewardUrl" => ""]];
     }
 
     public static function onGetBushelRequestFeed($playerObj, $request, $market)

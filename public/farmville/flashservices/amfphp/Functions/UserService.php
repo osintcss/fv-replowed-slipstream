@@ -628,7 +628,29 @@ class UserService{
     }
 
     public static function updateWorldScoreLevelUp($playerObj = null, $request = null, $market = null){
-        return array("data" => array());
+        $uid = $playerObj ? $playerObj->getUid() : null;
+        $scoreUnit = $request->params[0] ?? null;
+        $worldLevel = $request->params[1] ?? null;
+        $worldScore = $request->params[2] ?? null;
+
+        if (!$uid || !is_string($scoreUnit) || $scoreUnit === '') {
+            return array("data" => array("success" => false));
+        }
+
+        // Older clients only sent the score unit.  Accept that call without
+        // overwriting saved state; patched clients also send the current
+        // score and level in this transaction.
+        $worldType = getWorldTypeForScoreUnit($scoreUnit);
+        if ($worldType && $worldType !== 'farm') {
+            if (is_numeric($worldScore)) {
+                set_meta($uid, "world_score_$worldType", (string) max(0, (int) $worldScore));
+            }
+            if (is_numeric($worldLevel)) {
+                set_meta($uid, "world_score_level_$worldType", (string) max(1, (int) $worldLevel));
+            }
+        }
+
+        return array("data" => array("success" => true));
     }
 
 

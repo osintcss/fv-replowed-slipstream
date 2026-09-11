@@ -66,4 +66,13 @@ return [
     'InGameConsoleService.adminCall' => [
         'registered_only' => true,
     ],
+    'UGCDecoService.setLastEditedBlueprint' => [
+        'registered_only' => true,
+    ],
+    'UGCDecoService.purchasePart' => [
+        'registered_only' => true,
+    ],
+    'UGCDecoService.purchaseUGCDecoration' => [
+        'registered_only' => true,
+    ],
 ];

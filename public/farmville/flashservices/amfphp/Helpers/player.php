@@ -6,6 +6,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/quest_helper.php";
 require_once AMFPHP_ROOTPATH . "Helpers/collision.php";
 require_once AMFPHP_ROOTPATH . "Helpers/capture_feature_helper.php";
 require_once AMFPHP_ROOTPATH . "Helpers/mutable_animal_completion.php";
+require_once AMFPHP_ROOTPATH . "Helpers/ugc_helper.php";
 
 use App\Models\UserMeta;
 use App\Models\UserAvatar;
@@ -661,6 +662,10 @@ class Player {
             "userLocale" => "en_US",
             "req_initUserStartTimestamp" => time(),
             "world" => $currentWorld,
+            // TInitUser loads this compact map into Global.player.ugcItemData;
+            // each UUID-backed state is required to render a customized UGC
+            // building after a refresh.
+            "ugcItemData" => ugcLoadItemData($this->uid),
             // TInitUser reads breeding skill states from the top-level
             // InitUser payload, not from postInit's legacy breedingState.
             "breedingSkillStates" => $this->getBreedingSkillStates(),
@@ -668,7 +673,7 @@ class Player {
                 "craftingItems" => getCraftingInventory($this->uid),
                 "nextCalendarDate" => 12,
                 "calendarDate" => 11,
-                "maxCapacity" => 400,
+                "maxCapacity" => getMarketStallCapacity($this->uid, $currentWorldType),
                 "currentMarketStallCount" => 1,
                 "firstCraft" => "stall",
                 "shoppingState" => null,
@@ -686,6 +691,10 @@ class Player {
                     "gold" => $row['gold'],
                     "cash" => $row['cash'],
                     "xp" => $row['xp'],
+                    // Player.loadObject only restores world-score progress
+                    // when this map is present in InitUser.  Omitting it made
+                    // every world HUD reset to level zero after a reload.
+                    "worldScores" => getWorldScoresForClient($this->uid),
                     "energyMax" => $row['energyMax'],
                     "energy" => $row['energy'],
                     "options" => $playerOptions,
@@ -803,6 +812,10 @@ class Player {
         }
 
         return [
+            // MarketStallBuilding keeps its expansion state in the crafting
+            // feature options on Flash. Rebuild that state from the durable
+            // world object so a reload cannot reset an expanded stall.
+            "craftingmarketstall" => getMarketStallFeatureOptions($this->uid, $currentWorldType),
             "world_seasons" => [
                 "farm" => 0,
                 "avalon" => 1
@@ -818,7 +831,13 @@ class Player {
             // a ring affects its placed world, not a player's fuel inventory.
             "turbo_rings" => [
                 "turbo_rings_active_worlds" => $turboRingActiveWorlds
-            ]
+            ],
+            // FeatureOptionsManager.getFeatureOption("UGCDeco", "UGCDeco")
+            // is the client-side source for UGC materials and blueprint
+            // progress.
+            "UGCDeco" => [
+                "UGCDeco" => ugcLoadFeatureData($this->uid),
+            ],
         ];
     }
 
@@ -1310,6 +1329,11 @@ class Player {
         $storedItemName = $storeParams->storedItemName ?? null;
         $requestedResourceId = (int) ($storeParams->resource ?? 0);
         $resourceId = $requestedResourceId;
+        // When Flash moves an item out of a feature building (for example a
+        // normal Pig from the Livestock building), it sends resource=0 and
+        // identifies the source container through cameFromLocation.  Keep
+        // that source identity so the transfer can be persisted atomically.
+        $sourceBuildingId = (int) ($storeParams->cameFromLocation ?? 0);
         $numToStore = (int) ($storeParams->numToStore ?? 1);
         $storedClassName = (string) ($storeParams->storedClassName ?? '');
         $storedMetadata = $storeParams->metadata ?? null;
@@ -1356,7 +1380,7 @@ class Player {
         // its later delete/reinsert used to erase the pen contents that had
         // just appeared client-side. Lock and update only the pen and the
         // animal being moved.
-        $contents = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $resourceId, $itemCode, $storedItemName, $numToStore, $storedClassName, $storedMetadata) {
+        $contents = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $resourceId, $sourceBuildingId, $itemCode, $storedItemName, $numToStore, $storedClassName, $storedMetadata) {
             $storedBuilding = WorldObject::query()
                 ->where('world_id', $worldId)
                 ->where('object_id', (int) $buildingId)
@@ -1368,6 +1392,8 @@ class Player {
                 throw new \RuntimeException("Storage building {$buildingId} no longer exists");
             }
 
+            $sourceBuilding = null;
+            $sourceContents = null;
             $resource = null;
             if ($resourceId > 0) {
                 $resource = WorldObject::query()
@@ -1412,6 +1438,57 @@ class Player {
                     && !$correctedMutableName) {
                     throw new \RuntimeException("Stored resource {$resourceId} does not match requested item");
                 }
+            } elseif ($sourceBuildingId > 0 && $sourceBuildingId !== (int) $buildingId) {
+                // A feature-to-feature transfer has no standalone world
+                // object to lock.  Lock the source container and verify its
+                // authoritative count before changing the destination.
+                $sourceBuilding = WorldObject::query()
+                    ->where('world_id', $worldId)
+                    ->where('object_id', $sourceBuildingId)
+                    ->where('deleted', false)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($sourceBuilding === null) {
+                    throw new \RuntimeException("Source storage building {$sourceBuildingId} no longer exists");
+                }
+
+                $isFeatureSource = $sourceBuilding->class_name === 'FeatureBuilding'
+                    || str_starts_with((string) $sourceBuilding->item_name, 'animal_breeding_');
+                if (!$isFeatureSource) {
+                    throw new \RuntimeException('invalid_feature_storage_source');
+                }
+
+                $sourceContents = is_array($sourceBuilding->contents) ? $sourceBuilding->contents : [];
+                $requestedQuantity = max(1, $numToStore);
+                $available = 0;
+                foreach ($sourceContents as $content) {
+                    $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                    if ($code !== (string) $itemCode) {
+                        continue;
+                    }
+
+                    $count = is_object($content)
+                        ? (int) ($content->numItem ?? 0)
+                        : (int) ($content['numItem'] ?? 0);
+                    $available += max(0, $count);
+                }
+
+                if ($available < $requestedQuantity) {
+                    throw new \RuntimeException('source_storage_item_unavailable');
+                }
+
+                // The base Pig is the one non-mutable breeding sow.  It is
+                // represented in feature contents rather than as a world
+                // object, so construct the same authoritative resource shape
+                // used by the normal-object path for validation below.
+                if ($storedItemName !== 'pig' || $storedClassName !== 'Animal') {
+                    throw new \RuntimeException('unsupported_feature_storage_source');
+                }
+
+                $resource = new WorldObject();
+                $resource->class_name = 'Animal';
+                $resource->item_name = 'pig';
             }
 
             // Generic pigs used to be accepted into the breeding pen because
@@ -1452,8 +1529,49 @@ class Player {
                 ];
             }
 
-            if ($resource !== null) {
+            if ($resource !== null && $resource->exists) {
                 $resource->update(['deleted' => true]);
+            }
+
+            if ($sourceBuilding !== null) {
+                $remainingToRemove = max(1, $numToStore);
+                foreach ($sourceContents as $key => $content) {
+                    if ($remainingToRemove <= 0) {
+                        break;
+                    }
+
+                    $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                    if ($code !== (string) $itemCode) {
+                        continue;
+                    }
+
+                    $count = is_object($content)
+                        ? (int) ($content->numItem ?? 0)
+                        : (int) ($content['numItem'] ?? 0);
+                    $remove = min(max(0, $count), $remainingToRemove);
+                    $newCount = $count - $remove;
+                    $remainingToRemove -= $remove;
+                    if ($newCount <= 0) {
+                        unset($sourceContents[$key]);
+                    } elseif (is_object($content)) {
+                        $sourceContents[$key] = (object) [
+                            'itemCode' => (string) $itemCode,
+                            'numItem' => $newCount,
+                        ];
+                    } else {
+                        $sourceContents[$key] = [
+                            'itemCode' => (string) $itemCode,
+                            'numItem' => $newCount,
+                        ];
+                    }
+                }
+                if ($remainingToRemove > 0) {
+                    throw new \RuntimeException('source_storage_item_unavailable');
+                }
+                $sourceContents = array_values($sourceContents);
+                $sourceBuilding->contents = $sourceContents;
+                $this->synchronizeFeatureStorageSlots($sourceBuilding, $sourceContents);
+                $sourceBuilding->save();
             }
 
             // Mutable animals carry their DNA in the store transaction rather
@@ -1546,6 +1664,11 @@ class Player {
             return [
                 'contents' => $contents,
                 'completion' => $completion,
+                'source' => $sourceBuilding === null ? null : [
+                    'objectId' => (int) $sourceBuilding->object_id,
+                    'contents' => $sourceContents,
+                    'components' => $sourceBuilding->components,
+                ],
             ];
         });
 
@@ -1553,6 +1676,7 @@ class Player {
             return false;
         }
 
+        $sourceUpdate = is_array($contents['source'] ?? null) ? $contents['source'] : null;
         $completion = is_array($contents['completion'] ?? null)
             ? $contents['completion'] : null;
         $contents = is_array($contents['contents'] ?? null)
@@ -1577,6 +1701,20 @@ class Player {
             }
         }
         $currWorld["objectsArray"] = array_values($currWorld["objectsArray"]);
+        if ($sourceUpdate !== null) {
+            foreach ($currWorld["objectsArray"] as $key => $obj) {
+                if ((int) ($obj->id ?? 0) !== (int) ($sourceUpdate['objectId'] ?? 0)) {
+                    continue;
+                }
+
+                $obj->contents = $sourceUpdate['contents'] ?? [];
+                if (isset($sourceUpdate['components']) && is_object($sourceUpdate['components'])) {
+                    $obj->components = $sourceUpdate['components'];
+                }
+                $currWorld["objectsArray"][$key] = $obj;
+                break;
+            }
+        }
         foreach ($currWorld["objectsArray"] as $key => $obj) {
             if ((int) ($obj->id ?? 0) === (int) $buildingId) {
                 $currWorld["objectsArray"][$key] = $building;

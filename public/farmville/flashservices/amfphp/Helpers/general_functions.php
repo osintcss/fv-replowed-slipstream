@@ -69,6 +69,147 @@
         return get_meta($uid, "currentWorldType") ?: "farm";
     }
 
+    /**
+     * Return the Flash world-score identifier for a world type.
+     *
+     * Most worlds use <worldType>Points, but the older Halloween worlds use
+     * the legacy identifiers below.  Keeping this translation server-side
+     * prevents quest rewards from being saved under a score unit that the
+     * client does not read.
+     */
+    function getWorldScoreUnitForWorldType($worldType) {
+        $worldType = is_string($worldType) ? trim($worldType) : '';
+        if ($worldType === '' || $worldType === 'farm') {
+            return null;
+        }
+
+        $worldType = getWorldTypeForScoreUnit($worldType);
+
+        $scoreUnits = [
+            'hallow' => 'spook',
+            'halloweenusa' => 'shadowPoints',
+            'htown' => 'cheer',
+        ];
+
+        return $scoreUnits[$worldType] ?? ($worldType . 'Points');
+    }
+
+    /**
+     * Normalize either a world type or a Flash score unit to its world type.
+     */
+    function getWorldTypeForScoreUnit($scoreUnit) {
+        $scoreUnit = is_string($scoreUnit) ? trim($scoreUnit) : '';
+        if ($scoreUnit === '') {
+            return null;
+        }
+
+        $scoreToWorld = [
+            'spook' => 'hallow',
+            'shadowPoints' => 'halloweenusa',
+            'cheer' => 'htown',
+        ];
+
+        if (isset($scoreToWorld[$scoreUnit])) {
+            return $scoreToWorld[$scoreUnit];
+        }
+
+        if (substr($scoreUnit, -6) === 'Points') {
+            return substr($scoreUnit, 0, -6);
+        }
+
+        return $scoreUnit;
+    }
+
+    /**
+     * Resolve the world used for a quest reward.  The old default of
+     * "main" caused every omitted world argument to save world-score rewards
+     * under world_score_main, even when the player was in Haunted Hollow or
+     * Sleepy Hollow.
+     */
+    function getWorldScoreWorldType($uid, $worldType = null) {
+        $worldType = is_string($worldType) ? trim($worldType) : '';
+        if ($worldType === '' || $worldType === 'main') {
+            $worldType = getCurrentWorldType($uid);
+        }
+
+        return getWorldTypeForScoreUnit($worldType) ?: 'farm';
+    }
+
+    /**
+     * Build the Player.worldScores object consumed by the Flash client.
+     * Scores and levels are stored separately so old score-only saves remain
+     * readable while new level-up transactions can persist the exact level.
+     */
+    function getWorldScoresForClient($uid) {
+        $scoreValues = [];
+        $levelValues = [];
+        $worldTypes = [];
+
+        $currentWorldType = getWorldScoreWorldType($uid);
+        if ($currentWorldType !== 'farm') {
+            $worldTypes[$currentWorldType] = true;
+        }
+
+        foreach (getUnlockedWorlds($uid) as $unlockedWorldType) {
+            $normalizedWorldType = getWorldScoreWorldType($uid, $unlockedWorldType);
+            if ($normalizedWorldType !== 'farm') {
+                $worldTypes[$normalizedWorldType] = true;
+            }
+        }
+
+        $metadata = PlayerMeta::where('uid', $uid)
+            ->where('meta_key', 'like', 'world_score_%')
+            ->get(['meta_key', 'meta_value']);
+
+        foreach ($metadata as $entry) {
+            $metaKey = (string) $entry->meta_key;
+            if (strpos($metaKey, 'world_score_level_') === 0) {
+                $rawWorldType = substr($metaKey, strlen('world_score_level_'));
+                $normalizedWorldType = getWorldScoreWorldType($uid, $rawWorldType);
+                if ($normalizedWorldType === 'farm') {
+                    continue;
+                }
+
+                $levelValues[$normalizedWorldType] = max(1, (int) $entry->meta_value);
+                $worldTypes[$normalizedWorldType] = true;
+                continue;
+            }
+
+            if (strpos($metaKey, 'world_score_') !== 0) {
+                continue;
+            }
+
+            $rawWorldType = substr($metaKey, strlen('world_score_'));
+            $normalizedWorldType = getWorldScoreWorldType($uid, $rawWorldType);
+            if ($normalizedWorldType === 'farm') {
+                continue;
+            }
+
+            // Prefer the canonical world key when both a legacy score-unit
+            // key (for example world_score_spook) and the corrected key exist.
+            $isCanonicalKey = ($rawWorldType === $normalizedWorldType);
+            if (!isset($scoreValues[$normalizedWorldType]) || $isCanonicalKey) {
+                $scoreValues[$normalizedWorldType] = (int) $entry->meta_value;
+            }
+            $worldTypes[$normalizedWorldType] = true;
+        }
+
+        $result = [];
+        foreach (array_keys($worldTypes) as $worldType) {
+            $scoreUnit = getWorldScoreUnitForWorldType($worldType);
+            if ($scoreUnit === null) {
+                continue;
+            }
+
+            $result[$scoreUnit] = [
+                'score' => (int) ($scoreValues[$worldType] ?? 0),
+                'level' => max(1, (int) ($levelValues[$worldType] ?? 1)),
+            ];
+        }
+
+        return $result;
+    }
+
     
     function getGiftBox($uid) {
         $raw = get_meta($uid, 'giftbox');
@@ -366,6 +507,88 @@
         
         saveGiftBox($uid, $giftbox);
         
+        return $extraData;
+    }
+
+
+    /**
+     * Check whether a Giftbox stack contains a specific per-instance value.
+     * UGC buildings use their UUID as raw extraData, while some older
+     * instance records wrap the same value in a {type: ...} object.
+     */
+    function giftboxHasItemMetadata($uid, $itemCode, string $expectedMetadata): bool {
+        $giftbox = getGiftBox($uid);
+
+        if (!isset($giftbox[$itemCode]) || (int) ($giftbox[$itemCode][0] ?? 0) <= 0) {
+            return false;
+        }
+
+        foreach (($giftbox[$itemCode][2] ?? []) as $metadata) {
+            if (is_string($metadata) && $metadata === $expectedMetadata) {
+                return true;
+            }
+            if (is_object($metadata) && ($metadata->type ?? null) === $expectedMetadata) {
+                return true;
+            }
+            if (is_array($metadata) && ($metadata['type'] ?? null) === $expectedMetadata) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+
+    /**
+     * Consume one Giftbox entry by its per-instance metadata instead of
+     * blindly shifting the first item in a same-code stack.
+     */
+    function withdrawGiftboxItemByMetadata($uid, $itemCode, string $expectedMetadata) {
+        $giftbox = getGiftBox($uid);
+
+        if (!isset($giftbox[$itemCode]) || (int) ($giftbox[$itemCode][0] ?? 0) <= 0) {
+            return null;
+        }
+
+        $metadataList = isset($giftbox[$itemCode][2]) && is_array($giftbox[$itemCode][2])
+            ? $giftbox[$itemCode][2]
+            : [];
+        $metadataIndex = null;
+        foreach ($metadataList as $index => $metadata) {
+            if ((is_string($metadata) && $metadata === $expectedMetadata)
+                || (is_object($metadata) && ($metadata->type ?? null) === $expectedMetadata)
+                || (is_array($metadata) && ($metadata['type'] ?? null) === $expectedMetadata)) {
+                $metadataIndex = $index;
+                break;
+            }
+        }
+
+        if ($metadataIndex === null) {
+            return null;
+        }
+
+        $extraData = $metadataList[$metadataIndex];
+        array_splice($metadataList, (int) $metadataIndex, 1);
+        $giftbox[$itemCode][2] = $metadataList;
+        $quantity = max(0, (int) $giftbox[$itemCode][0] - 1);
+        $giftbox[$itemCode][0] = $quantity;
+
+        if (isset($giftbox[$itemCode][1])
+            && is_array($giftbox[$itemCode][1])
+            && count($giftbox[$itemCode][1]) > 0) {
+            if (count($giftbox[$itemCode][1]) === ((int) $giftbox[$itemCode][0] + 1)
+                && $metadataIndex < count($giftbox[$itemCode][1])) {
+                array_splice($giftbox[$itemCode][1], (int) $metadataIndex, 1);
+            } else {
+                array_shift($giftbox[$itemCode][1]);
+            }
+        }
+
+        if ($quantity <= 0) {
+            unset($giftbox[$itemCode]);
+        }
+
+        saveGiftBox($uid, $giftbox);
         return $extraData;
     }
 
@@ -1005,6 +1228,8 @@
                     'itemName' => NULL,
                 ),
             );
+        } elseif ($type === 'winternord') {
+            $objects = createWinternordStarterObjects();
         } else {
             $objects = array();
         }
@@ -1038,6 +1263,136 @@
         );
     }
 
+    /**
+     * First-load layout for Mistletoe Lane (the client world is internally
+     * named `winternord`). The original NPC farm file is not part of this
+     * deployment, so create the durable starter objects at the same server
+     * boundary used by ordinary world snapshots.
+     */
+    function createWinternordStarterObjects(): array {
+        $emptyComponents = (object) [];
+        $emptyContents = [];
+        $foundingTs = (int) round(microtime(true) * 1000);
+
+        $plot = static function (int $id, int $x, int $y): object {
+            return (object) [
+                'plantTime' => 0,
+                'position' => (object) ['x' => $x, 'y' => $y, 'z' => 0],
+                'isBigPlot' => false,
+                'direction' => 0,
+                'isJumbo' => false,
+                'deleted' => false,
+                'tempId' => -1,
+                'className' => 'Plot',
+                'state' => 'fallow',
+                'instanceDataStoreKey' => null,
+                'components' => (object) [],
+                'isProduceItem' => false,
+                'id' => $id,
+                'itemName' => null,
+            ];
+        };
+
+        return [
+            $plot(1, 6, 8),
+            $plot(2, 10, 8),
+            $plot(3, 6, 12),
+            $plot(4, 10, 12),
+            (object) [
+                'plantTime' => 0,
+                'position' => (object) ['x' => 3, 'y' => 3, 'z' => 0],
+                'isBigPlot' => false,
+                'direction' => 0,
+                'isJumbo' => false,
+                'deleted' => false,
+                'tempId' => -1,
+                'className' => 'MarketStallBuilding',
+                'state' => 'built',
+                'instanceDataStoreKey' => null,
+                'components' => $emptyComponents,
+                'isProduceItem' => false,
+                'id' => 5,
+                'itemName' => 'xwx_marketstall',
+                'contents' => $emptyContents,
+            ],
+            (object) [
+                'plantTime' => 0,
+                'position' => (object) ['x' => 8, 'y' => 3, 'z' => 0],
+                'isBigPlot' => false,
+                'direction' => 0,
+                'isJumbo' => false,
+                'deleted' => false,
+                'tempId' => -1,
+                'className' => 'InventoryCellar',
+                'state' => 'built',
+                'instanceDataStoreKey' => null,
+                'components' => (object) [],
+                'isProduceItem' => false,
+                'id' => 6,
+                'itemName' => 'xwx_storage',
+                'contents' => $emptyContents,
+            ],
+            (object) [
+                'plantTime' => 0,
+                'position' => (object) ['x' => 3, 'y' => 15, 'z' => 0],
+                'isBigPlot' => false,
+                'direction' => 0,
+                'isJumbo' => false,
+                'deleted' => false,
+                'tempId' => -1,
+                'className' => 'OrchardConstructionBuilding',
+                'state' => 'construction',
+                'instanceDataStoreKey' => null,
+                'components' => (object) [],
+                'isProduceItem' => false,
+                'id' => 7,
+                'itemName' => 'xwx_orchard',
+                'contents' => $emptyContents,
+            ],
+            // The Patisserie is the functional Mistletoe Lane crafting
+            // cottage. Its xwxcrafttype recipes are already present in the
+            // bundled crafting catalog; persisting the cottage here makes
+            // those recipes available after the first world load.
+            (object) [
+                'plantTime' => 0,
+                'position' => (object) ['x' => 16, 'y' => 3, 'z' => 0],
+                'isBigPlot' => false,
+                'direction' => 0,
+                'isJumbo' => false,
+                'deleted' => false,
+                'tempId' => -1,
+                'className' => 'CraftingCottageBuilding',
+                'state' => 'built',
+                'instanceDataStoreKey' => null,
+                'components' => (object) ['foundingTS' => $foundingTs],
+                'isProduceItem' => false,
+                'id' => 8,
+                'itemName' => 'xwx_craftingcottage',
+                'contents' => $emptyContents,
+            ],
+            // The Animal Workshop starts as a normal construction building;
+            // WorldObject's construction normalizer supplies its initial
+            // sugar part from the catalog on both save and reload.
+            (object) [
+                'plantTime' => 0,
+                'position' => (object) ['x' => 27, 'y' => 3, 'z' => 0],
+                'isBigPlot' => false,
+                'direction' => 0,
+                'isJumbo' => false,
+                'deleted' => false,
+                'tempId' => -1,
+                'className' => 'AnimalBreedingPenConstructionBuilding',
+                'state' => 'construction',
+                'instanceDataStoreKey' => null,
+                'components' => $emptyComponents,
+                'isProduceItem' => false,
+                'id' => 9,
+                'itemName' => 'animal_breeding_animalworkshop',
+                'contents' => $emptyContents,
+            ],
+        ];
+    }
+
     
     function getTileSetForWorld($worldType) {
         static $completeEntries = array(
@@ -1061,6 +1416,7 @@
             "glen"              => "glen_theme",
             "atlantis"          => "atlantis_theme",
             "hallow"            => "hallow_theme",
+            "winternord"        => "winternord_theme",
         );
 
         if (isset($completeEntries[$worldType])) {

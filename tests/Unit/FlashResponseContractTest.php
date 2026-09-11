@@ -22,6 +22,7 @@ final class FlashResponseContractTest extends TestCase
         require_once self::$amfRoot.'Functions/PurchaseUnwitherService.php';
         require_once self::$amfRoot.'Functions/CraftingService.php';
         require_once self::$amfRoot.'Functions/InGameConsoleService.php';
+        require_once self::$amfRoot.'Functions/UGCDecoService.php';
     }
 
     public function test_documented_flash_response_contracts_are_callable_and_well_shaped(): void

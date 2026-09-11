@@ -149,24 +149,33 @@ class FarmService
         $isGift = is_bool($isGiftValue)
             ? $isGiftValue
             : !in_array(strtolower(trim((string) $isGiftValue)), ['', '0', 'false', 'off', 'no'], true);
-        if (!$itemName) return $data;
 
         $uid = $playerObj->getUid();
+        if (!is_string($itemName) || trim($itemName) === '') {
+            return self::buyFuelError($uid, $itemName, 'invalid_request', 'Fuel item is missing.');
+        }
+
+        $itemName = trim($itemName);
         $item = getItemByName($itemName, "db");
-        if (!$item) return $data;
+        if (!$item) {
+            return self::buyFuelError($uid, $itemName, 'item_unavailable', 'Fuel item is unavailable.');
+        }
 
         $count = (float) ($item["count"] ?? 0);
-        if ($count <= 0) return $data;
+        if (!is_finite($count) || $count <= 0) {
+            return self::buyFuelError($uid, $itemName, 'invalid_item', 'Fuel item has an invalid amount.');
+        }
 
         try {
             if ($isGift) {
                 $itemCode = $item['code'] ?? null;
                 if (!is_string($itemCode) || $itemCode === '') {
-                    return [
-                        'data' => ['success' => false],
-                        'errorType' => 1,
-                        'errorData' => 'Fuel item has no storage code.',
-                    ];
+                    return self::buyFuelError(
+                        $uid,
+                        $itemName,
+                        'invalid_item',
+                        'Fuel item has no storage code.'
+                    );
                 }
 
                 // Giftbox fuel is removed and energy is granted in one
@@ -200,11 +209,12 @@ class FarmService
                 });
 
                 if ($consumed === false) {
-                    return [
-                        'data' => ['success' => false],
-                        'errorType' => 1,
-                        'errorData' => 'Fuel gift is no longer available.',
-                    ];
+                    return self::buyFuelError(
+                        $uid,
+                        $itemName,
+                        'gift_unavailable',
+                        'Fuel gift is no longer available.'
+                    );
                 }
 
                 $data["data"] = [
@@ -216,36 +226,104 @@ class FarmService
 
             $cashCost = (int) ($item["cash"] ?? 0);
             $goldCost = (int) ($item["cost"] ?? 0);
-            if ($cashCost > 0) {
-                if (!UserResources::removeCash($uid, $cashCost)) return $data;
-            } elseif ($goldCost > 0) {
-                if (!UserResources::removeGold($uid, $goldCost)) return $data;
+
+            // Charge and grant energy under the same row lock. If the energy
+            // update fails, the transaction rolls the currency deduction back.
+            $purchase = \DB::transaction(function () use ($uid, $cashCost, $goldCost, $count) {
+                $userMeta = UserMeta::query()
+                    ->where('uid', $uid)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$userMeta) {
+                    return ['status' => 'missing_player'];
+                }
+
+                if ($cashCost > 0 && !UserResources::removeCash($uid, $cashCost)) {
+                    return ['status' => 'insufficient_cash'];
+                }
+
+                if ($cashCost <= 0 && $goldCost > 0 && !UserResources::removeGold($uid, $goldCost)) {
+                    return ['status' => 'insufficient_gold'];
+                }
+
+                $energyAdded = (int) floor($count * max(0, (int) $userMeta->energyMax));
+                $updated = UserMeta::query()
+                    ->where('uid', $uid)
+                    ->update([
+                        'energy' => \DB::raw("LEAST(energy + {$energyAdded}, 2147483647)"),
+                    ]);
+
+                if ($updated < 1) {
+                    throw new \RuntimeException('Player energy record is unavailable.');
+                }
+
+                UserMeta::invalidateCache($uid);
+                return ['status' => 'success', 'fuel_added' => $energyAdded];
+            });
+
+            if ($purchase['status'] === 'insufficient_cash') {
+                return self::buyFuelError(
+                    $uid,
+                    $itemName,
+                    'insufficient_cash',
+                    'Not enough Farm Cash for fuel.',
+                    ['currency' => 'cash', 'cost' => $cashCost]
+                );
             }
 
-            $updated = UserMeta::where('uid', $uid)
-                ->update([
-                    'energy' => \DB::raw("LEAST(energy + FLOOR({$count} * energyMax), 2147483647)")
-                ]);
-            if ($updated < 1) {
-                return [
-                    'data' => ['success' => false],
-                    'errorType' => 1,
-                    'errorData' => 'Player energy record is unavailable.',
-                ];
+            if ($purchase['status'] === 'insufficient_gold') {
+                return self::buyFuelError(
+                    $uid,
+                    $itemName,
+                    'insufficient_gold',
+                    'Not enough coins for fuel.',
+                    ['currency' => 'gold', 'cost' => $goldCost]
+                );
             }
-            UserMeta::invalidateCache($uid);
+
+            if ($purchase['status'] === 'missing_player') {
+                return self::buyFuelError(
+                    $uid,
+                    $itemName,
+                    'missing_player',
+                    'Player energy record is unavailable.'
+                );
+            }
+
+            Logger::debug('FarmService', 'buyFuel completed', [
+                'uid' => (string) $uid,
+                'item' => $itemName,
+                'currency' => $cashCost > 0 ? 'cash' : ($goldCost > 0 ? 'gold' : 'free'),
+                'cost' => $cashCost > 0 ? $cashCost : $goldCost,
+                'fuel_added' => $purchase['fuel_added'] ?? null,
+            ]);
         } catch (\Throwable $e) {
             Logger::error('FarmService', "buyFuel failed: uid={$uid}, item={$itemName}, reason={$e->getMessage()}");
-            return [
-                'data' => ['success' => false],
-                'errorType' => 1,
-                'errorData' => 'Fuel could not be applied.',
-            ];
+            return self::buyFuelError($uid, $itemName, 'transaction_failed', 'Fuel could not be applied.');
         }
 
         $data["data"] = ['success' => true];
 
         return $data;
+    }
+
+    private static function buyFuelError($uid, $itemName, string $code, string $message, array $context = []): array
+    {
+        $details = array_merge([
+            'uid' => (string) $uid,
+            'item' => is_scalar($itemName) ? (string) $itemName : null,
+            'reason' => $code,
+        ], $context);
+        Logger::warning('FarmService', 'buyFuel rejected', $details);
+
+        return [
+            // Keep the data envelope for older Flash clients while exposing a
+            // machine-readable reason to newer clients and diagnostics.
+            'data' => ['success' => false, 'error' => $code],
+            'errorType' => 1,
+            'errorData' => $message,
+        ];
     }
 
     

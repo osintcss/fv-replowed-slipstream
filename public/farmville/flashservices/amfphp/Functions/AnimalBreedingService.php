@@ -5,6 +5,7 @@ require_once AMFPHP_ROOTPATH . 'Helpers/general_functions.php';
 require_once AMFPHP_ROOTPATH . 'Helpers/user_resources.php';
 
 use App\Models\WorldObject;
+use App\Models\PlayerMeta;
 use App\Support\WorldPersistence;
 
 /**
@@ -54,7 +55,8 @@ class AnimalBreedingService
                     throw new \RuntimeException('invalid_building');
                 }
 
-                $hashes = self::validatedBreedHashes($building->contents, $breedObjects);
+                $components = is_object($building->components) ? $building->components : new \stdClass();
+                $hashes = self::validatedBreedHashes($building->contents, $breedObjects, $components);
                 if ($hashes === null) {
                     throw new \RuntimeException('invalid_animals');
                 }
@@ -62,7 +64,6 @@ class AnimalBreedingService
                 $featureName = (string) $building->item_name;
                 $config = self::breedingConfig($featureName);
 
-                $components = is_object($building->components) ? $building->components : new \stdClass();
                 $parents = self::validatedParents($hashes, $components);
                 if ($parents === null) {
                     throw new \RuntimeException('invalid_parent_pair');
@@ -231,6 +232,86 @@ class AnimalBreedingService
         return ['data' => ['success' => $renamed, 'name' => $name]];
     }
 
+    /**
+     * Relinquish one mutable breeding reward from Giftbox. The Flash client
+     * identifies its selection with the catalog code and the DNA-derived hash,
+     * so never remove a whole stack or a different piglet with the same code.
+     */
+    public static function onGiveUpForAdoption($playerObj, $request, $market = null): array
+    {
+        $itemCode = is_string($request->params[0] ?? null) ? $request->params[0] : '';
+        $hash = is_string($request->params[1] ?? null) ? $request->params[1] : '';
+        if ($itemCode === '' || $hash === '') {
+            return self::failure('invalid_adoption_request');
+        }
+
+        $uid = $playerObj->getUid();
+        $removed = \DB::transaction(static function () use ($uid, $itemCode, $hash): bool {
+            $giftboxMeta = PlayerMeta::query()
+                ->where('uid', $uid)
+                ->where('meta_key', 'giftbox')
+                ->lockForUpdate()
+                ->first();
+            if ($giftboxMeta === null) {
+                return false;
+            }
+
+            $giftbox = @unserialize($giftboxMeta->meta_value, ['allowed_classes' => false]);
+            $entry = is_array($giftbox) ? ($giftbox[$itemCode] ?? null) : null;
+            $quantity = is_array($entry) ? max(0, (int) ($entry[0] ?? 0)) : 0;
+            $metadata = is_array($entry[2] ?? null) ? $entry[2] : null;
+            if ($quantity < 1 || $metadata === null) {
+                return false;
+            }
+
+            $metadataIndex = null;
+            foreach ($metadata as $index => $mutableState) {
+                $dna = is_string($mutableState) ? json_decode($mutableState, true) : null;
+                if (is_array($dna) && hash_equals(self::mutableStateHash($dna), $hash)) {
+                    $metadataIndex = $index;
+                    break;
+                }
+            }
+            if ($metadataIndex === null) {
+                return false;
+            }
+
+            // The sender and metadata arrays describe individual members of
+            // the same stack. Remove the same member from both where the
+            // sender list is fully aligned; otherwise retain legacy sender
+            // data but never leave it longer than the remaining quantity.
+            array_splice($entry[2], $metadataIndex, 1);
+            if (is_array($entry[1] ?? null)) {
+                if (count($entry[1]) === $quantity) {
+                    array_splice($entry[1], $metadataIndex, 1);
+                }
+                while (count($entry[1]) > $quantity - 1) {
+                    array_shift($entry[1]);
+                }
+            }
+
+            --$quantity;
+            if ($quantity <= 0) {
+                unset($giftbox[$itemCode]);
+            } else {
+                $entry[0] = $quantity;
+                $entry[2] = array_values($entry[2]);
+                if (is_array($entry[1] ?? null)) {
+                    $entry[1] = array_values($entry[1]);
+                }
+                $giftbox[$itemCode] = $entry;
+            }
+
+            $giftboxMeta->meta_value = serialize($giftbox);
+            $giftboxMeta->save();
+            PlayerMeta::clearCache($uid, 'giftbox');
+
+            return true;
+        });
+
+        return ['data' => ['success' => $removed, 'itemCode' => $itemCode, 'hash' => $hash]];
+    }
+
     private static function finishBreeding($playerObj, $request, bool $finishNow): array
     {
         $requested = $request->params[0] ?? null;
@@ -331,12 +412,16 @@ class AnimalBreedingService
         if (strlen($history) >= 3 && count(array_unique(str_split(substr($history, -3)))) === 1) {
             $gender = $history[-1] === 'F' ? 'M' : 'F';
         }
-        $base = self::childColor($parents[array_rand($parents)]['B'], 240, 15, 15);
+        // Hue is circular (0..239), while saturation and brightness use the
+        // complete hexadecimal range 0..f.  The latter must not wrap: a
+        // bright parent at f would otherwise roll over to 0 and make an
+        // otherwise pink offspring render black.
+        $base = self::childColor($parents[array_rand($parents)]['B'], 240, 16, 16);
         $samePattern = $parents[0]['P']['T'][0] === $parents[1]['P']['T'][0];
         $inherit = !empty($session->patternGuarantee)
             || mt_rand() / mt_getrandmax() <= $config['patternChance'] * ($samePattern ? $config['samePatternMultiplier'] : 1);
         $patternParent = $parents[array_rand($parents)]['P'];
-        $pattern = self::childColor($patternParent, 240, 15, 15);
+        $pattern = self::childColor($patternParent, 240, 16, 16);
         $maleParent = $parents[0]['G'] === 'M' ? $parents[0] : $parents[1];
         $pattern['T'] = [$inherit ? $maleParent['P']['T'][0] : $config['defaultPatternCode']];
         $dna = [
@@ -366,6 +451,20 @@ class AnimalBreedingService
             $candidateEntries = array_merge($candidateEntries, $storageMetadata->{$baseKey});
         }
         $hashSuffix = str_contains($hash, ':') ? (string) explode(':', $hash, 2)[1] : '';
+        // Feature transfers can identify a base catalog animal by its item
+        // code only (for example `PI:`).  Its DNA is persisted under the
+        // concrete metadata key (`PI:<hash>`), so resolve all records with
+        // that prefix when no instance hash was supplied.
+        if ($hashSuffix === '' && $baseKey !== ':') {
+            foreach (get_object_vars($storageMetadata) as $metadataKey => $metadata) {
+                if ($metadataKey === $baseKey || !str_starts_with((string) $metadataKey, $baseKey)) {
+                    continue;
+                }
+                if (is_array($metadata)) {
+                    $candidateEntries = array_merge($candidateEntries, $metadata);
+                }
+            }
+        }
         foreach ($candidateEntries as $metadata) {
             if (is_object($metadata) && isset($metadata->type) && is_string($metadata->type)) {
                 $metadata = $metadata->type;
@@ -379,7 +478,7 @@ class AnimalBreedingService
                 && ($hasExactMetadataKey || self::mutableStateHash($decoded) === $hashSuffix)) {
                 return $decoded;
             }
-            if (is_array($decoded) && !str_contains($hash, ':')) {
+            if (is_array($decoded) && ($hashSuffix === '' || !str_contains($hash, ':'))) {
                 return $decoded;
             }
         }
@@ -479,9 +578,16 @@ class AnimalBreedingService
     private static function childColor(array $parent, int $hueRange, int $satRange, int $intRange): array
     {
         $out = [];
-        foreach (['H' => [$hueRange, 15], 'S' => [$satRange, 1], 'V' => [$intRange, 1]] as $key => [$range, $variance]) {
+        foreach (['H' => [$hueRange, 15, true], 'S' => [$satRange, 1, false], 'V' => [$intRange, 1, false]] as $key => [$range, $variance, $wraps]) {
             $value = hexdec((string) ($parent[$key][0] ?? '0'));
-            $value = ($value + mt_rand(-$variance, $variance) + $range) % $range;
+            $value += mt_rand(-$variance, $variance);
+
+            // Colors cycle through hue, but S/V are brightness channels.
+            // Clamp them instead of cycling bright f values back to black 0.
+            $value = $wraps
+                ? ($value + $range) % $range
+                : max(0, min($range - 1, $value));
+
             $out[$key] = [dechex($value), dechex($value)];
         }
         return $out;
@@ -660,7 +766,7 @@ class AnimalBreedingService
         return in_array($itemName, ['pigpenv2_finished', 'xuk_sheep_pen_finished'], true);
     }
 
-    private static function validatedBreedHashes($contents, array $breedObjects): ?array
+    private static function validatedBreedHashes($contents, array $breedObjects, \stdClass $components): ?array
     {
         if (!is_array($contents)) {
             return null;
@@ -677,6 +783,7 @@ class AnimalBreedingService
         $hashes = [];
         foreach ($breedObjects as $breedObject) {
             $hash = is_object($breedObject) ? ($breedObject->hash ?? null) : null;
+            $hash = self::canonicalStoredBreedHash($hash, $components, $available);
             $code = is_string($hash) ? explode(':', $hash, 2)[0] : '';
             if ($code === '' || ($available[$code] ?? 0) < 1) {
                 return null;
@@ -686,6 +793,42 @@ class AnimalBreedingService
         }
 
         return count(array_unique($hashes)) === 2 ? $hashes : null;
+    }
+
+    /**
+     * Flash can submit a pattern variant's catalog code even though storage
+     * correctly compacted the same mutable animal under its generic breeder
+     * code. The DNA hash is the authoritative per-animal identity, so map a
+     * missing client code only when it uniquely identifies a stored record.
+     */
+    private static function canonicalStoredBreedHash($hash, \stdClass $components, array $available): ?string
+    {
+        if (!is_string($hash) || $hash === '' || !str_contains($hash, ':')) {
+            return is_string($hash) ? $hash : null;
+        }
+
+        [$requestedCode, $hashSuffix] = array_pad(explode(':', $hash, 2), 2, '');
+        if ($requestedCode === '' || $hashSuffix === '' || ($available[$requestedCode] ?? 0) > 0) {
+            return $hash;
+        }
+
+        $storageMetadata = isset($components->storageMetadata) && is_object($components->storageMetadata)
+            ? $components->storageMetadata : new \stdClass();
+        $matches = [];
+        foreach (get_object_vars($storageMetadata) as $metadataKey => $entries) {
+            [$storedCode, $storedSuffix] = array_pad(explode(':', (string) $metadataKey, 2), 2, '');
+            if ($storedCode === '' || $storedSuffix !== $hashSuffix
+                || ($available[$storedCode] ?? 0) < 1) {
+                continue;
+            }
+            if (!is_array($entries) || $entries === []) {
+                continue;
+            }
+            $matches[] = $storedCode . ':' . $storedSuffix;
+        }
+
+        $matches = array_values(array_unique($matches));
+        return count($matches) === 1 ? $matches[0] : $hash;
     }
 
     private static function failure(string $error): array
