@@ -17,7 +17,17 @@ class AdminPlayerImportController extends Controller
     public function import(Request $request): RedirectResponse
     {
         $request->validate([
-            'save_file' => ['required', 'file', 'mimes:json,txt', 'max:51200'],
+            // This upload is parsed in memory and never stored. Require both
+            // a safe extension and a JSON/text content type so an executable
+            // file cannot be disguised as an import.
+            'save_file' => [
+                'required',
+                'file',
+                'extensions:json,txt',
+                'mimes:json,txt',
+                'mimetypes:application/json,text/plain',
+                'max:51200',
+            ],
             'replace_existing_save' => ['accepted'],
         ]);
 
