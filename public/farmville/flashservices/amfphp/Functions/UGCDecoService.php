@@ -180,13 +180,15 @@ class UGCDecoService
         }
 
         return [
-            'data' => [
-                'ugcItemState' => $savedState,
-                'xpGain' => $xpGain,
-                'featureData' => $featureData,
-                'storageData' => [
-                    GIFTBOX_STORAGE_KEY => buildGiftBoxStorageData($uid),
-                ],
+            // TCreateUGCDecoration reads these fields directly from the
+            // transaction result.  Nesting them under `data` makes the
+            // server-side purchase succeed while leaving the Flash client
+            // stuck on "Creating" with no item to place.
+            'ugcItemState' => $savedState,
+            'xpGain' => $xpGain,
+            'featureData' => $featureData,
+            'storageData' => [
+                GIFTBOX_STORAGE_KEY => buildGiftBoxStorageData($uid),
             ],
             'metadata' => [
                 'FeatureOptions' => [

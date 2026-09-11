@@ -119,16 +119,18 @@ it('creates a predefined UGC building state and consumes its materials', functio
         ugcTestRequest([(object) ['I' => '7DV'], 0]),
     );
 
-    $state = $response['data']['ugcItemState'];
+    expect($response)->not->toHaveKey('data');
+
+    $state = $response['ugcItemState'];
     expect($state['I'])->toBe('7DV')
         ->and($state['N'])->toBe('xhw_ugc_deco_spookyshack')
         ->and($state['U'])->toMatch('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i')
-        ->and($response['data']['featureData']['ugc_materials']['xhw_ugc_deco_darkwood'])->toBe(0)
-        ->and($response['data']['featureData']['ugc_materials']['xhw_ugc_deco_slime'])->toBe(1)
-        ->and($response['data']['featureData']['ugc_materials']['xhw_ugc_deco_decorator'])->toBe(0)
-        ->and($response['data']['featureData']['ugc_completed']['xhw_ugc_deco_spookyshack'])->toBeTrue()
-        ->and($response['data']['storageData'][GIFTBOX_STORAGE_KEY]['7DV'][0])->toBe(1)
-        ->and($response['data']['storageData'][GIFTBOX_STORAGE_KEY]['7DV'][2][0])->toBe($state['U'])
+        ->and($response['featureData']['ugc_materials']['xhw_ugc_deco_darkwood'])->toBe(0)
+        ->and($response['featureData']['ugc_materials']['xhw_ugc_deco_slime'])->toBe(1)
+        ->and($response['featureData']['ugc_materials']['xhw_ugc_deco_decorator'])->toBe(0)
+        ->and($response['featureData']['ugc_completed']['xhw_ugc_deco_spookyshack'])->toBeTrue()
+        ->and($response['storageData'][GIFTBOX_STORAGE_KEY]['7DV'][0])->toBe(1)
+        ->and($response['storageData'][GIFTBOX_STORAGE_KEY]['7DV'][2][0])->toBe($state['U'])
         ->and(getGiftBox($uid)['7DV'][2][0])->toBe($state['U'])
         ->and(ugcGetStateByUuid($uid, $state['U'])['I'])->toBe('7DV');
 });
