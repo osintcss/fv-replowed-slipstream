@@ -431,7 +431,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
             margin-bottom: 20px;
             font-size: 14px;
         }
-        .world-shop-dialog .player-cash {
+        .world-shop-dialog .player-progress {
             color: #fbbf24;
             text-align: center;
             margin-bottom: 15px;
@@ -471,7 +471,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
             color: #10b981;
             font-size: 11px;
         }
-        .btn-buy-world {
+        .btn-claim-world {
             background: linear-gradient(180deg, #8b5cf6, #7c3aed);
             color: white;
             border: none;
@@ -482,12 +482,31 @@ $baseUrl = rtrim((string) config('app.url'), '/');
             font-weight: 600;
             width: 100%;
         }
-        .btn-buy-world:hover {
+        .btn-claim-world:hover {
             background: linear-gradient(180deg, #a78bfa, #8b5cf6);
         }
-        .btn-buy-world:disabled {
-            background: #4b5563;
-            cursor: not-allowed;
+        .world-locked {
+            color: #9ca3af;
+            font-size: 11px;
+            min-height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .btn-travel-world {
+            background: linear-gradient(180deg, #10b981, #059669);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 600;
+            width: 100%;
+            margin-top: 8px;
+        }
+        .btn-travel-world:hover {
+            background: linear-gradient(180deg, #34d399, #10b981);
         }
         .btn-close-shop {
             background: linear-gradient(180deg, #6b7280, #4b5563);
@@ -598,8 +617,8 @@ $baseUrl = rtrim((string) config('app.url'), '/');
     <div id="worldShopModal" class="world-shop-modal">
         <div class="world-shop-dialog">
             <h2>🌍 World Shop</h2>
-            <p class="shop-subtitle">Unlock new worlds for 200 Farm Cash each!</p>
-            <p class="player-cash">Your Cash: <img src="/farmville/webassets/images/v854054/webassets/images/Cash_Coins/Cash_Small.png" alt="Cash" style="height: 18px; vertical-align: middle;"> <span id="shopPlayerCash">0</span></p>
+            <p class="shop-subtitle">Reach level 5 to choose a world, then choose one more at every level.</p>
+            <p class="player-progress">Level <span id="shopPlayerLevel">1</span> · World choices available: <span id="shopAvailableClaims">0</span></p>
             <div id="worldGrid" class="world-grid">
                 <!-- Worlds will be populated by JavaScript -->
             </div>
@@ -870,7 +889,6 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             }
                         }
 
-                        const WORLD_SHOP_PRICE = 200;
                         const PURCHASABLE_WORLDS = [
                             { id: 'england', name: 'England' },
                             { id: 'fisherman', name: 'Lighthouse Cove' },
@@ -890,11 +908,16 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             { id: 'village', name: 'Village' },
                             { id: 'glen', name: 'Glen' },
                             { id: 'atlantis', name: 'Atlantis' },
-                            { id: 'hallow', name: 'Hallow' }
+                            { id: 'hallow', name: 'Hallow' },
+                            { id: 'winternord', name: 'Mistletoe Lane' }
                         ];
 
                         let playerUnlockedWorlds = [];
-                        let playerCash = 0;
+                        let playerLevel = 1;
+                        let availableWorldClaims = 0;
+                        let nextWorldUnlockLevel = 5;
+                        let levelUnlocks = {};
+                        let playerCurrentWorld = @json($currentWorldType ?? 'farm');
 
                         function openWorldShop() {
                             fetch('/api/world-shop/status', {
@@ -907,7 +930,11 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             .then(response => response.json())
                             .then(data => {
                                 playerUnlockedWorlds = data.unlockedWorlds || [];
-                                playerCash = data.cash || 0;
+                                playerLevel = data.playerLevel || 1;
+                                availableWorldClaims = data.availableClaims || 0;
+                                nextWorldUnlockLevel = data.nextUnlockLevel || 5;
+                                levelUnlocks = data.levelUnlocks || {};
+                                playerCurrentWorld = data.currentWorldType || 'farm';
                                 renderWorldShop();
                                 document.getElementById('worldShopModal').style.display = 'flex';
                             })
@@ -923,42 +950,43 @@ $baseUrl = rtrim((string) config('app.url'), '/');
 
                         function renderWorldShop() {
                             const grid = document.getElementById('worldGrid');
-                            document.getElementById('shopPlayerCash').textContent = playerCash;
+                            document.getElementById('shopPlayerLevel').textContent = playerLevel;
+                            document.getElementById('shopAvailableClaims').textContent = availableWorldClaims;
 
                             let html = '';
                             for (const world of PURCHASABLE_WORLDS) {
                                 const isUnlocked = playerUnlockedWorlds.includes(world.id);
-                                const canAfford = playerCash >= WORLD_SHOP_PRICE;
+                                const isCurrent = playerCurrentWorld === world.id;
+                                const travelAction = isUnlocked && !isCurrent
+                                    ? `<button class="btn-travel-world" onclick="travelToWorld('${world.id}')">Travel</button>`
+                                    : (isCurrent ? '<div class="world-status">Current world</div>' : '');
+                                const worldAction = !isUnlocked && availableWorldClaims > 0
+                                    ? `<button class="btn-claim-world" onclick="claimWorld('${world.id}')">Choose this world</button>`
+                                    : (!isUnlocked ? `<div class="world-locked">Reach level ${nextWorldUnlockLevel} for another choice</div>` : '');
 
                                 html += `
                                     <div class="world-card ${isUnlocked ? 'unlocked' : ''}">
                                         <div class="world-name">${world.name}</div>
                                         ${isUnlocked
                                             ? '<div class="world-status">✓ Unlocked</div>'
-                                            : `<button class="btn-buy-world" onclick="buyWorld('${world.id}')" ${!canAfford ? 'disabled' : ''}>
-                                                <img src="/farmville/webassets/images/v854054/webassets/images/Cash_Coins/Cash_Small.png" alt="Cash" style="height: 16px; vertical-align: middle;"> ${WORLD_SHOP_PRICE} Cash
-                                               </button>`
+                                            : worldAction
                                         }
+                                        ${travelAction}
                                     </div>
                                 `;
                             }
                             grid.innerHTML = html;
                         }
 
-                        function buyWorld(worldId) {
-                            if (playerCash < WORLD_SHOP_PRICE) {
-                                alert('Not enough Farm Cash!');
-                                return;
-                            }
-
+                        function travelToWorld(worldId) {
                             const world = PURCHASABLE_WORLDS.find(w => w.id === worldId);
                             const worldName = world ? world.name : worldId;
 
-                            if (!confirm(`Are you sure you want to purchase "${worldName}" for ${WORLD_SHOP_PRICE} Farm Cash?`)) {
+                            if (!confirm(`Travel to "${worldName}"? The game will reload in that world.`)) {
                                 return;
                             }
 
-                            fetch('/api/world-shop/purchase', {
+                            fetch('/api/world-shop/travel', {
                                 method: 'POST',
                                 headers: {
                                     'Content-Type': 'application/json',
@@ -969,15 +997,54 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             .then(response => response.json())
                             .then(data => {
                                 if (data.success) {
-                                    alert(`Successfully unlocked "${worldName}"! The page will now reload.`);
+                                    closeWorldShop();
                                     window.location.reload();
                                 } else {
-                                    alert(data.message || 'Failed to purchase world.');
+                                    alert(data.message || 'Unable to travel to that world.');
                                 }
                             })
                             .catch(error => {
-                                console.error('Error purchasing world:', error);
-                                alert('Error purchasing world. Please try again.');
+                                console.error('Error traveling to world:', error);
+                                alert('Error traveling to world. Please try again.');
+                            });
+                        }
+
+                        function claimWorld(worldId) {
+                            const world = PURCHASABLE_WORLDS.find(w => w.id === worldId);
+                            const worldName = world ? world.name : worldId;
+
+                            if (availableWorldClaims < 1) {
+                                alert(`Reach level ${nextWorldUnlockLevel} to earn another world choice.`);
+                                return;
+                            }
+
+                            if (!confirm(`Choose "${worldName}" as one of your world collection farms?`)) {
+                                return;
+                            }
+
+                            fetch('/api/world-shop/claim', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                                },
+                                body: JSON.stringify({ worldId: worldId })
+                            })
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.success) {
+                                    alert(`"${worldName}" was added to your collection at level ${data.unlockLevel}.`);
+                                    playerUnlockedWorlds.push(worldId);
+                                    availableWorldClaims = data.remainingClaims || 0;
+                                    levelUnlocks = data.levelUnlocks || levelUnlocks;
+                                    renderWorldShop();
+                                } else {
+                                    alert(data.message || 'Failed to choose world.');
+                                }
+                            })
+                            .catch(error => {
+                                console.error('Error choosing world:', error);
+                                alert('Error choosing world. Please try again.');
                             });
                         }
 
@@ -1078,8 +1145,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                         }
 
                         function getCurrentWorldType() {
-                            var currentWorldType = "farm";
-                            return currentWorldType;
+                            return @json($currentWorldType ?? 'farm');
                         }
 
                         let allPotentialNeighbors = [];
@@ -1600,11 +1666,12 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "flashRevision": "855037.855026",
                             "phpRevision": "855038",
                             "configRevision": "",
-                            "xml_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v3/",
+                            "xml_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v4/",
+                            "items_opt_amf": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v4/items_opt.amf",
                             "master_assethash_url": "<?= $baseUrl ?>/farmville/assethash/v9/",
                             "masterysigns_amf_url": "<?= $baseUrl ?>/farmville/masterysigns/v1/",
                             "ITEMS_AMF_BUILD_TIME_REDUCTION": false,
-                            "swfLocation": "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FarmGame-10-fuelrefill1.swf?restore_original=1",
+                            "swfLocation": "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FarmGame-10-witcherhut1.swf?restore_original=1",
                             "parts_count": 3,
                             "NO_FUEL_DAY_START_TIME": "1606723200",
                             "NO_FUEL_DAY_END_TIME": "1607328000",
@@ -1612,7 +1679,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "OPS_JS_GET_FRIENDS_PERMISSION": false,
                             "game_config_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/gameSettings.xml.gz",
                             "gameSettingsCMS_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/gameSettingsCMS.xml.gz",
-                            "items_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-expansions-v1/items.xml.gz",
+                            "items_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-expansions-v2/items.xml.gz",
                             "IS_MASTERY_CLEANED": true,
                             "fgsm_amf_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038/fgsm.amf.gz",
                             "FGSM_AMF_ENABLED": false,
@@ -2083,7 +2150,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                                         <div style="background: rgba(0,0,0,0.4); border-radius: 20px; padding: 40px 60px; max-width: 500px;">
                                             <h1 style="font-size: 32px; margin-bottom: 20px; text-shadow: 2px 2px 4px rgba(0,0,0,0.5);">Flash Player Not Detected</h1>
                                             <p style="font-size: 18px; margin-bottom: 30px; line-height: 1.6;">FV Classic requires Flash Player to run. The standalone launcher is available on GitHub Releases.</p>
-                                            <a href="https://github.com/osintcss/fv-launcher/releases/tag/v1.0.1" target="_blank" rel="noopener noreferrer" style="display: inline-block; background: #4a7c23; color: white; padding: 15px 40px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 18px; border: 2px solid #fff; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.05)';" onmouseout="this.style.transform='scale(1)';">View Launcher Downloads on GitHub</a>
+                                            <a href="https://github.com/osintcss/fv-launcher/releases/latest" target="_blank" rel="noopener noreferrer" style="display: inline-block; background: #4a7c23; color: white; padding: 15px 40px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 18px; border: 2px solid #fff; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.05)';" onmouseout="this.style.transform='scale(1)';">View Launcher Downloads on GitHub</a>
                                         </div>
                                     </div>
                                 </div>

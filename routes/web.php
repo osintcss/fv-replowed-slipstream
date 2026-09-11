@@ -117,7 +117,7 @@ Route::get('/app', function () {
 Route::get('/play', [GameController::class, 'play'])->middleware(['auth', 'verified', 'discord.member'])->name('play');
 
 Route::get('/dashboard', function () {
-    return view('dashboard');
+    return redirect()->route('play');
 })->middleware(['auth', 'verified', 'discord.member'])->name('dashboard');
 
 Route::get('/game', [GameController::class, 'index'])->middleware(['auth', 'verified', 'discord.member'])->name('game');
@@ -170,7 +170,9 @@ Route::middleware(['auth', 'discord.member'])->group(function () {
 
     // World Shop routes
     Route::get('/api/world-shop/status', [WorldShopController::class, 'status'])->name('world-shop.status');
+    Route::post('/api/world-shop/claim', [WorldShopController::class, 'claim'])->name('world-shop.claim');
     Route::post('/api/world-shop/purchase', [WorldShopController::class, 'purchase'])->name('world-shop.purchase');
+    Route::post('/api/world-shop/travel', [WorldShopController::class, 'travel'])->name('world-shop.travel');
 
     // Chat routes
     Route::get('/chat/messages', [ChatController::class, 'messages'])->name('chat.messages');

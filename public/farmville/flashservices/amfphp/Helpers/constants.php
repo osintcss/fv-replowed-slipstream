@@ -134,7 +134,7 @@ define('VALID_PURCHASABLE_WORLDS', [
     'england', 'fisherman', 'winterwonderland', 'australia',
     'space', 'candy', 'fforest', 'hlights', 'rainforest', 'oz',
     'mediterranean', 'oasis', 'storybook', 'sleepyhollow', 'toyland',
-    'village', 'glen', 'atlantis', 'hallow'
+    'village', 'glen', 'atlantis', 'hallow', 'winternord'
 ]);
 
 define('ACTION_HARVEST', 'harvest');

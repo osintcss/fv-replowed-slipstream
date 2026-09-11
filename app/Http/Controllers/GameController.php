@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\PlayerMeta;
 use Illuminate\Support\Facades\Auth;
 
 class GameController extends Controller
@@ -19,6 +20,7 @@ class GameController extends Controller
             'neighborsBase64' => $neighborsData['neighborsBase64'],
             'user' => $user,
             'autoAcceptNeighborRequests' => NeighborController::autoAcceptNeighborRequests($user->uid),
+            'currentWorldType' => $this->currentWorldType($user->uid),
             'fotdImages' => $this->getFotdImages()
         ]);
     }
@@ -36,9 +38,21 @@ class GameController extends Controller
             'neighborsBase64' => $neighborsData['neighborsBase64'],
             'user' => $user,
             'autoAcceptNeighborRequests' => NeighborController::autoAcceptNeighborRequests($user->uid),
+            'currentWorldType' => $this->currentWorldType($user->uid),
             'isLauncher' => true,
             'fotdImages' => $this->getFotdImages()
         ]);
+    }
+
+    private function currentWorldType(string $uid): string
+    {
+        $worldType = PlayerMeta::where('uid', $uid)
+            ->where('meta_key', 'currentWorldType')
+            ->value('meta_value');
+
+        return is_string($worldType) && preg_match('/^[a-z]+$/', $worldType)
+            ? $worldType
+            : 'farm';
     }
 
     private function getFotdImages(int $count = 5): string

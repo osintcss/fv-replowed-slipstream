@@ -58,6 +58,13 @@ final class CraftingCottages
             'worldClass' => 'FeatureBuilding',
             'worldState' => 'grown',
         ],
+        // Mistletoe Lane's Patisserie uses the same CraftingCottageBuilding
+        // contract as the older cottages, but its recipe catalog is keyed by
+        // the world-specific xwxcrafttype skill.
+        [
+            'functionalItem' => 'xwx_craftingcottage',
+            'craftType' => 'xwxcrafttype',
+        ],
     ];
 
     public static function forMarketItem(?string $itemName): ?array
