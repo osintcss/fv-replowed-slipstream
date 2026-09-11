@@ -62,18 +62,15 @@
             <div class="flex">
                 <!-- Logo -->
                 <div class="shrink-0 flex items-center">
-                    <a href="{{ route('dashboard') }}" style="font-size: 1.25rem; font-weight: 700; color: #fbbf24; text-decoration: none;">
+                    <a href="{{ route('play') }}" style="font-size: 1.25rem; font-weight: 700; color: #fbbf24; text-decoration: none;">
                         FV Classic
                     </a>
                 </div>
 
                 <!-- Navigation Links -->
                 <div class="hidden sm:flex" style="margin-left: 2.5rem; gap: 2rem;">
-                    <a href="{{ route('dashboard') }}" class="fc-nav-link {{ request()->routeIs('dashboard') ? 'active' : '' }}">
-                        Dashboard
-                    </a>
                     @if (is_dir(public_path('farmville/assets/hashed/assets')))
-                        <a href="{{ route('game') }}" class="fc-nav-link {{ request()->routeIs('game') ? 'active' : '' }}">
+                        <a href="{{ route('play') }}" class="fc-nav-link {{ request()->routeIs('play') ? 'active' : '' }}">
                             Play
                         </a>
                     @endif
@@ -126,11 +123,8 @@
     <!-- Responsive Navigation Menu -->
     <div :class="{'block': open, 'hidden': ! open}" class="hidden sm:hidden" style="background: rgba(0,0,0,0.15);">
         <div style="padding: 0.5rem 0;">
-            <a href="{{ route('dashboard') }}" class="fc-responsive-link {{ request()->routeIs('dashboard') ? 'active' : '' }}">
-                Dashboard
-            </a>
             @if (is_dir(public_path('farmville/assets/hashed/assets')))
-                <a href="{{ route('game') }}" class="fc-responsive-link {{ request()->routeIs('game') ? 'active' : '' }}">
+                <a href="{{ route('play') }}" class="fc-responsive-link {{ request()->routeIs('play') ? 'active' : '' }}">
                     Play
                 </a>
             @endif
