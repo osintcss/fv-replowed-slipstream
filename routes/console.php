@@ -9,6 +9,7 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('discord:status')->everyFiveMinutes();
-Schedule::command('chat:cleanup')->daily();
+// Chat history is intentionally retained indefinitely. Keep the legacy
+// command unscheduled as an additional safeguard against accidental purges.
 Schedule::command('world:cleanup-deleted')->weekly();
 Schedule::command('db:backup')->dailyAt('03:00');

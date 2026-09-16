@@ -29,6 +29,7 @@ require_once AMFPHP_ROOTPATH . "Functions/EquipmentWorldService.php";
 require_once AMFPHP_ROOTPATH . "Functions/DailyStatsService.php";
 require_once AMFPHP_ROOTPATH . "Functions/ZAPIClientService.php";
 require_once AMFPHP_ROOTPATH . "Functions/UserFeedService.php";
+require_once AMFPHP_ROOTPATH . "Functions/MessageService.php";
 require_once AMFPHP_ROOTPATH . "Functions/PresentService.php";
 require_once AMFPHP_ROOTPATH . "Functions/IrrigationService.php";
 require_once AMFPHP_ROOTPATH . "Functions/FarmExpressZMCService.php";

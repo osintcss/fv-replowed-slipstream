@@ -2,9 +2,7 @@
 
 namespace App\Console\Commands;
 
-use App\Models\ChatMessage;
 use Illuminate\Console\Command;
-use Carbon\Carbon;
 
 class CleanupOldChatMessages extends Command
 {
@@ -20,18 +18,14 @@ class CleanupOldChatMessages extends Command
      *
      * @var string
      */
-    protected $description = 'Delete chat messages older than 7 days';
+    protected $description = 'Report that chat retention is disabled';
 
     /**
      * Execute the console command.
      */
     public function handle()
     {
-        $sevenDaysAgo = Carbon::now()->subDays(7);
-
-        $deletedCount = ChatMessage::where('created_at', '<', $sevenDaysAgo)->delete();
-
-        $this->info("Deleted {$deletedCount} chat messages older than 7 days.");
+        $this->info('Chat retention is disabled; no messages deleted.');
 
         return 0;
     }
