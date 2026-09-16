@@ -125,23 +125,57 @@ class EquipmentWorldService
                 $foundKey = findByPosition($positionIndex, $posX, $posY);
 
                 if ($foundKey !== null) {
-                    $existingState = $world["objectsArray"][$foundKey]->state ?? '';
+                    $existingPlot = $world["objectsArray"][$foundKey];
+                    $existingState = getEffectivePlotState(
+                        $existingPlot,
+                        $uid,
+                        $currentWorldType,
+                    );
 
-                    if ($existingState === PLOT_STATE_FALLOW || $existingState === PLOT_STATE_PLOWED) {
-                        $world["objectsArray"][$foundKey]->state = PLOT_STATE_PLOWED;
-                        $modifiedObjects[] = $world["objectsArray"][$foundKey];
+                    if (in_array($existingState, [PLOT_STATE_FALLOW, PLOT_STATE_WITHERED], true)) {
+                        $existingPlot->state = PLOT_STATE_PLOWED;
+                        if ($existingState === PLOT_STATE_WITHERED) {
+                            // The persisted row still carries the old crop
+                            // because withering is derived by Flash. Clearing
+                            // it here prevents the crop from reappearing after
+                            // the equipment plow is reloaded.
+                            $existingPlot->itemName = null;
+                            $existingPlot->plantTime = 0;
+                        }
+                        $modifiedObjects[] = $existingPlot;
                         $plowCount++;
                         $acceptedPositions[] = [
                             'x' => $posX,
                             'y' => $posY,
-                            'object_id' => $world["objectsArray"][$foundKey]->id,
+                            'object_id' => $existingPlot->id,
                             'operation' => 'update',
+                            'source_state' => $existingState,
                         ];
 
                         $results[] = array(
-                            "id" => $world["objectsArray"][$foundKey]->id,
-                            "data" => array("id" => $world["objectsArray"][$foundKey]->id)
+                            "id" => $existingPlot->id,
+                            "data" => array("id" => $existingPlot->id)
                         );
+                    } elseif ($existingState === PLOT_STATE_PLOWED) {
+                        // Flash may resend an acknowledged equipment sweep
+                        // after reconnecting.  It has already applied this
+                        // square locally, so acknowledge the replay without
+                        // writing it again or treating it as a paid plow.
+                        // A truthy result lets the client discard its stale
+                        // queued operation; $plowCount deliberately remains
+                        // unchanged so coins, XP, fuel, quests, and world
+                        // score cannot be applied a second time.
+                        $existingId = $world["objectsArray"][$foundKey]->id;
+                        $results[] = array(
+                            "id" => $existingId,
+                            "data" => array("id" => $existingId, "stale" => true)
+                        );
+                        $skippedPositions[] = [
+                            'x' => $posX,
+                            'y' => $posY,
+                            'reason' => 'already_plowed_replay',
+                            'object_id' => $existingId,
+                        ];
                     } else {
                         $results[] = null;
                         $skippedPositions[] = [
@@ -215,29 +249,11 @@ class EquipmentWorldService
                             break;
 
                         case ACTION_HARVEST:
-                            $currentState = $foundPlot->state ?? '';
-                            if ($currentState === PLOT_STATE_PLANTED) {
-                                $cropItemName = $foundPlot->itemName ?? null;
-                                $plantTime = $foundPlot->plantTime ?? 0;
-
-                                if ($cropItemName && $plantTime > 0) {
-                                    $itemData = getItemByName($cropItemName, "db");
-                                    if ($itemData && isset($itemData["growTime"])) {
-                                        $growTimeDays = (float) $itemData["growTime"];
-                                        $growTimeMs = calculateGrowTimeMs($growTimeDays);
-                                        $witherTimeMs = $growTimeMs;
-                                        $currentTimeMs = getCurrentTimeMs();
-
-                                        $hasRingProtection = isWitherProtectionActive($uid, $currentWorldType);
-
-                                        if ($currentTimeMs >= ($plantTime + $growTimeMs + $witherTimeMs) && !$hasRingProtection) {
-                                            $currentState = PLOT_STATE_WITHERED;
-                                        } elseif ($currentTimeMs >= ($plantTime + $growTimeMs)) {
-                                            $currentState = PLOT_STATE_GROWN;
-                                        }
-                                    }
-                                }
-                            }
+                            $currentState = getEffectivePlotState(
+                                $foundPlot,
+                                $uid,
+                                $currentWorldType,
+                            );
 
                             if ($currentState !== PLOT_STATE_GROWN && $currentState !== HARVESTABLE_STATE_BARE) {
                                 break;
@@ -270,30 +286,11 @@ class EquipmentWorldService
                             break;
 
                         case ACTION_COMBINE:
-                            $currentState = $foundPlot->state ?? '';
-
-                            if ($currentState === PLOT_STATE_PLANTED) {
-                                $cropItemName = $foundPlot->itemName ?? null;
-                                $plantTime = $foundPlot->plantTime ?? 0;
-
-                                if ($cropItemName && $plantTime > 0) {
-                                    $itemData = getItemByName($cropItemName, "db");
-                                    if ($itemData && isset($itemData["growTime"])) {
-                                        $growTimeDays = (float) $itemData["growTime"];
-                                        $growTimeMs = calculateGrowTimeMs($growTimeDays);
-                                        $witherTimeMs = $growTimeMs;
-                                        $currentTimeMs = getCurrentTimeMs();
-
-                                        $hasRingProtection = isWitherProtectionActive($uid, $currentWorldType);
-
-                                        if ($currentTimeMs >= ($plantTime + $growTimeMs + $witherTimeMs) && !$hasRingProtection) {
-                                            $currentState = PLOT_STATE_WITHERED;
-                                        } elseif ($currentTimeMs >= ($plantTime + $growTimeMs)) {
-                                            $currentState = PLOT_STATE_GROWN;
-                                        }
-                                    }
-                                }
-                            }
+                            $currentState = getEffectivePlotState(
+                                $foundPlot,
+                                $uid,
+                                $currentWorldType,
+                            );
 
                             if ($currentState === PLOT_STATE_PLANTED) {
                                 $combineHarvestResults[] = null;
@@ -476,6 +473,8 @@ class EquipmentWorldService
         $totalGoldDelta = 0;
         $totalXpDelta = 0;
         $totalCashDelta = 0;
+        $plotActionXpDelta = 0;
+        $resourceUpdateSucceeded = false;
         $masteryItemCounts = [];
 
         try {
@@ -483,6 +482,7 @@ class EquipmentWorldService
                 $plowDeltas = MarketTransactions::calculatePlowDeltas($plowCount);
                 $totalGoldDelta += $plowDeltas['goldDelta'];
                 $totalXpDelta += $plowDeltas['xpDelta'];
+                $plotActionXpDelta += $plowDeltas['xpDelta'];
                 Logger::debug('EquipmentWorldService', "Plow deltas: gold={$plowDeltas['goldDelta']}, xp={$plowDeltas['xpDelta']}");
             }
 
@@ -491,6 +491,7 @@ class EquipmentWorldService
                 $totalGoldDelta += $buyDeltas['goldDelta'];
                 $totalXpDelta += $buyDeltas['xpDelta'];
                 $totalCashDelta += $buyDeltas['cashDelta'];
+                $plotActionXpDelta += $buyDeltas['xpDelta'];
                 Logger::debug('EquipmentWorldService', "Buy deltas for $itemName x$plantCount: gold={$buyDeltas['goldDelta']}, xp={$buyDeltas['xpDelta']}, cash={$buyDeltas['cashDelta']}");
             }
 
@@ -505,6 +506,7 @@ class EquipmentWorldService
             Logger::debug('EquipmentWorldService', "Calling batchUpdate: uid=$uid, gold=$totalGoldDelta, xp=$totalXpDelta, cash=$totalCashDelta");
             $batchResult = UserResources::batchUpdate($uid, $totalGoldDelta, $totalXpDelta, $totalCashDelta);
             Logger::debug('EquipmentWorldService', "batchUpdate result: " . ($batchResult ? 'true' : 'false'));
+            $resourceUpdateSucceeded = (bool) $batchResult;
 
             foreach ($masteryItemCounts as $masteryItemName => $count) {
                 $itemData = getItemByName($masteryItemName, "db");
@@ -513,6 +515,14 @@ class EquipmentWorldService
                 }
             }
         } catch (\Throwable $e) {
+            Logger::error('EquipmentWorldService', 'Resource update failed: ' . $e->getMessage());
+        }
+
+        if ($worldPersisted && $resourceUpdateSucceeded && $plotActionXpDelta > 0) {
+            $worldScore = awardPlotActionWorldScore($uid, $currentWorldType, $plotActionXpDelta);
+            if ($worldScore !== null) {
+                Logger::debug('EquipmentWorldService', "Awarded Emerald Valley score: uid=$uid delta=$plotActionXpDelta score=$worldScore");
+            }
         }
 
         if ($action === ACTION_COMBINE) {

@@ -1,5 +1,6 @@
 <?php
 require_once AMFPHP_ROOTPATH . "Helpers/general_functions.php";
+require_once AMFPHP_ROOTPATH . "Helpers/user_resources.php";
 require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
 require_once AMFPHP_ROOTPATH . "Helpers/constants.php";
 require_once AMFPHP_ROOTPATH . "Helpers/quest_helper.php";
@@ -13,7 +14,9 @@ use App\Models\UserAvatar;
 use App\Models\UserWorld;
 use App\Models\User;
 use App\Models\PlayerMeta;
+use App\Models\WorldActionReceipt;
 use App\Models\WorldObject;
+use App\Support\ResourceAudit;
 use App\Support\StorageConfig;
 use App\Support\WorldPersistence;
 
@@ -536,6 +539,31 @@ class Player {
         return is_array($item) && ($item['code'] ?? null) === $itemCode;
     }
 
+    /**
+     * Garages are a special storage building: Flash reconstructs every
+     * contained item as Equipment while assembling the plow menu.  Letting a
+     * construction part (or any ordinary decoration) into that list makes
+     * SavedObject instantiate the wrong class and can crash before the farm
+     * is usable.  Resolve the stored world object through the server catalog,
+     * rather than trusting the class/name supplied by the client.
+     */
+    private static function isValidGarageEquipment(?WorldObject $resource, string $itemCode): bool {
+        if ($resource === null || $itemCode === '') {
+            return false;
+        }
+
+        $item = getItemByName((string) $resource->item_name, 'db');
+        if (!is_array($item) || ($item['code'] ?? null) !== $itemCode) {
+            return false;
+        }
+
+        return in_array($item['className'] ?? null, [
+            'Tractor',
+            'Seeder',
+            'Harvester',
+        ], true);
+    }
+
     public function getData($requ) {
         $userMeta = UserMeta::where('uid', $this->uid)->first();
 
@@ -611,6 +639,12 @@ class Player {
                 // inputs; a missing value is coerced to zero and disables Add.
                 "DEFAULT_BUSHEL_ADD_TEMPRT" => 25,
                 "BUSHEL_TRADE_NEEDED_TEMPRT" => 25,
+                // GiftBoxSlot caps Fuel Refill selection with this value. Its
+                // ActionScript `as Number` conversion turns a missing value
+                // into zero, which makes every Fuel Refill stack display x0.
+                // The client issues one transaction per refill, so retain a
+                // bounded batch size while allowing ordinary reward stacks.
+                "THROTTLE_MAX_OPEN_FUEL_CAN" => 20.0,
                 // The original cash-purchase flow opened Zynga's external
                 // payment dialog.  In the offline build it instead falls
                 // back to this message.  The Flash client dereferences this
@@ -1027,6 +1061,38 @@ class Player {
         if ($exists !== "" && !in_array($action, $delActions)){
             $operationType = 'UPDATE';
             $existingObj = $currWorld["objectsArray"][$exists];
+
+            // Construction sites arrive back from Flash as an ordinary world
+            // update when their final part is supplied. Do not trust that
+            // optimistic terminal object: verify the saved parts and perform
+            // the conversion plus XP award atomically. This early return also
+            // prevents the generic snapshot write below from overwriting the
+            // authoritative completed resource with stale client fields.
+            if ($this->isConstructionCompletionRequest($existingObj, $newObj)) {
+                $completed = $this->completeConstructionBuilding(
+                    $currentWorldType,
+                    (int) ($existingObj->id ?? 0),
+                );
+                if ($completed === false) {
+                    Logger::warning('ConstructionCompletion', sprintf(
+                        'Rejected incomplete construction update: uid=%s objectId=%d item=%s',
+                        $this->uid,
+                        (int) ($existingObj->id ?? 0),
+                        (string) ($existingObj->itemName ?? ''),
+                    ));
+                    return false;
+                }
+                if ($completed !== null) {
+                    $completedObject = clone $existingObj;
+                    foreach (get_object_vars($completed) as $property => $value) {
+                        $completedObject->{$property} = $value;
+                    }
+                    $currWorld["objectsArray"][$exists] = $completedObject;
+                    $this->worldData = $currWorld;
+
+                    return 0;
+                }
+            }
             if (isset($existingObj->contents) && is_array($existingObj->contents) && !empty($existingObj->contents)){
                 $newObj->contents = $existingObj->contents;
             }
@@ -1315,7 +1381,212 @@ class Player {
         ];
     }
 
-    public function storeItem($buildingObj, $storeParams){
+    /**
+     * Flash completes many legacy construction buildings by sending a normal
+     * world update with the terminal `built` state.  That update used to make
+     * the finished building durable but left its completion XP client-only,
+     * so a reload removed the level gain.  Complete the transition from the
+     * saved construction site instead: the catalogue owns the finished item
+     * and reward, and the stored parts are the proof that it is eligible.
+     */
+    private function isConstructionCompletionRequest(object $existing, object $incoming): bool
+    {
+        $constructionClass = (string) ($existing->className ?? '');
+        if (!str_ends_with($constructionClass, 'ConstructionBuilding')) {
+            return false;
+        }
+
+        $constructionName = (string) ($existing->itemName ?? '');
+        $constructionItem = $constructionName !== '' ? getItemByName($constructionName, 'db') : false;
+        $finishedName = is_array($constructionItem) ? ($constructionItem['finishedName'] ?? null) : null;
+        if (!is_string($finishedName) || $finishedName === '') {
+            return false;
+        }
+
+        $incomingState = (string) ($incoming->state ?? '');
+        if (!in_array($incomingState, ['built', 'bare'], true)) {
+            return false;
+        }
+
+        $incomingName = (string) ($incoming->itemName ?? '');
+        return $incomingName === $constructionName || $incomingName === $finishedName;
+    }
+
+    private static function constructionCompletionXp(array $finishedItem): int
+    {
+        $configuredXp = $finishedItem['plantXp'] ?? $finishedItem['buyXp'] ?? null;
+        if ($configuredXp !== null && $configuredXp !== '' && is_numeric($configuredXp)) {
+            return max(0, (int) $configuredXp);
+        }
+
+        // This is the same fallback used by MarketTransactions for a normal
+        // market purchase.  The Dairy Shed's 120,000-coin finished value, for
+        // example, correctly produces the 1,200 XP shown by Flash.
+        return max(0, (int) floor(max(0, (int) ($finishedItem['cost'] ?? 0)) * 0.01));
+    }
+
+    /**
+     * Atomically turn a verified construction site into its finished item and
+     * apply its one-time XP reward. Returns null for a non-construction update,
+     * false for an invalid completion attempt, and the authoritative object on
+     * success.
+     */
+    private function completeConstructionBuilding(string $worldType, int $objectId): object|false|null
+    {
+        if ($objectId <= 0) {
+            return false;
+        }
+
+        $completion = WorldPersistence::transaction(
+            $this->uid,
+            $worldType,
+            function (int $worldId) use ($objectId) {
+                $building = WorldObject::query()
+                    ->where('world_id', $worldId)
+                    ->where('object_id', $objectId)
+                    ->where('deleted', false)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($building === null
+                    || !str_ends_with((string) $building->class_name, 'ConstructionBuilding')) {
+                    return false;
+                }
+
+                $constructionItem = getItemByName((string) $building->item_name, 'db');
+                $finishedName = is_array($constructionItem) ? ($constructionItem['finishedName'] ?? null) : null;
+                $defaultPart = is_array($constructionItem) ? ($constructionItem['defaultItem'] ?? null) : null;
+                $matsNeeded = is_array($constructionItem) ? (int) ($constructionItem['matsNeeded'] ?? 0) : 0;
+                if (is_object($defaultPart)) {
+                    $defaultPart = get_object_vars($defaultPart);
+                }
+
+                if (!is_string($finishedName) || $finishedName === ''
+                    || !is_array($defaultPart) || !is_string($defaultPart['name'] ?? null)
+                    || $matsNeeded <= 0) {
+                    return false;
+                }
+
+                $partItem = getItemByName($defaultPart['name'], 'db');
+                $finishedItem = getItemByName($finishedName, 'db');
+                if (!is_array($partItem) || !is_array($finishedItem)
+                    || !is_string($partItem['code'] ?? null) || $partItem['code'] === '') {
+                    return false;
+                }
+
+                $requiredParts = $matsNeeded * max(1, (int) ($defaultPart['amount'] ?? 1));
+                $storedParts = 0;
+                foreach (is_array($building->contents) ? $building->contents : [] as $content) {
+                    $itemCode = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                    $quantity = is_object($content) ? ($content->numItem ?? 0) : ($content['numItem'] ?? 0);
+                    if ($itemCode === $partItem['code']) {
+                        $storedParts += max(0, (int) $quantity);
+                    }
+                }
+                if ($storedParts < $requiredParts) {
+                    return false;
+                }
+
+                $finishedClass = (string) ($finishedItem['className'] ?? 'Building');
+                $finishedContents = [];
+                $finishedComponents = new \stdClass();
+                $defaultFinishedItem = $finishedItem['defaultItem'] ?? null;
+                if (is_object($defaultFinishedItem)) {
+                    $defaultFinishedItem = get_object_vars($defaultFinishedItem);
+                }
+                if (is_array($defaultFinishedItem) && is_string($defaultFinishedItem['name'] ?? null)) {
+                    $defaultItem = getItemByName($defaultFinishedItem['name'], 'db');
+                    if (is_array($defaultItem) && is_string($defaultItem['code'] ?? null) && $defaultItem['code'] !== '') {
+                        $defaultCode = $defaultItem['code'];
+                        $finishedContents[] = [
+                            'itemCode' => $defaultCode,
+                            'numItem' => max(1, (int) ($defaultFinishedItem['amount'] ?? 1)),
+                        ];
+                        if ($finishedClass === 'FeatureBuilding') {
+                            $finishedComponents->featuredItems = (object) [
+                                '0' => (object) ['itemCode' => $defaultCode, 'metaHash' => $defaultCode . ':'],
+                            ];
+                        }
+                    }
+                }
+
+                // Lock the resource row after the world object, matching the
+                // existing TransformBuilding flow. Both writes share this
+                // transaction, so a failed XP update cannot leave a completed
+                // building that has silently lost its reward.
+                $userMeta = UserMeta::query()
+                    ->where('uid', $this->uid)
+                    ->lockForUpdate()
+                    ->first();
+                if ($userMeta === null) {
+                    return false;
+                }
+
+                $xpAward = self::constructionCompletionXp($finishedItem);
+                $currentXp = max(0, (int) $userMeta->xp);
+                $newXp = min(UserMeta::XP_MAX, $currentXp + $xpAward);
+                $oldLevel = UserResources::getLevelForXp($currentXp);
+                $newLevel = UserResources::getLevelForXp($newXp);
+                $levelUpCash = 0;
+                if ($newLevel > $oldLevel) {
+                    if ($oldLevel < UserResources::LEVEL_UP_CASH_CAP) {
+                        $levelUpCash += (min($newLevel, UserResources::LEVEL_UP_CASH_CAP) - $oldLevel) * 3;
+                    }
+                    if ($newLevel > UserResources::LEVEL_UP_CASH_CAP) {
+                        $levelUpCash += $newLevel - max($oldLevel, UserResources::LEVEL_UP_CASH_CAP);
+                    }
+                }
+
+                $building->item_name = $finishedName;
+                $building->class_name = $finishedClass;
+                $building->state = $finishedClass === 'FeatureBuilding' ? 'bare' : 'built';
+                $building->contents = $finishedContents;
+                $building->components = $finishedComponents;
+                $building->expansion_level = max(1, (int) ($finishedItem['initialExpansionLevel'] ?? 1));
+                $building->expansion_parts = null;
+                $building->save();
+
+                if ($xpAward > 0 || $levelUpCash > 0) {
+                    $userMeta->xp = $newXp;
+                    $userMeta->cash = min(UserMeta::CASH_MAX, max(0, (int) $userMeta->cash + $levelUpCash));
+                    $userMeta->save();
+                    ResourceAudit::record(
+                        $this->uid,
+                        'construction.complete',
+                        0,
+                        $newXp - $currentXp,
+                        $levelUpCash,
+                        ['object_id' => $objectId, 'item_name' => $finishedName],
+                    );
+                }
+
+                Logger::debug('ConstructionCompletion', sprintf(
+                    'Completed construction: uid=%s objectId=%d item=%s xp=%d oldXp=%d newXp=%d',
+                    $this->uid,
+                    $objectId,
+                    $finishedName,
+                    $xpAward,
+                    $currentXp,
+                    $newXp,
+                ));
+
+                return (object) [
+                    'itemName' => $finishedName,
+                    'className' => $finishedClass,
+                    'state' => $building->state,
+                    'contents' => $finishedContents,
+                    'components' => $finishedComponents,
+                    'expansionLevel' => $building->expansion_level,
+                    'expansionParts' => new \stdClass(),
+                ];
+            },
+        );
+
+        UserMeta::invalidateCache($this->uid);
+        return $completion;
+    }
+
+    public function storeItem($buildingObj, $storeParams, bool $isGiftboxStore = false, ?string $idempotencyKey = null){
         $currentWorldType = get_meta($this->uid, "currentWorldType") ?: "farm";
 
         if (empty($this->worldData)){
@@ -1380,7 +1651,7 @@ class Player {
         // its later delete/reinsert used to erase the pen contents that had
         // just appeared client-side. Lock and update only the pen and the
         // animal being moved.
-        $contents = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $resourceId, $sourceBuildingId, $itemCode, $storedItemName, $numToStore, $storedClassName, $storedMetadata) {
+        $contents = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $resourceId, $sourceBuildingId, $itemCode, $storedItemName, $numToStore, $storedClassName, $storedMetadata, $isGiftboxStore, $idempotencyKey) {
             $storedBuilding = WorldObject::query()
                 ->where('world_id', $worldId)
                 ->where('object_id', (int) $buildingId)
@@ -1390,6 +1661,29 @@ class Player {
 
             if ($storedBuilding === null) {
                 throw new \RuntimeException("Storage building {$buildingId} no longer exists");
+            }
+
+            $receipt = null;
+            if ($isGiftboxStore && $idempotencyKey !== null) {
+                $receipt = WorldActionReceipt::query()
+                    ->where('uid', (string) $this->uid)
+                    ->where('action', 'store')
+                    ->where('request_key', $idempotencyKey)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($receipt !== null) {
+                    $savedResponse = is_array($receipt->response) ? $receipt->response : [];
+                    $savedResponse['replayed'] = true;
+                    Logger::debug('World', sprintf(
+                        'Ignored duplicate gift-backed store: uid=%s buildingId=%d item=%s receipt=%s',
+                        $this->uid,
+                        (int) $buildingId,
+                        (string) $itemCode,
+                        $idempotencyKey,
+                    ));
+                    return $savedResponse;
+                }
             }
 
             $sourceBuilding = null;
@@ -1491,6 +1785,11 @@ class Player {
                 $resource->item_name = 'pig';
             }
 
+            if ($storedBuilding->class_name === 'GarageBuilding'
+                && !self::isValidGarageEquipment($resource, (string) $itemCode)) {
+                throw new \RuntimeException('invalid_garage_equipment');
+            }
+
             // Generic pigs used to be accepted into the breeding pen because
             // they share its visual animal category. They have no mutable DNA
             // or gender, however, so they could never form a valid pair.
@@ -1498,6 +1797,24 @@ class Player {
             // class/name metadata, before changing either object.
             if (!$this->canStoreInFeatureBuilding($storedBuilding, $resource, (string) $itemCode)) {
                 throw new \RuntimeException('invalid_feature_storage_animal');
+            }
+
+            if ($isGiftboxStore) {
+                $catalogItem = $storedItemName !== null
+                    ? getItemByName((string) $storedItemName, 'db')
+                    : null;
+                if (!is_array($catalogItem)
+                    || (string) ($catalogItem['code'] ?? '') !== (string) $itemCode) {
+                    throw new \RuntimeException('giftbox_item_catalog_mismatch');
+                }
+
+                if (!consumeGiftboxItemLocked(
+                    $this->uid,
+                    (string) $itemCode,
+                    max(1, $numToStore),
+                )) {
+                    throw new \RuntimeException('giftbox_item_unavailable');
+                }
             }
             $isBasePigpenSow = $storedBuilding->item_name === 'pigpenv2_finished'
                 && $resource !== null && self::isBasePigpenSow($resource);
@@ -1661,7 +1978,7 @@ class Player {
             $this->synchronizeFeatureStorageSlots($storedBuilding, $contents);
             $storedBuilding->save();
 
-            return [
+            $result = [
                 'contents' => $contents,
                 'completion' => $completion,
                 'source' => $sourceBuilding === null ? null : [
@@ -1670,10 +1987,45 @@ class Player {
                     'components' => $sourceBuilding->components,
                 ],
             ];
+
+            if ($isGiftboxStore && $idempotencyKey !== null) {
+                $receiptResponse = [
+                    'success' => true,
+                    'id' => $resourceId,
+                    'itemCode' => $itemCode,
+                    'quantity' => max(1, $numToStore),
+                    'completion' => $completion,
+                ];
+                WorldActionReceipt::query()->create([
+                    'uid' => (string) $this->uid,
+                    'action' => 'store',
+                    'request_key' => $idempotencyKey,
+                    'response' => $receiptResponse,
+                ]);
+            }
+
+            return $result;
         });
 
         if ($contents === false) {
             return false;
+        }
+
+        // A transport retry has already committed the world mutation. Do not
+        // rebuild the request-local world from the compact receipt response;
+        // Flash already applied the optimistic storage update before sending
+        // TStoreItem, and the receipt exists specifically to avoid touching
+        // the authoritative building a second time.
+        if (!empty($contents['replayed'])) {
+            return [
+                'success' => true,
+                'id' => (int) ($contents['id'] ?? 0),
+                'itemCode' => $contents['itemCode'] ?? $itemCode,
+                'quantity' => (int) ($contents['quantity'] ?? max(1, $numToStore)),
+                'completion' => is_array($contents['completion'] ?? null)
+                    ? $contents['completion'] : null,
+                'replayed' => true,
+            ];
         }
 
         $sourceUpdate = is_array($contents['source'] ?? null) ? $contents['source'] : null;
@@ -1734,6 +2086,7 @@ class Player {
             'itemCode' => $itemCode,
             'quantity' => max(1, $numToStore),
             'completion' => $completion,
+            'replayed' => false,
         ];
     }
 

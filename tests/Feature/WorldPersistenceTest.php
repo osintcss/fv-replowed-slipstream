@@ -1,6 +1,9 @@
 <?php
 
 use App\Models\UserWorld;
+use App\Models\Item;
+use App\Models\PlayerMeta;
+use App\Models\WorldActionReceipt;
 use App\Models\WorldObject;
 use App\Support\WorldPersistence;
 
@@ -69,6 +72,261 @@ it('enables turbo-ring mode only while a turbo ring is placed in the world', fun
     $ring->update(['deleted' => true]);
 
     expect(hasTurboRing($world->uid, $world->type))->toBeFalse();
+});
+
+it('rejects building parts from garages and filters legacy malformed contents', function (): void {
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    App\Models\Item::query()->create([
+        'name' => 'test_brick',
+        'code' => 'GB1',
+        'data' => serialize(['name' => 'test_brick', 'code' => 'GB1', 'className' => 'BuildingPart']),
+    ]);
+    App\Models\Item::query()->create([
+        'name' => 'test_tractor',
+        'code' => 'GT1',
+        'data' => serialize(['name' => 'test_tractor', 'code' => 'GT1', 'className' => 'Tractor']),
+    ]);
+    App\Models\Item::clearCache();
+
+    $world = persistenceTestWorld();
+    $garage = persistenceTestObject($world, 601, [
+        'class_name' => 'GarageBuilding',
+        'item_name' => 'garage_finished',
+        'contents' => [
+            ['itemCode' => 'GB1', 'numItem' => 10],
+            ['itemCode' => 'GT1', 'numItem' => 1],
+        ],
+    ]);
+    $part = persistenceTestObject($world, 602, [
+        'class_name' => 'BuildingPart',
+        'item_name' => 'test_brick',
+    ]);
+    unset($GLOBALS['_world_cache']['900001:farm']);
+
+    $flashGarage = $garage->toFlashObject();
+    expect($flashGarage->contents)->toBe([
+        ['itemCode' => 'GT1', 'numItem' => 1],
+    ]);
+
+    $result = (new Player($world->uid))->storeItem(
+        (object) ['id' => 601],
+        (object) [
+            'resource' => 602,
+            'storedItemCode' => 'GB1',
+            'storedItemName' => 'test_brick',
+            'storedClassName' => 'BuildingPart',
+            'numToStore' => 1,
+        ],
+    );
+
+    expect($result)->toBeFalse()
+        ->and($part->fresh()->deleted)->toBeFalse()
+        ->and($garage->fresh()->contents)->toBe([
+            ['itemCode' => 'GB1', 'numItem' => 10],
+            ['itemCode' => 'GT1', 'numItem' => 1],
+        ]);
+});
+
+it('consumes a gift-backed store item atomically and ignores a transport retry', function (): void {
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    Item::query()->create([
+        'name' => 'cow_irishmoiled',
+        'code' => '4,',
+        'data' => serialize([
+            'name' => 'cow_irishmoiled',
+            'code' => '4,',
+            'className' => 'Animal',
+        ]),
+    ]);
+    Item::clearCache();
+
+    $world = persistenceTestWorld();
+    persistenceTestObject($world, 700, [
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'animal_breeding_dairy_finished',
+        'state' => 'bare',
+        'contents' => [],
+    ]);
+    PlayerMeta::setValue($world->uid, 'giftbox', serialize([
+        '4,' => [2, [], []],
+    ]));
+    unset($GLOBALS['_world_cache']["{$world->uid}:farm"]);
+
+    $player = new Player($world->uid);
+    $building = (object) ['id' => 700];
+    $storeParams = (object) [
+        'resource' => 0,
+        'storedItemCode' => '4,',
+        'storedItemName' => 'cow_irishmoiled',
+        'storedClassName' => 'Animal',
+        'cameFromLocation' => -1,
+        'numToStore' => 1,
+    ];
+
+    $first = $player->storeItem($building, $storeParams, true, 'gift-store-retry-1');
+    $retry = $player->storeItem($building, $storeParams, true, 'gift-store-retry-1');
+    $second = $player->storeItem($building, $storeParams, true, 'gift-store-retry-2');
+
+    expect($first['success'] ?? false)->toBeTrue()
+        ->and($retry['success'] ?? false)->toBeTrue()
+        ->and($retry['replayed'] ?? false)->toBeTrue()
+        ->and($second['success'] ?? false)->toBeTrue()
+        ->and(WorldActionReceipt::query()->where('uid', $world->uid)->count())->toBe(2);
+
+    $building = WorldObject::query()
+        ->where('world_id', $world->id)
+        ->where('object_id', 700)
+        ->firstOrFail();
+    expect($building->contents)->toBe([
+        ['itemCode' => '4,', 'numItem' => 2],
+    ]);
+
+    PlayerMeta::clearCache($world->uid, 'giftbox');
+    expect(unserialize(PlayerMeta::getValue($world->uid, 'giftbox'), ['allowed_classes' => false]))
+        ->toBe([]);
+});
+
+it('preserves the empty storage action response envelope through the handler', function (): void {
+    require_once AMFPHP_ROOTPATH.'Functions/WorldService.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    $world = persistenceTestWorld();
+    $request = (object) [
+        'params' => [
+            ACTION_STORE,
+            (object) ['id' => 0],
+            [],
+        ],
+    ];
+
+    expect(WorldService::performAction(new Player($world->uid), $request, null))
+        ->toBe([
+            'id' => 0,
+            'data' => ['id' => 0],
+        ]);
+});
+
+it('uses the same atomic Giftbox contract for generic expansion parts', function (): void {
+    require_once AMFPHP_ROOTPATH.'Functions/WorldService.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    Item::query()->create([
+        'name' => 'test_expansion_building',
+        'code' => 'TEB',
+        'data' => serialize([
+            'name' => 'test_expansion_building',
+            'code' => 'TEB',
+            'className' => 'FeatureBuilding',
+            'features' => (object) [
+                'feature' => (object) [
+                    'name' => 'expand',
+                    'upgrade' => (object) [
+                        'level' => 2,
+                        'part' => (object) [
+                            'name' => 'test_expansion_part',
+                            'need' => 2,
+                        ],
+                    ],
+                ],
+            ],
+        ]),
+    ]);
+    Item::query()->create([
+        'name' => 'test_expansion_part',
+        'code' => 'TEP',
+        'data' => serialize([
+            'name' => 'test_expansion_part',
+            'code' => 'TEP',
+            'className' => 'BuildingPart',
+        ]),
+    ]);
+    Item::clearCache();
+
+    $world = persistenceTestWorld();
+    persistenceTestObject($world, 701, [
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'test_expansion_building',
+        'state' => 'bare',
+        'expansion_level' => 1,
+        'expansion_parts' => [],
+    ]);
+    PlayerMeta::setValue($world->uid, 'currentWorldType', 'farm');
+    PlayerMeta::setValue($world->uid, 'giftbox', serialize([
+        'TEP' => [2, [], []],
+    ]));
+    unset($GLOBALS['_world_cache']["{$world->uid}:farm"]);
+
+    $request = static function (int $sequence): object {
+        return (object) [
+            'sequence' => $sequence,
+            'sequenceID' => 'generic-expansion-test',
+            'params' => [
+                ACTION_STORE,
+                (object) [
+                    'id' => 701,
+                    'className' => 'FeatureBuilding',
+                    'itemName' => 'test_expansion_building',
+                ],
+                [(object) [
+                    'storedItemCode' => 'TEP',
+                    'storedItemName' => 'test_expansion_part',
+                    'numToStore' => 1,
+                    'isGift' => true,
+                ]],
+            ],
+        ];
+    };
+
+    $player = new Player($world->uid);
+    $first = WorldService::performAction($player, $request(1), null);
+    $retry = WorldService::performAction($player, $request(1), null);
+    $second = WorldService::performAction($player, $request(2), null);
+
+    expect($first['data']['success'] ?? false)->toBeTrue()
+        ->and($retry['data']['replayed'] ?? false)->toBeTrue()
+        ->and($second['data']['success'] ?? false)->toBeTrue()
+        ->and(WorldActionReceipt::query()->where('uid', $world->uid)->count())->toBe(2);
+
+    $building = WorldObject::query()
+        ->where('world_id', $world->id)
+        ->where('object_id', 701)
+        ->firstOrFail();
+    expect((int) $building->expansion_level)->toBe(2)
+        ->and($building->expansion_parts)->toEqual((object) []);
+
+    PlayerMeta::clearCache($world->uid, 'giftbox');
+    expect(unserialize(PlayerMeta::getValue($world->uid, 'giftbox'), ['allowed_classes' => false]))
+        ->toBe([]);
+});
+
+it('canonicalizes the Bloom Garden store placeholder on read and write', function (): void {
+    $world = persistenceTestWorld();
+    $garden = persistenceTestObject($world, 603, [
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'flower_garden',
+        'state' => 'ripe',
+        'contents' => [['itemCode' => '811', 'numItem' => 6]],
+    ]);
+
+    $flash = $garden->toFlashObject();
+    expect($flash->itemName)->toBe('flower_garden_finished')
+        ->and($flash->state)->toBe('ripe')
+        ->and($flash->contents)->toBe([['itemCode' => '811', 'numItem' => 6]]);
+
+    $persisted = WorldObject::fromFlashObject(
+        persistenceTestFlashObject(603, [
+            'className' => 'FeatureBuilding',
+            'itemName' => 'flower_garden',
+            'state' => 'ripe',
+        ]),
+        $world->id,
+    );
+
+    expect($persisted['item_name'])->toBe('flower_garden_finished')
+        ->and($persisted['class_name'])->toBe('FeatureBuilding')
+        ->and($persisted['state'])->toBe('ripe');
 });
 
 it('does not let a stale conditional update overwrite a harvested plot', function (): void {
@@ -259,6 +517,49 @@ it('preserves mutable animal pattern hashes when rebuilding feature slots', func
     expect($building->toFlashObject()->featuredItems->{'0'}->metaHash)
         ->toMatch('/^sheeppen_ewe:[a-f0-9]{8}$/')
         ->not->toBe('sheeppen_ewe:deadbeef');
+});
+
+it('seeds a newly placed feature habitat from its catalog default only', function (): void {
+    require_once AMFPHP_ROOTPATH.'Functions/WorldService.php';
+
+    App\Models\Item::query()->create([
+        'name' => 'test_default_habitat',
+        'code' => 'TDH',
+        'data' => serialize([
+            'name' => 'test_default_habitat',
+            'code' => 'TDH',
+            'className' => 'FeatureBuilding',
+            'defaultItem' => ['name' => 'test_default_animal', 'amount' => '1', 'render' => 'true'],
+        ]),
+    ]);
+    App\Models\Item::query()->create([
+        'name' => 'test_default_animal',
+        'code' => 'TDA',
+        'data' => serialize(['name' => 'test_default_animal', 'code' => 'TDA', 'type' => 'animal']),
+    ]);
+    App\Models\Item::clearCache();
+
+    $world = persistenceTestWorld();
+    $habitat = persistenceTestObject($world, 2500, [
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'test_default_habitat',
+        'state' => 'bare',
+        'contents' => [],
+        'components' => (object) [],
+    ]);
+    $seed = new ReflectionMethod('WorldService', 'initialFeatureBuildingDefaultContents');
+    $seed->setAccessible(true);
+
+    $featured = (object) ['2' => (object) ['itemCode' => 'TDA', 'metaHash' => 'TDA:']];
+    expect($seed->invoke(null, $habitat, (object) [], $featured))->toBe([
+        ['itemCode' => 'TDA', 'numItem' => 1],
+    ]);
+
+    expect($seed->invoke(null, $habitat, (object) ['serverDefaultItemSeeded' => true], $featured))
+        ->toBeNull()
+        ->and($seed->invoke(null, $habitat, (object) [], (object) [
+            '2' => (object) ['itemCode' => 'not-the-default'],
+        ]))->toBeNull();
 });
 
 it('treats a hashed storage metadata key as the animal identity', function (): void {

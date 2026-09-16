@@ -12,7 +12,9 @@ use App\Helpers\JsonHelper;
 use App\Models\PlayerMeta;
 use App\Models\UserMeta;
 use App\Models\WorldObject;
+use App\Support\ConsumableActionHandler;
 use App\Support\CraftingCottages;
+use App\Support\StorageActionHandler;
 use App\Support\WorldPersistence;
 
 class WorldService
@@ -48,385 +50,33 @@ class WorldService
     }
 
     /**
-     * MarketStallBuilding uses FeatureExpansionState rather than the generic
-     * item-catalog expand feature.  Its three expansion resources are still
-     * sent through TStoreItem/WorldService.store, so keep their persistence
-     * contract explicit instead of routing them through normal storage.
+     * Flash retries a failed AMF batch with the same sequence and sequenceID.
+     * Include the request payload as well so an unrelated action from a new
+     * client session cannot collide with an old receipt if sequence numbers
+     * restart.  The page supplies a fresh sequenceID per launch.
      */
-    private static function isMarketStallExpansionPart(?string $itemName): bool
+    private static function actionIdempotencyKey($request, string $action): ?string
     {
-        return in_array($itemName, [
-            'stall_awning',
-            'stall_basket',
-            'stall_pricecard',
-        ], true);
-    }
-
-    /** Persist one or more market-stall expansion resources atomically. */
-    private static function storeMarketStallExpansionPart(
-        $uid,
-        string $worldType,
-        int $buildingId,
-        string $itemName,
-        ?string $itemCode,
-        int $quantity,
-        bool $isGift,
-    ): array|false {
-        $partItemData = getItemByName($itemName, 'db');
-        if (!$partItemData && is_string($itemCode) && $itemCode !== '') {
-            $partItemData = getItemByCode($itemCode);
-        }
-        if (!$partItemData || empty($partItemData['code'])) {
-            return false;
+        $sequence = self::flashValue($request, 'sequence');
+        $sequenceId = self::flashValue($request, 'sequenceID');
+        if ($sequence === null || $sequenceId === null) {
+            return null;
         }
 
-        $partCode = (string) $partItemData['code'];
-        $quantity = max(1, min(999, $quantity));
-        $cashCost = !$isGift
-            ? max(0, (int) ($partItemData['cash'] ?? 0)) * $quantity
-            : 0;
-
-        $result = WorldPersistence::transaction(
-            $uid,
-            $worldType,
-            function (int $worldId) use (
-                $uid,
-                $buildingId,
-                $itemName,
-                $partCode,
-                $quantity,
-                $cashCost,
-            ): array|false {
-                $building = WorldObject::query()
-                    ->where('world_id', $worldId)
-                    ->where('object_id', $buildingId)
-                    ->where('deleted', false)
-                    ->lockForUpdate()
-                    ->first();
-
-                if ($building === null
-                    || ($building->class_name !== 'MarketStallBuilding'
-                        && $building->item_name !== 'marketstall')) {
-                    return false;
-                }
-
-                if ($cashCost > 0 && !UserResources::removeCash($uid, $cashCost)) {
-                    return false;
-                }
-
-                $parts = $building->expansion_parts;
-                if (is_string($parts)) {
-                    $decodedParts = json_decode($parts, true);
-                    $parts = is_array($decodedParts) ? $decodedParts : [];
-                }
-                if (is_object($parts)) {
-                    $parts = get_object_vars($parts);
-                }
-                if (!is_array($parts)) {
-                    $parts = [];
-                }
-
-                $currentCount = max(0, (int) ($parts[$partCode] ?? 0));
-                $parts[$partCode] = min(999, $currentCount + $quantity);
-                $building->expansion_parts = (object) $parts;
-
-                return [
-                    'id' => $buildingId,
-                    'success' => true,
-                    'storedItemName' => $itemName,
-                    'storedItemCode' => $partCode,
-                    'quantity' => $quantity,
-                ];
-            },
-        );
-
-        return $result === false ? false : $result;
-    }
-
-    /**
-     * Consume a stored item and persist its player-resource effect together.
-     *
-     * TUseConsumable removes Giftbox items optimistically in Flash and then
-     * calls this action.  Resolve the item's reward from the server catalogue
-     * and keep the inventory decrement plus the balance update in one
-     * transaction so a retry cannot spend an item without granting its value.
-     */
-    private static function consumeUseItem($playerObj, $request, $extraParams): array
-    {
-        $uid = $playerObj->getUid();
-        $savedItem = $request->params[1] ?? null;
-        $itemName = self::flashValue($savedItem, 'itemName');
-        $itemCode = self::flashValue($savedItem, 'itemCode');
-        if (!is_string($itemCode) || $itemCode === '') {
-            $itemCode = self::flashValue($savedItem, 'code');
+        $params = self::flashValue($request, 'params', []);
+        $payload = [
+            'action' => $action,
+            'sequence' => (string) $sequence,
+            'sequenceID' => (string) $sequenceId,
+            'object' => is_array($params) ? ($params[1] ?? null) : null,
+            'options' => is_array($params) ? ($params[2] ?? null) : null,
+        ];
+        $encoded = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR);
+        if (!is_string($encoded)) {
+            return null;
         }
 
-        $item = is_string($itemName) && $itemName !== ''
-            ? getItemByName($itemName, 'db')
-            : false;
-        if (!is_array($item) && is_string($itemCode) && $itemCode !== '') {
-            $item = getItemByCode($itemCode);
-        }
-        if (is_object($item)) {
-            $item = (array) $item;
-        }
-        if (is_array($item) && isset($item['code']) && $item['code'] !== '') {
-            // The client-provided code is only a lookup hint.  The catalogue
-            // owns the code so an item name/code mismatch cannot redirect the
-            // reward to a different stored item.
-            $itemCode = (string) $item['code'];
-        }
-        if (!is_string($itemCode) || $itemCode === '') {
-            return ['success' => false, 'consumed' => 0, 'error' => 'Consumable has no storage code.'];
-        }
-
-        $isGift = self::flashBoolean(self::flashValue($extraParams, 'isGift', true), true);
-        $isFree = self::flashBoolean(self::flashValue($extraParams, 'isFree', false), false);
-        $storageId = (int) self::flashValue($extraParams, 'storageId', GIFTBOX_ID);
-        $itemCount = (int) self::flashValue($extraParams, 'itemCount', 1);
-        if ($itemCount <= 0) {
-            return ['success' => false, 'consumed' => 0, 'error' => 'Invalid consumable quantity.'];
-        }
-
-        $targetUser = self::flashValue($extraParams, 'targetUser', $uid);
-        $isOwnWorldUse = $targetUser === null
-            || (string) $targetUser === ''
-            || (string) $targetUser === (string) $uid;
-
-        $storageIsPersisted = in_array($storageId, [
-            GIFTBOX_ID,
-            (int) GIFTBOX_STORAGE_KEY,
-            HOME_INVENTORY_ID,
-            PERSONAL_CRAFTING_INVENTORY_ID,
-        ], true);
-        // Market/free uses have no persisted source to consume.  Preserve
-        // their existing client-side behavior while making storage-backed
-        // uses durable.
-        if ($isFree || !$storageIsPersisted || (!$isGift && $storageId === GIFTBOX_ID)) {
-            return ['success' => true, 'consumed' => 0];
-        }
-
-        try {
-            $transactionResult = \DB::transaction(function () use (
-                $uid,
-                $item,
-                $itemCode,
-                $itemCount,
-                $storageId,
-                $isOwnWorldUse,
-            ) {
-                if (in_array($storageId, [GIFTBOX_ID, (int) GIFTBOX_STORAGE_KEY], true)) {
-                    PlayerMeta::query()
-                        ->where('uid', $uid)
-                        ->where('meta_key', 'giftbox')
-                        ->lockForUpdate()
-                        ->first();
-                    PlayerMeta::clearCache($uid, 'giftbox');
-                } elseif ($storageId === HOME_INVENTORY_ID) {
-                    PlayerMeta::query()
-                        ->where('uid', $uid)
-                        ->where('meta_key', 'inventory_storage')
-                        ->lockForUpdate()
-                        ->first();
-                    PlayerMeta::clearCache($uid, 'inventory_storage');
-                }
-
-                // Match the lock order used by the fuel path (storage first,
-                // then user resources) to avoid deadlocks between concurrent
-                // Giftbox actions.
-                $userMeta = UserMeta::query()
-                    ->where('uid', $uid)
-                    ->lockForUpdate()
-                    ->first();
-                if (!$userMeta || !consumeStoredItem($uid, $itemCode, $itemCount, $storageId)) {
-                    return false;
-                }
-
-                UserResources::invalidateCache($uid);
-                $resourceDeltas = self::consumableResourceDeltas($item, $itemCount, $uid);
-                if (($resourceDeltas['gold'] ?? 0) !== 0
-                    || ($resourceDeltas['xp'] ?? 0) !== 0
-                    || ($resourceDeltas['cash'] ?? 0) !== 0) {
-                    $updated = UserResources::batchUpdate(
-                        $uid,
-                        $resourceDeltas['gold'],
-                        $resourceDeltas['xp'],
-                        $resourceDeltas['cash'],
-                    );
-                    if (!$updated) {
-                        throw new \RuntimeException('Player resource update was not applied.');
-                    }
-                }
-
-                $unwitheredCount = 0;
-                if ($isOwnWorldUse && ($item['name'] ?? '') === 'consume_unwither') {
-                    $unwitheredCount = self::restoreWitheredPlots($uid);
-                }
-
-                return [
-                    'consumed' => $itemCount,
-                    'goldAdded' => $resourceDeltas['gold'],
-                    'xpAdded' => $resourceDeltas['xp'],
-                    'cashAdded' => $resourceDeltas['cash'],
-                    'unwitheredCount' => $unwitheredCount,
-                ];
-            });
-        } catch (\Throwable $e) {
-            Logger::error(self::LOG, sprintf(
-                'Consumable use failed: uid=%s, code=%s, reason=%s',
-                $uid,
-                $itemCode,
-                $e->getMessage(),
-            ));
-            if (in_array($storageId, [GIFTBOX_ID, (int) GIFTBOX_STORAGE_KEY], true)) {
-                PlayerMeta::clearCache($uid, 'giftbox');
-            } elseif ($storageId === HOME_INVENTORY_ID) {
-                PlayerMeta::clearCache($uid, 'inventory_storage');
-            }
-            UserResources::invalidateCache($uid);
-            $transactionResult = false;
-        }
-
-        if ($transactionResult === false) {
-            return ['success' => false, 'consumed' => 0, 'error' => 'Consumable is no longer available.'];
-        }
-
-        return array_merge(
-            ['success' => true],
-            $transactionResult,
-        );
-    }
-
-    /**
-     * Apply the server-side half of the Flash CUnwither consumable.
-     *
-     * CUnwither updates plots optimistically in Flash, but its generic
-     * WorldService.performAction("use") request is the durable operation.
-     * Planted plots remain in that state in storage until their grow and
-     * wither windows have elapsed, so restore only those eligible plots.
-     */
-    private static function restoreWitheredPlots($uid): int
-    {
-        $worldType = getCurrentWorldType($uid);
-        $worldId = getWorldId($uid, $worldType);
-        if (!$worldId) {
-            return 0;
-        }
-
-        $currentTimeMs = getCurrentTimeMs();
-        $unwitheredCount = 0;
-        $plots = WorldObject::query()
-            ->where('world_id', $worldId)
-            ->where('class_name', 'Plot')
-            ->where('state', PLOT_STATE_PLANTED)
-            ->whereNotNull('item_name')
-            ->where('plant_time', '>', 0)
-            ->where('deleted', false)
-            ->get();
-
-        foreach ($plots as $plot) {
-            $itemData = getItemByName($plot->item_name, 'db');
-            if (!is_array($itemData) || !isset($itemData['growTime'])) {
-                continue;
-            }
-
-            $growTimeMs = calculateGrowTimeMs((float) $itemData['growTime']);
-            if ($currentTimeMs < ($plot->plant_time + ($growTimeMs * 2))) {
-                continue;
-            }
-
-            $updated = WorldObject::query()
-                ->where('id', $plot->id)
-                ->where('state', PLOT_STATE_PLANTED)
-                ->update([
-                    'state' => PLOT_STATE_GROWN,
-                    'plant_time' => calculateFullyGrownPlantTime((float) $itemData['growTime']),
-                ]);
-            $unwitheredCount += $updated;
-        }
-
-        invalidateWorldCache($uid, $worldType);
-        return $unwitheredCount;
-    }
-
-    /**
-     * Return authoritative balance deltas for the reward consumables whose
-     * Flash implementations normally update only local state.
-     */
-    private static function consumableResourceDeltas($item, int $itemCount, $uid): array
-    {
-        if (!is_array($item)) {
-            return ['gold' => 0, 'xp' => 0, 'cash' => 0];
-        }
-
-        $className = strtolower(trim((string) ($item['className'] ?? '')));
-        if ($className === 'ccoins') {
-            return [
-                'gold' => self::positiveItemAmount($item['coins'] ?? 0) * $itemCount,
-                'xp' => 0,
-                'cash' => 0,
-            ];
-        }
-
-        if ($className === 'cxp') {
-            return [
-                'gold' => 0,
-                'xp' => self::positiveItemAmount($item['xp'] ?? 0) * $itemCount,
-                'cash' => 0,
-            ];
-        }
-
-        if ($className === 'ccash') {
-            return [
-                'gold' => 0,
-                'xp' => 0,
-                'cash' => self::positiveItemAmount($item['cash'] ?? 0) * $itemCount,
-            ];
-        }
-
-        if ($className === 'cxpbook') {
-            return [
-                'gold' => 0,
-                'xp' => self::xpBookAmount($uid, $itemCount),
-                'cash' => 0,
-            ];
-        }
-
-        return ['gold' => 0, 'xp' => 0, 'cash' => 0];
-    }
-
-    private static function positiveItemAmount($value): int
-    {
-        if (!is_numeric($value)) {
-            return 0;
-        }
-
-        return max(0, (int) $value);
-    }
-
-    /**
-     * CXPBook fills the XP gap to the next level for each book in sequence.
-     * Calculate all books while the player's resource row is locked so a
-     * concurrent use cannot calculate against the same pre-book XP value.
-     */
-    private static function xpBookAmount($uid, int $itemCount): int
-    {
-        $currentXp = UserResources::getXp($uid);
-        $xpToAdd = 0;
-
-        for ($i = 0; $i < $itemCount; $i++) {
-            $currentLevel = UserResources::getLevelForXp($currentXp);
-            $nextLevelXp = UserResources::getXpForLevel($currentLevel + 1);
-            $neededXp = max(0, min(UserResources::XP_MAX, $nextLevelXp) - $currentXp);
-            if ($neededXp <= 0) {
-                break;
-            }
-
-            $xpToAdd += $neededXp;
-            $currentXp += $neededXp;
-        }
-
-        return $xpToAdd;
+        return hash('sha256', $encoded);
     }
 
     /** Keep all object-ID actions compatible with Flash's same-batch temp IDs. */
@@ -578,6 +228,69 @@ class WorldService
         }
 
         return $result;
+    }
+
+    /**
+     * A newly bought FeatureBuilding can include a catalog-defined starter
+     * animal. Flash sends that animal only as a featured render slot after
+     * placing the building; it does not put it in `contents`. Contents are
+     * the durable source of truth, so accept this one initialization only
+     * when the server catalog and the incoming slot agree exactly.
+     *
+     * The seeded marker prevents a later empty compaction request (or an
+     * emptied habitat) from granting another copy. The short placement
+     * window means an arbitrary old storage building cannot be initialized
+     * by replaying a featured-item action.
+     *
+     * @return array<int, array{itemCode: string, numItem: int}>|null
+     */
+    private static function initialFeatureBuildingDefaultContents(
+        WorldObject $building,
+        \stdClass $components,
+        $featuredItems,
+    ): ?array {
+        if ($building->class_name !== 'FeatureBuilding'
+            || !empty($building->contents)
+            || !empty($components->serverDefaultItemSeeded)) {
+            return null;
+        }
+
+        $createdAt = $building->created_at;
+        if (!$createdAt instanceof \DateTimeInterface
+            || $createdAt < now()->subMinutes(10)) {
+            return null;
+        }
+
+        $buildingData = getItemByName((string) $building->item_name, 'db');
+        $defaultItem = is_array($buildingData) ? ($buildingData['defaultItem'] ?? null) : null;
+        if (is_object($defaultItem)) {
+            $defaultItem = get_object_vars($defaultItem);
+        }
+
+        $defaultName = is_array($defaultItem) ? ($defaultItem['name'] ?? null) : null;
+        $defaultAmount = is_array($defaultItem) ? (int) ($defaultItem['amount'] ?? 0) : 0;
+        if (!is_string($defaultName) || $defaultName === '' || $defaultAmount <= 0) {
+            return null;
+        }
+
+        $defaultItemData = getItemByName($defaultName, 'db');
+        $defaultCode = is_array($defaultItemData) ? ($defaultItemData['code'] ?? null) : null;
+        if (!is_string($defaultCode) || $defaultCode === '') {
+            return null;
+        }
+
+        $featuredItems = is_object($featuredItems) ? $featuredItems : new \stdClass();
+        foreach (get_object_vars($featuredItems) as $slot) {
+            $slotCode = is_object($slot) ? ($slot->itemCode ?? null) : ($slot['itemCode'] ?? null);
+            if ($slotCode === $defaultCode) {
+                return [[
+                    'itemCode' => $defaultCode,
+                    'numItem' => $defaultAmount,
+                ]];
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -758,18 +471,7 @@ class WorldService
      */
     private static function constructionRewardExtraData(string $itemName): ?\stdClass
     {
-        if ($itemName !== 'pigpen_male_light_green') {
-            return null;
-        }
-
-        // This is the Pig Pen's documented starter Green Boar variant from
-        // AnimalBreeding.xml.  Its plain pattern is available at level one.
-        return (object) [
-            'N' => 'pigpen_male_light_green',
-            'G' => 'M',
-            'B' => (object) ['H' => ['66', '66'], 'S' => ['c', 'c'], 'V' => ['c', 'c']],
-            'P' => (object) ['H' => ['66', '66'], 'S' => ['c', 'c'], 'V' => ['c', 'c'], 'T' => ['a']],
-        ];
+        return StorageActionHandler::constructionRewardExtraData($itemName);
     }
 
     /**
@@ -1241,13 +943,19 @@ class WorldService
 
                 // Placing an item already owned in a storage box must not be
                 // processed as a new market purchase.
+                $marketTransactionSucceeded = false;
+                $transactionCurrency = null;
                 if ($isStorageWithdrawal === 0
                     && !$isUGCPlacement
                     && !$playerObj->lastPlacementWasIdempotentRetry()) {
                     try {
-                        $currency = ($extraParams !== null && isset($extraParams->currency))
+                        $transactionCurrency = ($extraParams !== null && isset($extraParams->currency))
                             ? (string) $extraParams->currency : null;
-                        $market->newTransaction($action, $marketPurchaseObj, $currency);
+                        $marketTransactionSucceeded = (bool) $market->newTransaction(
+                            $action,
+                            $marketPurchaseObj,
+                            $transactionCurrency,
+                        );
                     } catch (\Throwable $e) {
                         Logger::error('WorldService', "Plant transaction error: " . $e->getMessage());
                     }
@@ -1411,6 +1119,21 @@ class WorldService
                     $uid = $playerObj->getUid();
                     $itemData = getItemByName($plantedItemName, "db");
                     trackPlantProgress($uid, $plantedItemName, $itemData ?: []);
+
+                    // Plot persistence returns 0 for a successful update in
+                    // the legacy AMF contract, so only false means failure.
+                    if ($retId !== false && $className === 'Plot' && $marketTransactionSucceeded) {
+                        $plantDeltas = MarketTransactions::calculateBuyDeltas(
+                            $plantedItemName,
+                            1,
+                            $transactionCurrency,
+                        );
+                        awardPlotActionWorldScore(
+                            $uid,
+                            getCurrentWorldType($uid),
+                            $plantDeltas['xpDelta'],
+                        );
+                    }
                 }
 
                 $data["id"] = $retId;
@@ -1432,6 +1155,72 @@ class WorldService
                     'object_id' => is_object($plowObject) ? ($plowObject->id ?? null) : null,
                 ]);
 
+                // Flash can retain an acknowledged plow in its transaction
+                // queue and send it again on a later reload.  setWorld()
+                // treats a Plot as an update, so without this guard that
+                // replay would write the already-plowed plot and then charge
+                // another 15 coins.  A plow of an already-plowed server plot
+                // is a successful no-op: acknowledge it so Flash drops the
+                // queued operation, but never charge or award XP again.
+                $currentWorldType = getCurrentWorldType($uid);
+                $world = getWorldByType($uid, $currentWorldType);
+                $existingPlot = null;
+                foreach ($world['objectsArray'] ?? [] as $worldObject) {
+                    $worldPosition = $worldObject->position ?? null;
+                    $worldX = is_object($worldPosition) ? ($worldPosition->x ?? null) : null;
+                    $worldY = is_object($worldPosition) ? ($worldPosition->y ?? null) : null;
+                    if ($worldX == $posX && $worldY == $posY) {
+                        $existingPlot = $worldObject;
+                        break;
+                    }
+                }
+
+                $existingState = $existingPlot->state ?? null;
+                $existingClassName = (string) ($existingPlot->className ?? '');
+                $existingIsPlot = $existingPlot !== null
+                    && stripos($existingClassName, 'Plot') !== false;
+
+                if ($existingIsPlot) {
+                    $existingState = getEffectivePlotState(
+                        $existingPlot,
+                        $uid,
+                        $currentWorldType,
+                    );
+                }
+
+                if ($existingIsPlot && $existingState === PLOT_STATE_PLOWED) {
+                    Logger::debug('PlowAudit', 'Single plow replay ignored', [
+                        'uid' => (string) $uid,
+                        'world_type' => $currentWorldType,
+                        'x' => $posX,
+                        'y' => $posY,
+                        'object_id' => $existingPlot->id ?? null,
+                    ]);
+                    $data['id'] = 0;
+                    $data['data'] = ['id' => 0, 'stale' => true];
+                    break;
+                }
+
+                // Planted plots keep their persisted state while Flash derives
+                // grown/withered from plantTime. Once that derived state is
+                // withered, a plow is the client's clear-withered operation and
+                // must be allowed to reach setWorld(). Other planted/grown
+                // plots remain protected from stale plow replays.
+                if ($existingIsPlot
+                    && !in_array($existingState, [PLOT_STATE_FALLOW, PLOT_STATE_WITHERED], true)) {
+                    Logger::debug('PlowAudit', 'Single plow ignored for non-plowable plot', [
+                        'uid' => (string) $uid,
+                        'world_type' => $currentWorldType,
+                        'x' => $posX,
+                        'y' => $posY,
+                        'object_id' => $existingPlot->id ?? null,
+                        'state' => $existingState,
+                    ]);
+                    $data['id'] = 0;
+                    $data['data'] = ['id' => 0, 'stale' => true];
+                    break;
+                }
+
                 try {
                     $retId = $playerObj->setWorld($plowObject, $action);
                 } catch (\Throwable $exception) {
@@ -1445,20 +1234,42 @@ class WorldService
                     throw $exception;
                 }
 
-                Logger::debug('PlowAudit', $retId === false ? 'Single plow rejected' : 'Single plow committed', [
+                if ($retId === false) {
+                    Logger::warning('PlowAudit', 'Single plow rejected before transaction', [
+                        'uid' => (string) $uid,
+                        'world_type' => $currentWorldType,
+                        'x' => $posX,
+                        'y' => $posY,
+                    ]);
+                    $data['id'] = 0;
+                    $data['data'] = ['id' => 0, 'success' => false];
+                    break;
+                }
+
+                Logger::debug('PlowAudit', 'Single plow committed', [
                     'uid' => (string) $uid,
-                    'world_type' => getCurrentWorldType($uid),
+                    'world_type' => $currentWorldType,
                     'x' => $posX,
                     'y' => $posY,
                     'object_id' => $retId,
                 ]);
 
+                $marketTransactionSucceeded = false;
                 try {
                     $currency = ($extraParams !== null && isset($extraParams->currency))
                         ? (string) $extraParams->currency : null;
-                    $market->newTransaction($action, $request->params[1], $currency);
+                    $marketTransactionSucceeded = (bool) $market->newTransaction(
+                        $action,
+                        $request->params[1],
+                        $currency,
+                    );
                 } catch (\Throwable $e) {
                     Logger::error('WorldService', "Plow transaction error: " . $e->getMessage());
+                }
+
+                if ($marketTransactionSucceeded) {
+                    $plowDeltas = MarketTransactions::calculatePlowDeltas(1);
+                    awardPlotActionWorldScore($uid, $currentWorldType, $plowDeltas['xpDelta']);
                 }
 
                 $uid = $playerObj->getUid();
@@ -1568,6 +1379,17 @@ class WorldService
                     // legacy data/client (grown and ripe).
                     $serverClassName = (string) ($serverObj->className ?? '');
                     $serverState = (string) ($serverObj->state ?? '');
+                    if (stripos($serverClassName, 'Plot') !== false
+                        && $serverState === PLOT_STATE_PLANTED
+                        && $serverItemName) {
+                        // Plot rows deliberately remain planted while the
+                        // client derives their visible grown/withered state.
+                        $serverState = getEffectivePlotState(
+                            $serverObj,
+                            $uid,
+                            $currentWorldType,
+                        );
+                    }
                     if (stripos($serverClassName, 'Plot') !== false
                         && !in_array($serverState, [PLOT_STATE_GROWN, 'ripe'], true)) {
                         $isStalePlotHarvest = true;
@@ -1897,7 +1719,7 @@ class WorldService
                 break;
 
             case ACTION_USE:
-                $useResult = self::consumeUseItem($playerObj, $request, $extraParams);
+                $useResult = ConsumableActionHandler::handle($playerObj, $request, $extraParams);
                 $data["data"] = array_merge(
                     ["id" => 0],
                     $useResult,
@@ -1912,224 +1734,7 @@ class WorldService
                 break;
 
             case ACTION_STORE:
-                $buildingObj = $request->params[1];
-                $storeWorldType = getCurrentWorldType($playerObj->getUid());
-                self::resolveActionObjectId($playerObj, $buildingObj, $storeWorldType);
-                if ($extraParams) {
-                    $storedItemName = $extraParams->storedItemName ?? null;
-                    $storedItemCode = $extraParams->storedItemCode ?? null;
-                    $numToStore = (int) ($extraParams->numToStore ?? 1);
-                    $storageTarget = isset($extraParams->target) ? (int) $extraParams->target : null;
-                    $buildingId = $buildingObj->id ?? null;
-                    $buildingItemName = $buildingObj->itemName ?? null;
-                    $buildingClassName = $buildingObj->className ?? null;
-
-                    // Market-stall expansion parts are not normal storage
-                    // contents.  Flash has already added them to its
-                    // FeatureExpansionState and sends this store action only
-                    // to make that progress durable.
-                    if ($buildingId
-                        && ($buildingClassName === 'MarketStallBuilding'
-                            || $buildingItemName === 'marketstall')
-                        && self::isMarketStallExpansionPart($storedItemName)) {
-                        $marketPartResult = self::storeMarketStallExpansionPart(
-                            $playerObj->getUid(),
-                            $storeWorldType,
-                            (int) $buildingId,
-                            (string) $storedItemName,
-                            is_string($storedItemCode) ? $storedItemCode : null,
-                            $numToStore,
-                            self::flashBoolean($extraParams->isGift ?? false, false),
-                        );
-
-                        if ($marketPartResult === false) {
-                            return [
-                                'id' => 0,
-                                'data' => [
-                                    'id' => 0,
-                                    'success' => false,
-                                    'error' => 'Could not store market-stall expansion part',
-                                ],
-                            ];
-                        }
-
-                        $data['data'] = $marketPartResult;
-                        break;
-                    }
-
-                    $isExpansionPartItem = false;
-                    $buildingItemData = null;
-                    $partData = null;
-
-                    if ($buildingId && $buildingItemName && $storedItemName) {
-                        $buildingItemData = getItemByName($buildingItemName, "db");
-                        if ($buildingItemData && hasExpandFeature($buildingItemData)) {
-                            $uid = $playerObj->getUid();
-                            $currentWorldType = getCurrentWorldType($uid);
-                            $currWorld = getWorldByType($uid, $currentWorldType);
-
-                            foreach ($currWorld["objectsArray"] as $obj) {
-                                if (isset($obj->id) && $obj->id == $buildingId) {
-                                    $currentLevel = (int)($obj->expansionLevel ?? 1);
-                                    $partData = isExpansionPart($buildingItemData, $currentLevel, $storedItemName);
-                                    if ($partData) {
-                                        $isExpansionPartItem = true;
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    $storeResult = null;
-                    if (!$isExpansionPartItem) {
-                        // TInventoryStore identifies its destination with
-                        // target=-2 and sends the resource itself as the
-                        // action object. TStoreItem has no target and sends a
-                        // real StorageBuilding. They must not share a path.
-                        $storeResult = $storageTarget === HOME_INVENTORY_ID
-                            ? $playerObj->storeInHomeInventory($extraParams)
-                            : $playerObj->storeItem($buildingObj, $extraParams);
-
-                        if (!$storeResult) {
-                            return [
-                                'id' => 0,
-                                'data' => [
-                                    'id' => 0,
-                                    'success' => false,
-                                    'error' => 'Could not store item',
-                                ],
-                            ];
-                        }
-
-                        // Quest progress is only recorded after the storage
-                        // write succeeds, so a rejected store neither removes
-                        // an item nor advances a quest.
-                        trackStoreProgress(
-                            $playerObj->getUid(),
-                            $storedItemCode ?? ($storeResult['itemCode'] ?? ''),
-                            max(1, $numToStore)
-                        );
-
-                        $data['data'] = [
-                            'id' => $storeResult['id'] ?? 0,
-                            'success' => true,
-                        ];
-
-                        // A construction store becomes complete as soon as
-                        // the final configured part is committed. Player::storeItem
-                        // performs that transition inside the same persistence
-                        // transaction; return the normal Flash completion
-                        // envelope so the client replaces its local frame with
-                        // the finished building instead of disabling its menu.
-                        $completion = is_array($storeResult['completion'] ?? null)
-                            ? $storeResult['completion'] : null;
-                        if ($completion !== null) {
-                            $reward = $completion['gift']
-                                ?? ($completion['finishedReward'] ?? null);
-                            if (is_string($reward) && $reward !== '') {
-                                addGiftByName(
-                                    $playerObj->getUid(),
-                                    $reward,
-                                    1,
-                                    $playerObj->getUid(),
-                                    self::constructionRewardExtraData($reward),
-                                );
-                            }
-
-                            $data['data']['finishedName'] = $completion['finishedName'];
-                            $data['data']['finishedClassName'] = $completion['finishedClassName'];
-                            $data['data']['finishedState'] = $completion['finishedState'];
-                            $data['data']['gift'] = $reward;
-                        }
-                    }
-
-                    $creditItems = [
-                        "shovel_item_01"            => "InventoryCellar",
-                        "shovel_item_20"            => "InventoryCellar",
-                        "shovel_itempack"           => "InventoryCellar",
-                        "beehive_bee"               => "beehive",
-                        "beehive_queen"             => "beehive",
-                        "beehive_bee_5"             => "beehive",
-                        "halloween_candy_5pack"     => "halloweenBasket",
-                        "haitibackpack_itempack_5"  => "haitiBackpack",
-                    ];
-
-                    if ($storedItemName && isset($creditItems[$storedItemName])) {
-                        $uid = $playerObj->getUid();
-                        $currentWorldType = getCurrentWorldType($uid);
-                        $featureName = $creditItems[$storedItemName];
-
-                        $itemData = getItemByName($storedItemName, "db");
-                        $creditCount = ($itemData && isset($itemData['count'])) ? (int) $itemData['count'] : 1;
-
-                        addFeatureCredit($uid, $currentWorldType, $featureName, $creditCount * $numToStore);
-
-                        if ($itemData) {
-                            $cashCost = (int) ($itemData['cash'] ?? 0);
-                            if ($cashCost > 0) {
-                                UserResources::removeCash($uid, $cashCost * $numToStore);
-                            }
-                        }
-                    }
-
-                    if ($isExpansionPartItem && $partData) {
-                        $uid = $playerObj->getUid();
-                        $currentWorldType = getCurrentWorldType($uid);
-                        $currWorld = getWorldByType($uid, $currentWorldType);
-
-                        $buildingKey = null;
-                        foreach ($currWorld["objectsArray"] as $key => $obj) {
-                            if (isset($obj->id) && $obj->id == $buildingId) {
-                                $buildingKey = $key;
-                                break;
-                            }
-                        }
-
-                        if ($buildingKey !== null) {
-                            $building = $currWorld["objectsArray"][$buildingKey];
-                            $currentLevel = (int)($building->expansionLevel ?? 1);
-
-                            $partItemData = getItemByName($storedItemName, "db");
-                            $partCode = ($partItemData && isset($partItemData['code']))
-                                ? $partItemData['code']
-                                : $storedItemCode;
-
-                            if ($partCode) {
-                                $isGift = $extraParams->isGift ?? false;
-                                if (!$isGift && $partItemData) {
-                                    $cashCost = (int)($partItemData['cash'] ?? 0);
-                                    if ($cashCost > 0) {
-                                        $totalCost = $cashCost * $numToStore;
-                                        UserResources::removeCash($uid, $totalCost);
-                                    }
-                                }
-
-                                if (!isset($building->expansionParts)) {
-                                    $building->expansionParts = new \stdClass();
-                                }
-
-                                $currentCount = 0;
-                                if (is_object($building->expansionParts) && isset($building->expansionParts->$partCode)) {
-                                    $currentCount = (int)$building->expansionParts->$partCode;
-                                }
-
-                                $needed = (int)($partData->need ?? 10);
-                                $newCount = min($currentCount + $numToStore, $needed);
-                                $building->expansionParts->$partCode = $newCount;
-
-                                if (checkExpansionComplete($building, $buildingItemData)) {
-                                    $building->expansionLevel = $currentLevel + 1;
-                                    $building->expansionParts = new \stdClass();
-                                }
-
-                                if (!WorldPersistence::updateObject($uid, $currentWorldType, $building)) {
-                                    throw new \Exception("Failed to save world (store expansion) for uid=$uid");
-                                }
-                            }
-                        }
-                    }
-                }
+                $data = StorageActionHandler::handle($playerObj, $request, $extraParams);
                 break;
 
             case ACTION_SET_MULTIPLE_FEATURED_ITEMS:
@@ -2165,6 +1770,18 @@ class WorldService
                             $components = is_object($building->components)
                                 ? $building->components
                                 : new \stdClass();
+                            $defaultContents = self::initialFeatureBuildingDefaultContents(
+                                $building,
+                                $components,
+                                $featuredItems,
+                            );
+                            if ($defaultContents !== null) {
+                                $building->contents = $defaultContents;
+                                // This is server-only durable state. It closes
+                                // the initialization path after the first
+                                // catalog default has been granted.
+                                $components->serverDefaultItemSeeded = true;
+                            }
                             $components->featuredItems = self::reconcileFeaturedItemsForContents(
                                 $building->contents,
                                 $featuredItems,
@@ -2341,27 +1958,12 @@ class WorldService
                                             $modified = true;
                                             break;
                                         case NEIGHBOR_ACTION_UNWITHER:
-                                            $currentState = $obj->state ?? '';
+                                            $currentState = getEffectivePlotState(
+                                                $obj,
+                                                $hostId,
+                                                $hostWorldType,
+                                            );
                                             $itemName = $obj->itemName ?? null;
-                                            $plantTime = $obj->plantTime ?? 0;
-
-                                            if ($currentState === PLOT_STATE_PLANTED && $itemName && $plantTime > 0) {
-                                                $itemData = getItemByName($itemName, "db");
-                                                if ($itemData && isset($itemData["growTime"])) {
-                                                    $growTimeDays = (float) $itemData["growTime"];
-                                                    $growTimeMs = calculateGrowTimeMs($growTimeDays);
-                                                    $witherTimeMs = $growTimeMs;
-                                                    $currentTimeMs = getCurrentTimeMs();
-
-                                                    $hasRingProtection = isWitherProtectionActive($hostId, $hostWorldType);
-
-                                                    if ($currentTimeMs >= ($plantTime + $growTimeMs + $witherTimeMs) && !$hasRingProtection) {
-                                                        $currentState = PLOT_STATE_WITHERED;
-                                                    } elseif ($currentTimeMs >= ($plantTime + $growTimeMs)) {
-                                                        $currentState = PLOT_STATE_GROWN;
-                                                    }
-                                                }
-                                            }
 
                                             if ($currentState === PLOT_STATE_WITHERED) {
                                                 $hostWorld["objectsArray"][$key]->state = PLOT_STATE_GROWN;
@@ -3089,7 +2691,7 @@ class WorldService
 
         set_meta($uid, 'currentWorldType', $travelWorld["type"]);
 
-        // Mistletoe Lane's original quest definitions are present in the
+        // Winter Fable's original quest definitions are present in the
         // imported quest catalog, but the Flash client expects the first
         // event bubble to be seeded when the world is entered.
         if ($travelWorld["type"] === 'winternord') {

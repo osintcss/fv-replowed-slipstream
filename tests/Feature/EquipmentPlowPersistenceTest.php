@@ -81,6 +81,151 @@ it('persists one plot when an equipment plow bundle repeats a coordinate', funct
         ->and(UserMeta::query()->where('uid', $uid)->value('xp'))->toBe(1);
 });
 
+it('acknowledges a replayed equipment plow without charging it twice', function (): void {
+    $uid = '900006';
+    $world = UserWorld::query()->create([
+        'uid' => $uid,
+        'type' => 'farm',
+        'sizeX' => 12,
+        'sizeY' => 12,
+        'objects' => '[]',
+        'messageManager' => serialize(['messages' => [], 'allowSendEmails' => true]),
+    ]);
+    UserMeta::query()->create([
+        'uid' => $uid,
+        'firstName' => 'Equipment',
+        'lastName' => 'Replay',
+        'gold' => 1000,
+        'xp' => 0,
+        'cash' => 0,
+        'energy' => 10,
+        'energyMax' => 10,
+    ]);
+    WorldObject::query()->create([
+        'world_id' => $world->id,
+        'object_id' => 1,
+        'class_name' => 'Plot',
+        'position_x' => 4,
+        'position_y' => 8,
+        'position_z' => 0,
+        'state' => PLOT_STATE_FALLOW,
+        'plant_time' => 0,
+        'deleted' => false,
+    ]);
+    PlayerMeta::setValue($uid, 'currentWorldType', 'farm');
+    invalidateWorldCache($uid, 'farm');
+
+    $player = new class ($uid) {
+        public function __construct(private readonly string $uid) {}
+
+        public function getUid(): string
+        {
+            return $this->uid;
+        }
+    };
+    $request = static fn (): object => (object) ['params' => [
+        ACTION_PLOW,
+        (object) [],
+        [(object) [
+            'id' => 63001,
+            'position' => (object) ['x' => 4, 'y' => 8, 'z' => 0],
+        ]],
+        PLOT_STATE_PLOWED,
+    ]];
+
+    EquipmentWorldService::onUseEquipment($player, $request(), null);
+    expect(UserMeta::query()->where('uid', $uid)->first(['gold', 'xp', 'energy'])->only(['gold', 'xp', 'energy']))
+        ->toBe(['gold' => 985, 'xp' => 1, 'energy' => 9]);
+
+    // A new request object models Flash replaying a queued equipment action
+    // after reconnecting to the farm.
+    invalidateWorldCache($uid, 'farm');
+    $retry = EquipmentWorldService::onUseEquipment($player, $request(), null);
+
+    expect($retry['data'][0])->toMatchArray([
+        'id' => 1,
+        'data' => ['id' => 1, 'stale' => true],
+    ])
+        ->and(UserMeta::query()->where('uid', $uid)->first(['gold', 'xp', 'energy'])->only(['gold', 'xp', 'energy']))
+        ->toBe(['gold' => 985, 'xp' => 1, 'energy' => 9])
+        ->and(WorldObject::query()->where('world_id', $world->id)->value('state'))->toBe(PLOT_STATE_PLOWED);
+});
+
+it('persists an equipment plow for a visually withered planted plot', function (): void {
+    $uid = '900008';
+    $world = UserWorld::query()->create([
+        'uid' => $uid,
+        'type' => 'farm',
+        'sizeX' => 12,
+        'sizeY' => 12,
+        'objects' => '[]',
+        'messageManager' => serialize(['messages' => [], 'allowSendEmails' => true]),
+    ]);
+    UserMeta::query()->create([
+        'uid' => $uid,
+        'firstName' => 'Withered',
+        'lastName' => 'Equipment',
+        'gold' => 1000,
+        'xp' => 0,
+        'cash' => 0,
+        'energy' => 10,
+        'energyMax' => 10,
+    ]);
+    DB::table('items')->insert([
+        'name' => 'equipment_withered_plow_test',
+        'code' => 'EWP1',
+        'data' => serialize([
+            'name' => 'equipment_withered_plow_test',
+            'code' => 'EWP1',
+            'growTime' => 0.01,
+            'expires' => true,
+        ]),
+    ]);
+    WorldObject::query()->create([
+        'world_id' => $world->id,
+        'object_id' => 1,
+        'class_name' => 'Plot',
+        'position_x' => 4,
+        'position_y' => 8,
+        'position_z' => 0,
+        'state' => PLOT_STATE_PLANTED,
+        'item_name' => 'equipment_withered_plow_test',
+        'plant_time' => getCurrentTimeMs() - (calculateGrowTimeMs(0.01) * 3),
+        'deleted' => false,
+    ]);
+    PlayerMeta::setValue($uid, 'currentWorldType', 'farm');
+    invalidateWorldCache($uid, 'farm');
+
+    $request = (object) ['params' => [
+        ACTION_PLOW,
+        (object) [],
+        [(object) [
+            'id' => 63001,
+            'position' => (object) ['x' => 4, 'y' => 8, 'z' => 0],
+        ]],
+        PLOT_STATE_PLOWED,
+    ]];
+
+    $result = EquipmentWorldService::onUseEquipment(
+        new class ($uid) {
+            public function __construct(private readonly string $uid) {}
+
+            public function getUid(): string
+            {
+                return $this->uid;
+            }
+        },
+        $request,
+        null,
+    );
+
+    expect($result['data'][0]['id'])->toBe(1)
+        ->and(UserMeta::query()->where('uid', $uid)->value('gold'))->toBe(985)
+        ->and(UserMeta::query()->where('uid', $uid)->value('xp'))->toBe(1)
+        ->and(WorldObject::query()->where('world_id', $world->id)->value('state'))->toBe(PLOT_STATE_PLOWED)
+        ->and(WorldObject::query()->where('world_id', $world->id)->value('item_name'))->toBeNull();
+});
+
 it('grants a fuel reward when equipment harvests a gas pump', function (): void {
     $uid = '900003';
     $world = UserWorld::query()->create([

@@ -4,6 +4,8 @@ use App\Helpers\ObjectHelper;
 
 define('IN_GAME_DAY_SECONDS', 82800); // 23 hours is what game client use to indicate a full day  
 define('GROW_MULTIPLIER', 1);
+define('PLOT_WITHER_MULTIPLIER', 2.2);
+define('PLOT_WITHER_RANDOM_RANGE', 0.5);
 
 function calculateGrowTimeMs($growTimeDays) {
     return (float) $growTimeDays * IN_GAME_DAY_SECONDS * 1000 * GROW_MULTIPLIER;
@@ -15,6 +17,123 @@ function getCurrentTimeMs() {
 
 function calculateFullyGrownPlantTime($growTimeDays) {
     return getCurrentTimeMs() - calculateGrowTimeMs($growTimeDays);
+}
+
+/**
+ * The Flash client does not persist the visible grown/withered state of a
+ * planted plot. It derives that state from the plant timestamp, plot grid
+ * position, and the crop's grow time. Keep the server calculation identical
+ * so an action on a visually withered plot is not rejected as merely
+ * `planted` in the database.
+ */
+function calculatePlotWitherTimeMs($plantTime, $posX, $posY, $itemData) {
+    if (!is_numeric($plantTime) || (float) $plantTime <= 0
+        || !is_numeric($posX) || !is_numeric($posY)) {
+        return null;
+    }
+
+    if (is_object($itemData)) {
+        $itemData = get_object_vars($itemData);
+    }
+    if (!is_array($itemData) || !isset($itemData['growTime'])) {
+        return null;
+    }
+
+    // In the catalogue, expires=false means the crop can mature but never
+    // enters the withered phase. Missing expires retains normal crop behavior.
+    $expires = $itemData['expires'] ?? null;
+    if ($expires === false || $expires === 0
+        || (is_string($expires) && in_array(strtolower(trim($expires)), ['false', '0'], true))) {
+        return null;
+    }
+
+    $growTimeMs = calculateGrowTimeMs((float) $itemData['growTime']);
+    if ($growTimeMs <= 0) {
+        return null;
+    }
+
+    // Flash builds this key with String(Number) values. Plant timestamps and
+    // grid coordinates are integral in the world contract, so normalize them
+    // before hashing to avoid PHP's float formatting differing from AS3.
+    $key = (string) (int) $plantTime . (string) (int) $posX . (string) (int) $posY;
+    $decVal = hexdec(substr(md5($key), -7));
+    $factor = ((($decVal % 100) + 1) / 100) * PLOT_WITHER_RANDOM_RANGE;
+
+    return (float) $plantTime
+        + ($growTimeMs * (PLOT_WITHER_MULTIPLIER + $factor));
+}
+
+/**
+ * Return a plot's authoritative gameplay state without rewriting the row.
+ * Planted rows intentionally remain planted in storage; this derived state is
+ * used when validating actions and calculating rewards.
+ */
+function getEffectivePlotState($plot, $uid = null, $worldType = null, $nowMs = null) {
+    $currentState = is_object($plot)
+        ? ($plot->state ?? null)
+        : (is_array($plot) ? ($plot['state'] ?? null) : null);
+
+    if ($currentState !== PLOT_STATE_PLANTED) {
+        return $currentState;
+    }
+
+    $itemName = is_object($plot)
+        ? ($plot->itemName ?? ($plot->item_name ?? null))
+        : (is_array($plot) ? ($plot['itemName'] ?? ($plot['item_name'] ?? null)) : null);
+    $plantTime = is_object($plot)
+        ? ($plot->plantTime ?? ($plot->plant_time ?? 0))
+        : (is_array($plot) ? ($plot['plantTime'] ?? ($plot['plant_time'] ?? 0)) : 0);
+    $position = is_object($plot)
+        ? ($plot->position ?? null)
+        : (is_array($plot) ? ($plot['position'] ?? null) : null);
+    $posX = is_object($position)
+        ? ($position->x ?? null)
+        : (is_array($position) ? ($position['x'] ?? null) : null);
+    $posY = is_object($position)
+        ? ($position->y ?? null)
+        : (is_array($position) ? ($position['y'] ?? null) : null);
+    if ($posX === null) {
+        $posX = is_object($plot) ? ($plot->position_x ?? null) : ($plot['position_x'] ?? null);
+    }
+    if ($posY === null) {
+        $posY = is_object($plot) ? ($plot->position_y ?? null) : ($plot['position_y'] ?? null);
+    }
+
+    if (!is_string($itemName) || $itemName === '' || !function_exists('getItemByName')) {
+        return $currentState;
+    }
+
+    $itemData = getItemByName($itemName, 'db');
+    if (is_object($itemData)) {
+        $itemData = get_object_vars($itemData);
+    }
+    if (!is_array($itemData) || !isset($itemData['growTime'])) {
+        return $currentState;
+    }
+
+    $growTimeMs = calculateGrowTimeMs((float) $itemData['growTime']);
+    if ($growTimeMs <= 0 || !is_numeric($plantTime)) {
+        return $currentState;
+    }
+
+    $nowMs = $nowMs === null ? getCurrentTimeMs() : (float) $nowMs;
+    if ($nowMs < ((float) $plantTime + $growTimeMs)) {
+        return PLOT_STATE_PLANTED;
+    }
+
+    $protectionActive = $uid !== null
+        && function_exists('isWitherProtectionActive')
+        && isWitherProtectionActive($uid, $worldType);
+    if ($protectionActive) {
+        return PLOT_STATE_GROWN;
+    }
+
+    $witherTimeMs = calculatePlotWitherTimeMs($plantTime, $posX, $posY, $itemData);
+    if ($witherTimeMs !== null && $nowMs >= $witherTimeMs) {
+        return PLOT_STATE_WITHERED;
+    }
+
+    return PLOT_STATE_GROWN;
 }
 
 define('PLOT_STATE_FALLOW', 'fallow');

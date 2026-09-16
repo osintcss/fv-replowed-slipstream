@@ -422,8 +422,6 @@ class FarmService
         }
 
         $unwitheredCount = 0;
-        $currentTimeMs = getCurrentTimeMs();
-
         $plots = \App\Models\WorldObject::where('world_id', $worldId)
             ->where('class_name', 'Plot')
             ->where('state', PLOT_STATE_PLANTED)
@@ -439,11 +437,7 @@ class FarmService
             }
 
             $growTimeDays = (float) $itemData["growTime"];
-            $growTimeMs = calculateGrowTimeMs($growTimeDays);
-            $witherTimeMs = $growTimeMs;
-            $plantTime = $plot->plant_time;
-
-            if ($currentTimeMs >= ($plantTime + $growTimeMs + $witherTimeMs)) {
+            if (getEffectivePlotState($plot, $uid, $worldType) === PLOT_STATE_WITHERED) {
                 $newPlantTime = calculateFullyGrownPlantTime($growTimeDays);
 
                 \App\Models\WorldObject::where('id', $plot->id)

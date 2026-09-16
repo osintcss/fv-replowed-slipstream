@@ -227,6 +227,80 @@ it('returns a harvested fuel refill in the refreshed Giftbox storage data', func
         ->and($pump->fresh()->state)->toBe(HARVESTABLE_STATE_BARE);
 });
 
+it('persists a direct harvest when a planted crop has matured by its timer', function (): void {
+    [$uid] = consumablePersistencePlayer();
+    $world = UserWorld::query()->create([
+        'uid' => $uid,
+        'type' => 'farm',
+        'sizeX' => 12,
+        'sizeY' => 12,
+        'objects' => '[]',
+        'messageManager' => serialize(['messages' => [], 'allowSendEmails' => true]),
+    ]);
+    seedConsumableItem('direct_harvest_mature_test', 'DHMT1', [
+        'name' => 'direct_harvest_mature_test',
+        'code' => 'DHMT1',
+        'className' => 'Plot',
+        'growTime' => '0',
+        'yield' => '1',
+        'gold' => '1',
+        'xp' => '1',
+    ]);
+    $plantTime = getCurrentTimeMs() - 1;
+    $plot = WorldObject::query()->create([
+        'world_id' => $world->id,
+        'object_id' => 1,
+        'class_name' => 'Plot',
+        'item_name' => 'direct_harvest_mature_test',
+        'position_x' => 4,
+        'position_y' => 8,
+        'position_z' => 0,
+        'state' => PLOT_STATE_PLANTED,
+        'plant_time' => $plantTime,
+        'deleted' => false,
+    ]);
+    PlayerMeta::setValue($uid, 'currentWorldType', 'farm');
+    invalidateWorldCache($uid, 'farm');
+
+    $clientObject = (object) [
+        'id' => 1,
+        'className' => 'Plot',
+        'itemName' => 'direct_harvest_mature_test',
+        'position' => (object) ['x' => 4, 'y' => 8, 'z' => 0],
+        'state' => PLOT_STATE_FALLOW,
+        'plantTime' => $plantTime,
+        'components' => (object) [],
+    ];
+    $result = WorldService::performAction(
+        new Player($uid),
+        (object) ['params' => [ACTION_HARVEST, $clientObject, []]],
+        new MarketTransactions($uid),
+    );
+
+    expect($result['data']['stale'] ?? false)->toBeFalse()
+        ->and($plot->fresh()->state)->toBe(PLOT_STATE_FALLOW)
+        ->and($plot->fresh()->item_name)->toBeNull()
+        ->and($plot->fresh()->plant_time)->toBe(0);
+});
+
+it('provides a positive Fuel Refill selector limit in InitUser', function (): void {
+    [$uid] = consumablePersistencePlayer();
+    UserWorld::query()->create([
+        'uid' => $uid,
+        'type' => 'farm',
+        'sizeX' => 12,
+        'sizeY' => 12,
+        'objects' => '[]',
+        'messageManager' => serialize(['messages' => [], 'allowSendEmails' => true]),
+    ]);
+    PlayerMeta::setValue($uid, 'currentWorldType', 'farm');
+
+    $initUser = (new Player($uid))->getData((object) ['sequence' => 1]);
+
+    expect($initUser['flashHotParams']['THROTTLE_MAX_OPEN_FUEL_CAN'])
+        ->toBe(20.0);
+});
+
 it('persists generic Giftbox consumable use', function (): void {
     [$uid, $player] = consumablePersistencePlayer();
     seedConsumableItem('consume_test', 'ZZ', [
@@ -257,6 +331,66 @@ it('persists generic Giftbox consumable use', function (): void {
     expect($giftbox['ZZ'][0])->toBe(1);
 });
 
+it('preserves the legacy error envelope for malformed consumable use', function (): void {
+    [$uid, $player] = consumablePersistencePlayer();
+
+    $result = WorldService::performAction(
+        $player,
+        (object) ['params' => [ACTION_USE, (object) [], []]],
+        null,
+    );
+
+    expect($result)->toBe([
+        'id' => 0,
+        'data' => [
+            'id' => 0,
+            'success' => false,
+            'consumed' => 0,
+            'error' => 'Consumable has no storage code.',
+        ],
+    ]);
+});
+
+it('preserves the legacy no-op envelope for free consumable use', function (): void {
+    [$uid, $player] = consumablePersistencePlayer();
+    seedConsumableItem('free_consume_test', 'FREE1', [
+        'name' => 'free_consume_test',
+        'code' => 'FREE1',
+        'className' => 'CXP',
+        'xp' => 10,
+    ]);
+    PlayerMeta::setValue($uid, 'giftbox', serialize([
+        'FREE1' => [1, [], []],
+    ]));
+
+    $result = WorldService::performAction(
+        $player,
+        (object) ['params' => [
+            ACTION_USE,
+            (object) ['itemName' => 'free_consume_test'],
+            [(object) [
+                'isFree' => true,
+                'isGift' => true,
+                'storageId' => GIFTBOX_ID,
+                'itemCount' => 1,
+                'targetUser' => $uid,
+            ]],
+        ]],
+        null,
+    );
+
+    expect($result)->toBe([
+        'id' => 0,
+        'data' => [
+            'id' => 0,
+            'success' => true,
+            'consumed' => 0,
+        ],
+    ]);
+    expect(unserialize(PlayerMeta::getValue($uid, 'giftbox'), ['allowed_classes' => false]))
+        ->toHaveKey('FREE1');
+});
+
 it('persists the server-side effect of the unwither consumable', function (): void {
     [$uid, $player] = consumablePersistencePlayer();
     $world = UserWorld::query()->create([
@@ -276,7 +410,9 @@ it('persists the server-side effect of the unwither consumable', function (): vo
     ]));
 
     $growTimeDays = 0.01;
-    $oldPlantTime = getCurrentTimeMs() - (calculateGrowTimeMs($growTimeDays) * 2) - 1;
+    // The client-matching wither window is randomized between 2.2 and 2.7
+    // grow times, so place this plot safely beyond the upper bound.
+    $oldPlantTime = getCurrentTimeMs() - (calculateGrowTimeMs($growTimeDays) * 3) - 1;
     $oldPlot = WorldObject::query()->create([
         'world_id' => $world->id,
         'object_id' => 1,
