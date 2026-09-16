@@ -15,17 +15,11 @@
   - `world:cleanup-deleted` - Hard delete soft-deleted world objects
   - `user:admin email@example.com` - Grant a registered account administrator access
 
-## Installation
+## Installation (Docker)
 
-Run the installer script:
-```bash
-./installer.sh
-```
-
-## Docker
-
-Docker can run the full local stack (Apache/PHP, MariaDB, and Reverb). On
-Ubuntu, run the complete setup in this order:
+Docker is the supported installation and deployment method. It runs the full
+stack (Apache/PHP, MariaDB, and Reverb). On Ubuntu, run the complete setup in
+this order:
 
 ```bash
 cp .env.example .env
