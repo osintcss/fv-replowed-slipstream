@@ -2,6 +2,7 @@
 require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
 
 use App\Models\UserMeta;
+use App\Support\ResourceAudit;
 
 class UserResources{
     public const GOLD_FIELD = "gold";
@@ -24,6 +25,15 @@ class UserResources{
 
         $result = UserMeta::addResource($uid, $amount, $field, $max);
         self::invalidateCache($uid);
+        if ($result) {
+            ResourceAudit::record(
+                $uid,
+                'resource.add_' . $field,
+                $field === self::GOLD_FIELD ? $amount : 0,
+                $field === self::XP_FIELD ? $amount : 0,
+                $field === self::CASH_FIELD ? $amount : 0,
+            );
+        }
         return $result;
     }
 
@@ -36,6 +46,15 @@ class UserResources{
 
         $result = UserMeta::removeResource($uid, $amount, $field);
         self::invalidateCache($uid);
+        if ($result) {
+            ResourceAudit::record(
+                $uid,
+                'resource.remove_' . $field,
+                $field === self::GOLD_FIELD ? -$amount : 0,
+                $field === self::XP_FIELD ? -$amount : 0,
+                $field === self::CASH_FIELD ? -$amount : 0,
+            );
+        }
         return $result;
     }
 
@@ -192,6 +211,9 @@ class UserResources{
 
         Logger::debug('UserResources', "batchUpdate executed: success=" . ($success ? 'true' : 'false'));
         self::invalidateCache($uid);
+        if ($success) {
+            ResourceAudit::record($uid, 'resource.batch', $goldDelta, $xpDelta, $totalCashDelta);
+        }
         return $success;
     }
 

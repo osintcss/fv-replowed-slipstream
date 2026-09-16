@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\DailyGift;
 use App\Models\UserMeta;
+use App\Support\ResourceAudit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Carbon\Carbon;
@@ -52,6 +53,7 @@ class DailyGiftController extends Controller
             $userMeta->cash = min($userMeta->cash + $cashAmount, 99999);
             $userMeta->gold = min($userMeta->gold + $goldAmount, 999999999);
             $userMeta->save();
+            ResourceAudit::record($uid, 'daily_gift', $goldAmount, 0, $cashAmount);
         }
 
         DailyGift::create([

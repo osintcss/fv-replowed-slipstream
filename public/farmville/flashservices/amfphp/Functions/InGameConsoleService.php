@@ -3,6 +3,7 @@
 require_once AMFPHP_ROOTPATH . 'Helpers/user_resources.php';
 
 use App\Models\UserMeta;
+use App\Support\ResourceAudit;
 
 /**
  * Compatibility endpoint for the shipped Flash developer console.
@@ -50,8 +51,51 @@ class InGameConsoleService
         }
 
         $uid = $playerObj->getUid();
-        $updated = UserMeta::where('uid', $uid)->update($updates);
-        if ($updated !== 1) {
+        $updated = \DB::transaction(function () use ($uid, $updates): bool {
+            $meta = UserMeta::query()->where('uid', $uid)->lockForUpdate()->first();
+            if ($meta === null) {
+                return false;
+            }
+
+            $before = [
+                'gold' => (int) $meta->gold,
+                'cash' => (int) $meta->cash,
+                'xp' => (int) $meta->xp,
+            ];
+            // Preserve the legacy self-grant console, but never let a stale
+            // Flash snapshot lower a real balance.  `std.addCash` and peers
+            // arrive as a higher absolute value and remain supported; lower
+            // supplied fields become no-ops rather than overwrites.
+            $safeUpdates = [];
+            $blockedDecreases = [];
+            foreach ($updates as $field => $requestedValue) {
+                $currentValue = $before[$field];
+                if ($requestedValue < $currentValue) {
+                    $safeUpdates[$field] = $currentValue;
+                    $blockedDecreases[] = $field;
+                } else {
+                    $safeUpdates[$field] = $requestedValue;
+                }
+            }
+
+            $meta->fill($safeUpdates);
+            $meta->save();
+
+            ResourceAudit::record(
+                $uid,
+                'developer_console',
+                (int) $meta->gold - $before['gold'],
+                (int) $meta->xp - $before['xp'],
+                (int) $meta->cash - $before['cash'],
+                [
+                    'fields' => array_keys($updates),
+                    'blocked_decreases' => $blockedDecreases,
+                ],
+            );
+
+            return true;
+        });
+        if (!$updated) {
             return ['data' => ['errorMessage' => 'Player balance could not be updated.']];
         }
 
