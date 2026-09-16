@@ -67,7 +67,7 @@ it('does not expose non-bushel crafting rows to the Flash crafting state', funct
         'className' => 'CConsumable',
     ]);
 
-    CraftingInventory::createMany([
+    CraftingInventory::query()->insert([
         [
             'uid' => $uid,
             'item_code' => 'CAP2',
@@ -101,7 +101,7 @@ it('persists bushel deductions across all legacy storage rows', function (): voi
         'className' => 'CBushel',
     ]);
 
-    CraftingInventory::createMany([
+    CraftingInventory::query()->insert([
         [
             'uid' => $uid,
             'item_code' => 'CAP4',
@@ -117,9 +117,9 @@ it('persists bushel deductions across all legacy storage rows', function (): voi
     ]);
 
     expect(removeBushelsFromInventory($uid, 'CAP4', 5))->toBeTrue()
-        ->and(CraftingInventory::where('uid', $uid)->sum('quantity'))->toBe(2)
+        ->and((int) CraftingInventory::where('uid', $uid)->sum('quantity'))->toBe(2)
         ->and(removeBushelsFromInventory($uid, 'CAP4', 3))->toBeFalse()
-        ->and(CraftingInventory::where('uid', $uid)->sum('quantity'))->toBe(2);
+        ->and((int) CraftingInventory::where('uid', $uid)->sum('quantity'))->toBe(2);
 });
 
 it('uses the saved market-stall expansion when enforcing capacity', function (): void {

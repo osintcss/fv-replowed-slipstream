@@ -58,7 +58,22 @@ final class CraftingCottages
             'worldClass' => 'FeatureBuilding',
             'worldState' => 'grown',
         ],
-        // Mistletoe Lane's Patisserie uses the same CraftingCottageBuilding
+        // Emerald Valley's Porcelain Shop keeps a world-prefixed item name.
+        // It still uses the ordinary cottage window, whose skill state is
+        // keyed by xozcrafttype rather than by the item name.
+        [
+            'functionalItem' => 'xozcraftingcottage',
+            'craftType' => 'xozcrafttype',
+        ],
+        // This is the separate completed Craftshop feature on Emerald Valley.
+        // Its item contract uses the historic bare state.
+        [
+            'functionalItem' => 'xozcraftingshop_finished',
+            'craftType' => 'craftshop',
+            'worldClass' => 'FeatureBuilding',
+            'worldState' => 'bare',
+        ],
+        // Winter Fable's Patisserie uses the same CraftingCottageBuilding
         // contract as the older cottages, but its recipe catalog is keyed by
         // the world-specific xwxcrafttype skill.
         [

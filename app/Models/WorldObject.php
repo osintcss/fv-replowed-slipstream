@@ -136,6 +136,11 @@ class WorldObject extends Model
             $this->class_name,
             $this->state,
         );
+        [$itemName, $className, $state] = self::normalizeLegacyBloomGardenBuilding(
+            $itemName,
+            $className,
+            $state,
+        );
 
         $obj->id = $this->object_id;
         $obj->className = $className;
@@ -180,6 +185,15 @@ class WorldObject extends Model
         $obj->isJumbo = $this->is_jumbo;
         $obj->isProduceItem = $this->is_produce_item;
         $contents = $this->contents;
+        if ($className === 'GarageBuilding') {
+            // GarageBuilding.getEquipmentObjects() asks Flash to instantiate
+            // every contents entry as Equipment.  Ignore legacy malformed
+            // entries while loading so one old construction part cannot
+            // prevent the entire farm from initializing.
+            $contents = self::garageEquipmentContents(
+                is_array($contents) ? $contents : JsonHelper::safeDecode($contents, true, []),
+            );
+        }
         $obj->contents = self::normalizeConstructionContents(
             $itemName,
             $className,
@@ -479,6 +493,38 @@ class WorldObject extends Model
             $components = new \stdClass();
         }
         $obj->paintColor = $components->paintColor ?? null;
+    }
+
+    /**
+     * Flash treats garage contents as equipment unconditionally.  Only the
+     * three equipment subclasses in the FarmVille catalogue are safe to send
+     * there; imported or previously malformed part entries must stay out of
+     * the load payload until they have been recovered server-side.
+     */
+    private static function garageEquipmentContents($contents): array
+    {
+        if (!is_array($contents)) {
+            return [];
+        }
+
+        $validClasses = ['Tractor', 'Seeder', 'Harvester'];
+        $filtered = [];
+        foreach ($contents as $entry) {
+            $code = is_object($entry) ? ($entry->itemCode ?? null) : ($entry['itemCode'] ?? null);
+            $count = is_object($entry) ? (int) ($entry->numItem ?? 0) : (int) ($entry['numItem'] ?? 0);
+            if (!is_string($code) || $code === '' || $count <= 0) {
+                continue;
+            }
+
+            $item = Item::findByCode($code);
+            if (!is_array($item) || !in_array($item['className'] ?? null, $validClasses, true)) {
+                continue;
+            }
+
+            $filtered[] = $entry;
+        }
+
+        return $filtered;
     }
 
     /**
@@ -830,6 +876,11 @@ class WorldObject extends Model
             $obj->className ?? 'Unknown',
             $obj->state ?? null,
         );
+        [$itemName, $className, $state] = self::normalizeLegacyBloomGardenBuilding(
+            $itemName,
+            $className,
+            $state,
+        );
 
         if ($className === 'UGCDecoration' || property_exists($obj, 'ugcItemUUID')) {
             if (is_string($components)) {
@@ -992,6 +1043,30 @@ class WorldObject extends Model
                 'xhworchard_featurebuilding_finished',
                 'xuk_sheep_pen_finished',
             ], true);
+    }
+
+    /**
+     * Bloom Garden's purchase item (`flower_garden`) is a placeholder with no
+     * renderer. Flash uses the finished FeatureBuilding from the moment it is
+     * placed; persisting the placeholder therefore reloads as its footprint
+     * shadow. Canonicalize both incoming snapshots and outgoing world data.
+     */
+    private static function normalizeLegacyBloomGardenBuilding(
+        ?string $itemName,
+        ?string $className,
+        ?string $state,
+    ): array {
+        if ($itemName !== 'flower_garden'
+            || $className !== 'FeatureBuilding'
+            || $state === 'construction') {
+            return [$itemName, $className, $state];
+        }
+
+        return [
+            'flower_garden_finished',
+            'FeatureBuilding',
+            $state === 'grown' || $state === null || $state === '' ? 'bare' : $state,
+        ];
     }
 
     /**
