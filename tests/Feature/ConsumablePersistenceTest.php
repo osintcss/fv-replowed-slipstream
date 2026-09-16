@@ -237,16 +237,18 @@ it('persists a direct harvest when a planted crop has matured by its timer', fun
         'objects' => '[]',
         'messageManager' => serialize(['messages' => [], 'allowSendEmails' => true]),
     ]);
+    $growTimeDays = 0.01;
     seedConsumableItem('direct_harvest_mature_test', 'DHMT1', [
         'name' => 'direct_harvest_mature_test',
         'code' => 'DHMT1',
         'className' => 'Plot',
-        'growTime' => '0',
+        'growTime' => (string) $growTimeDays,
         'yield' => '1',
         'gold' => '1',
         'xp' => '1',
     ]);
-    $plantTime = getCurrentTimeMs() - 1;
+    // Mature the crop without crossing the server/client wither window.
+    $plantTime = getCurrentTimeMs() - calculateGrowTimeMs($growTimeDays) - 1;
     $plot = WorldObject::query()->create([
         'world_id' => $world->id,
         'object_id' => 1,
