@@ -909,7 +909,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             { id: 'glen', name: 'Glen' },
                             { id: 'atlantis', name: 'Atlantis' },
                             { id: 'hallow', name: 'Hallow' },
-                            { id: 'winternord', name: 'Mistletoe Lane' }
+                            { id: 'winternord', name: 'Winter Fable' }
                         ];
 
                         let playerUnlockedWorlds = [];
@@ -1666,12 +1666,12 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "flashRevision": "855037.855026",
                             "phpRevision": "855038",
                             "configRevision": "",
-                            "xml_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v4/",
-                            "items_opt_amf": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v4/items_opt.amf",
+                            "xml_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v7/",
+                            "items_opt_amf": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v7/items_opt.amf",
                             "master_assethash_url": "<?= $baseUrl ?>/farmville/assethash/v9/",
                             "masterysigns_amf_url": "<?= $baseUrl ?>/farmville/masterysigns/v1/",
                             "ITEMS_AMF_BUILD_TIME_REDUCTION": false,
-                            "swfLocation": "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FarmGame-10-witcherhut1.swf?restore_original=1",
+                            "swfLocation": "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FarmGame-10-marketsearchworld1.swf?restore_original=1",
                             "parts_count": 3,
                             "NO_FUEL_DAY_START_TIME": "1606723200",
                             "NO_FUEL_DAY_END_TIME": "1607328000",
@@ -1723,7 +1723,11 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "fb_sig_ss": "102452128776",
                             "fb_sig_time": <?= time() ?>,
                             "isAdult": "0",
-                            "sequence_id": 1606900539,
+                            // TransactionManager retries a failed AMF batch with
+                            // the same sequence and sequenceID. A fresh launch
+                            // needs its own ID so a later legitimate store is
+                            // never mistaken for an old gift-backed retry.
+                            "sequence_id": "{{ bin2hex(random_bytes(12)) }}",
                             "waterEnabled": 1,
                             "showAd": 0,
                             "showInterstitialAd": 0,
@@ -1794,6 +1798,10 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "FLASHGIFTQUEUEDICON_CONDITIONALLYADDFLASHGIFTICON_OVERRIDE": false,
                             "MAX_TRANSACTION_DEPTH": 50,
                             "FEATURE_FLASHPARAM_MYSTERY_CRATE_APPLY_LOAD_CHECK": true,
+                            "MYSTERY_CRATE_PART_TYPE": "part_scissors",
+                            "MYSTERY_CRATE_NUMBER_OF_PARTS_NEEDED": 9,
+                            "MYSTERY_CRATE_EXPIRY_HOURS": 24,
+                            "MYSTERY_CRATE_VIRAL_CHANNEL": "feed",
                             "FEATURE_FLASHPARAM_PEN_CONTENTS_SAMPLE": 0,
                             "PERF_MAX_BATCH_FRIENDSETS": 20,
                             "TIMED_ACTION_MAX_RETRIES": 1000,

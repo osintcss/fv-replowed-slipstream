@@ -60,6 +60,11 @@ COPY routes ./routes
 COPY scripts ./scripts
 COPY artisan composer.json composer.lock package.json package-lock.json phpunit.xml postcss.config.js tailwind.config.js vite.config.js .env.example ./
 
+# The shipped winternord Yimf entry contains the authentic xwx background but
+# omits the terrain fields required by YimfMap. Complete that entry while
+# preserving the original background assets.
+RUN php scripts/patch-yimf-winternord.php
+
 # The archived quest settings let Flash predict crop/harvest progress. Our
 # server already persists these actions, so make the client consume the
 # authoritative QuestComponent returned with each AMF response instead.
@@ -74,6 +79,10 @@ RUN php -d memory_limit=512M scripts/patch-farm-expansion-settings.php
 # required for clients outside the optimized-items experiment and for the AMF
 # retry path used by older Flash builds.
 RUN php -d memory_limit=512M scripts/patch-ugc-item-catalog.php
+
+# Historical items are still valid in this restoration. Extend every expired
+# limitedEnd gate in both the XML fallback catalogs and optimized AMF catalog.
+RUN php -d memory_limit=512M scripts/patch-expired-item-dates.php
 
 # Some client experiment assignments request the reduced locale filename even
 # when the complete locale is the only archive asset available. Both contain
@@ -101,6 +110,21 @@ RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/
 
 RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-locale-v4 ]; then \
         ln -s v855038 public/farmville/xml/gz/v855038-locale-v4; \
+    fi
+
+RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-locale-v5 ]; then \
+        ln -s v855038 public/farmville/xml/gz/v855038-locale-v5; \
+    fi
+
+# Force clients to fetch the fixed Mistletoe background configuration instead
+# of reusing the previous locale cache entry.
+RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-locale-v6 ]; then \
+        ln -s v855038 public/farmville/xml/gz/v855038-locale-v6; \
+    fi
+
+# Force clients to fetch the catalog with the extended limitedEnd dates.
+RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-locale-v7 ]; then \
+        ln -s v855038 public/farmville/xml/gz/v855038-locale-v7; \
     fi
 
 # Flash's XML cache is keyed by path on some legacy players and ignores a

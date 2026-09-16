@@ -13,6 +13,8 @@ services:
       # Production sets FV_ASSETS_PATH to the mounted SSD; local development
       # keeps the existing relative-path default.
       - ${FV_ASSETS_PATH:-./public/farmville/assets}:/var/www/html/public/farmville/assets
+      # Crash Busters reports must survive a web-container recreation.
+      - ./storage/logs:/var/www/html/storage/logs
     command: >-
       /bin/sh -c 'if [ "${FV_ASSETS_REQUIRE_SENTINEL:-0}" = "1" ] && [ ! -f /var/www/html/public/farmville/assets/.ssd-assets-ready ]; then
       echo "FV_ASSETS_PATH is not mounted or is incomplete" >&2; exit 1; fi; exec apache2-foreground'

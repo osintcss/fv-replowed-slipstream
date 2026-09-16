@@ -62,6 +62,12 @@
     RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-worldscorepersist1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
     RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-worldscorepersist2\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
     RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-witcherhut1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-turbocombinefree1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-marketbyworld2\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-marketsearchworld1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-lonelyanimalguard1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-worldscorecoalesce1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
+    RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-emeraldscore1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
 
     RewriteRule ^farmville/xml/gz/v855038-locale-v3/en_US\.swf$ farmville/locale-contract.php [L]
 
