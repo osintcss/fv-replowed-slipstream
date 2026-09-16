@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Support\RegistrationCapacity;
+use App\Models\DiscordBan;
 use App\Models\DiscordIdentity;
 use App\Support\DiscordAvatar;
 use Illuminate\Http\RedirectResponse;
@@ -104,6 +105,9 @@ class DiscordAuthenticatedSessionController extends Controller
         if (isset($result['error'])) {
             return $this->loginError($result['error']);
         }
+        if ($result['banned'] ?? false) {
+            return $this->covertSignInRedirect($request);
+        }
 
         $identity = $result['identity'];
         if (!$identity?->user) {
@@ -158,6 +162,10 @@ class DiscordAuthenticatedSessionController extends Controller
         if (!$user) {
             return $this->loginError('Launcher sign-in could not be completed. Please try again.');
         }
+        $discordId = DiscordIdentity::query()->where('user_id', $user->id)->value('discord_id');
+        if (is_string($discordId) && DiscordBan::contains($discordId)) {
+            return $this->covertSignInRedirect($request);
+        }
 
         Auth::login($user);
         $request->session()->regenerate();
@@ -188,6 +196,12 @@ class DiscordAuthenticatedSessionController extends Controller
         if (isset($result['error'])) {
             $params['error'] = $result['error'];
 
+            return redirect()->away($this->launcherCallbackUrl($callback, $params));
+        }
+        if ($result['banned'] ?? false) {
+            // The desktop launcher expects its loopback callback to decide
+            // whether a handoff succeeded. Return without a token or error
+            // so it simply returns to its ordinary Discord sign-in screen.
             return redirect()->away($this->launcherCallbackUrl($callback, $params));
         }
 
@@ -244,6 +258,13 @@ class DiscordAuthenticatedSessionController extends Controller
         $discordId = $discordUser['id'] ?? null;
         if (!is_string($discordId) || !preg_match('/^\d{15,25}$/', $discordId)) {
             return ['error' => 'Discord returned an invalid account identity.'];
+        }
+
+        // Do this immediately after identifying the Discord user, before
+        // account lookup, guild verification, or registration state is made.
+        // Callers intentionally receive only a normal sign-in redirect.
+        if (DiscordBan::contains($discordId)) {
+            return ['banned' => true];
         }
 
         $requiredGuildId = (string) ($discord['required_guild_id'] ?? '');
@@ -350,5 +371,18 @@ class DiscordAuthenticatedSessionController extends Controller
     private function loginError(string $message): RedirectResponse
     {
         return redirect()->route('login')->withErrors(['discord' => $message]);
+    }
+
+    private function covertSignInRedirect(Request $request): RedirectResponse
+    {
+        Auth::logout();
+        $request->session()->forget([
+            'discord_oauth_state',
+            'discord_oauth_intent',
+            'discord_registration_id',
+            'discord_registration_avatar_url',
+        ]);
+
+        return redirect()->route('login');
     }
 }

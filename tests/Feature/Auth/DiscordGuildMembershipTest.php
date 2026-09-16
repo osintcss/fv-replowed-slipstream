@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use App\Models\DiscordBan;
 use App\Models\DiscordIdentity;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -68,6 +69,47 @@ test('discord sign-in starts registration for an unlinked guild member', functio
     $response->assertRedirect(route('discord.register.name'));
     $this->assertGuest();
     expect(session('discord_registration_id'))->toBe('123456789012345678');
+});
+
+test('a banned Discord identity returns silently to the ordinary sign-in screen', function () {
+    config([
+        'services.discord.client_id' => '123456789012345678',
+        'services.discord.client_secret' => 'test-secret',
+        'services.discord.redirect' => 'https://example.test/auth/discord/callback',
+        'services.discord.required_guild_id' => null,
+    ]);
+    DiscordBan::create(['discord_id' => '123456789012345678']);
+    Http::fake([
+        'https://discord.com/api/oauth2/token' => Http::response(['access_token' => 'user-token']),
+        'https://discord.com/api/users/@me' => Http::response([
+            'id' => '123456789012345678',
+            'avatar' => null,
+        ]),
+    ]);
+
+    $response = $this->withSession(['discord_oauth_state' => 'state-token'])
+        ->get(route('discord.callback', ['code' => 'test-code', 'state' => 'state-token']));
+
+    $response->assertRedirect(route('login'))
+        ->assertSessionMissing('errors')
+        ->assertSessionMissing('discord_registration_id');
+    $this->assertGuest();
+    expect(DiscordIdentity::query()->where('discord_id', '123456789012345678')->exists())->toBeFalse();
+});
+
+test('a banned Discord identity with a stale registration session cannot create an account', function () {
+    DiscordBan::create(['discord_id' => '123456789012345678']);
+
+    $response = $this->withSession([
+        'discord_registration_id' => '123456789012345678',
+        'discord_registration_avatar_url' => 'https://cdn.discordapp.com/embed/avatars/0.png',
+    ])->get(route('discord.register.name'));
+
+    $response->assertRedirect(route('login'))
+        ->assertSessionMissing('errors')
+        ->assertSessionMissing('discord_registration_id');
+    $this->assertGuest();
+    expect(User::query()->count())->toBe(0);
 });
 
 test('launcher discord sign-in returns a one-time handoff token', function () {

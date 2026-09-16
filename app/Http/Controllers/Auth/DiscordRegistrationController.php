@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Models\DiscordBan;
 use App\Models\DiscordIdentity;
 use App\Models\User;
 use App\Models\UserAvatar;
@@ -31,6 +32,9 @@ class DiscordRegistrationController extends Controller
                 'discord' => 'Start by signing in with Discord.',
             ]);
         }
+        if (DiscordBan::contains((string) request()->session()->get('discord_registration_id'))) {
+            return $this->covertSignInRedirect(request());
+        }
 
         return view('auth.discord-register');
     }
@@ -43,6 +47,9 @@ class DiscordRegistrationController extends Controller
                 'discord' => 'Your Discord sign-in expired. Please try again.',
             ]);
         }
+        if (DiscordBan::contains($discordId)) {
+            return $this->covertSignInRedirect($request);
+        }
 
         $validated = $request->validate([
             'name' => ['required', 'string', 'min:1', 'max:100'],
@@ -54,8 +61,15 @@ class DiscordRegistrationController extends Controller
 
         try {
             $avatarUrl = (string) $request->session()->get('discord_registration_avatar_url', '');
-            $user = DB::transaction(function () use ($discordId, $name, $avatarUrl): User {
+            $user = DB::transaction(function () use ($discordId, $name, $avatarUrl): ?User {
                 RegistrationCapacity::ensureAvailable();
+
+                // Re-check inside the creation transaction so an account
+                // cannot be created from an OAuth session held open while
+                // the Discord ID is added to the ban list.
+                if (DiscordBan::contains($discordId)) {
+                    return null;
+                }
 
                 if (DiscordIdentity::where('discord_id', $discordId)->exists()) {
                     throw new \RuntimeException('This Discord account is already linked to a FarmVille account.');
@@ -84,6 +98,10 @@ class DiscordRegistrationController extends Controller
             return redirect()->route('login')->withErrors(['discord' => $exception->getMessage()]);
         }
 
+        if (!$user) {
+            return $this->covertSignInRedirect($request);
+        }
+
         $request->session()->forget(['discord_registration_id', 'discord_registration_avatar_url']);
         event(new Registered($user));
         Auth::login($user);
@@ -100,6 +118,19 @@ class DiscordRegistrationController extends Controller
         $discordId = (string) $request->session()->get('discord_registration_id', '');
 
         return preg_match('/^\d{15,25}$/', $discordId) ? $discordId : null;
+    }
+
+    private function covertSignInRedirect(Request $request): RedirectResponse
+    {
+        Auth::logout();
+        $request->session()->forget([
+            'discord_oauth_state',
+            'discord_oauth_intent',
+            'discord_registration_id',
+            'discord_registration_avatar_url',
+        ]);
+
+        return redirect()->route('login');
     }
 
     private function createUser(string $name): User
