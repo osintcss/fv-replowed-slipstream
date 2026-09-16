@@ -129,7 +129,7 @@ it('persists travel to an unlocked world', function (): void {
     ]);
 });
 
-it('allows Mistletoe Lane to be claimed and traveled to', function (): void {
+it('allows Winter Fable to be claimed and traveled to', function (): void {
     $user = createWorldShopUser(250);
 
     $this->actingAs($user)

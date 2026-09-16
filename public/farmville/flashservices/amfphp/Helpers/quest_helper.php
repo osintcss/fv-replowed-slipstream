@@ -438,14 +438,7 @@ function grantQuestRewards($uid, $rewards, $worldType = null) {
 }
 
 function addWorldScore($uid, $worldType, $amount) {
-    $worldType = getWorldScoreWorldType($uid, $worldType);
-    if ($worldType === 'farm') {
-        return;
-    }
-
-    $key = "world_score_$worldType";
-    $current = (int)get_meta($uid, $key) ?: 0;
-    set_meta($uid, $key, (string)($current + $amount));
+    return incrementWorldScore($uid, $worldType, $amount);
 }
 
 function unlockAvatarItem($uid, $itemCode) {
@@ -719,7 +712,7 @@ function ensureAvailableStoryQuest($uid) {
 }
 
 /**
- * Start the first Mistletoe Lane story bubble when a player enters the
+ * Start the first Winter Fable story bubble when a player enters the
  * world. The quest definitions are imported from the original client XML,
  * but the old client expected the front end to seed this replayable chain;
  * without that seed the world has no visible event objectives.

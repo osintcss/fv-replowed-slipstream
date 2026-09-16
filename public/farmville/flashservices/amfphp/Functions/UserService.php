@@ -642,12 +642,12 @@ class UserService{
         // score and level in this transaction.
         $worldType = getWorldTypeForScoreUnit($scoreUnit);
         if ($worldType && $worldType !== 'farm') {
-            if (is_numeric($worldScore)) {
-                set_meta($uid, "world_score_$worldType", (string) max(0, (int) $worldScore));
-            }
-            if (is_numeric($worldLevel)) {
-                set_meta($uid, "world_score_level_$worldType", (string) max(1, (int) $worldLevel));
-            }
+            // Emerald Valley plot actions are awarded and persisted by the
+            // server. Client levels are never persisted: every world level is
+            // derived from its authoritative saved score, preventing stale
+            // asynchronous Flash calls from creating a HUD/tile mismatch.
+            $reportedScore = $worldType === 'oz' ? null : $worldScore;
+            persistMonotonicWorldScore($uid, $worldType, $reportedScore, $worldLevel);
         }
 
         return array("data" => array("success" => true));

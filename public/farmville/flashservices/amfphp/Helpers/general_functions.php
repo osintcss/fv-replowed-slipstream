@@ -10,6 +10,8 @@
     use App\Models\PlayerMeta;
     use App\Models\UserWorld;
     use App\Models\UserMeta;
+    use App\Support\Database;
+    use App\Support\WorldScoreConfig;
 
     function sanitizeNumericValue($value, $default = 0) {
         if ($value === null || $value === '') {
@@ -72,10 +74,10 @@
     /**
      * Return the Flash world-score identifier for a world type.
      *
-     * Most worlds use <worldType>Points, but the older Halloween worlds use
-     * the legacy identifiers below.  Keeping this translation server-side
-     * prevents quest rewards from being saved under a score unit that the
-     * client does not read.
+     * Most worlds use <worldType>Points, but some expansions have an
+     * independent themed score unit. Keeping this translation server-side
+     * prevents rewards from being saved under a key the Flash client does
+     * not read.
      */
     function getWorldScoreUnitForWorldType($worldType) {
         $worldType = is_string($worldType) ? trim($worldType) : '';
@@ -83,15 +85,7 @@
             return null;
         }
 
-        $worldType = getWorldTypeForScoreUnit($worldType);
-
-        $scoreUnits = [
-            'hallow' => 'spook',
-            'halloweenusa' => 'shadowPoints',
-            'htown' => 'cheer',
-        ];
-
-        return $scoreUnits[$worldType] ?? ($worldType . 'Points');
+        return WorldScoreConfig::scoreUnitForWorld($worldType);
     }
 
     /**
@@ -103,21 +97,7 @@
             return null;
         }
 
-        $scoreToWorld = [
-            'spook' => 'hallow',
-            'shadowPoints' => 'halloweenusa',
-            'cheer' => 'htown',
-        ];
-
-        if (isset($scoreToWorld[$scoreUnit])) {
-            return $scoreToWorld[$scoreUnit];
-        }
-
-        if (substr($scoreUnit, -6) === 'Points') {
-            return substr($scoreUnit, 0, -6);
-        }
-
-        return $scoreUnit;
+        return WorldScoreConfig::worldForScoreUnit($scoreUnit);
     }
 
     /**
@@ -170,7 +150,10 @@
                     continue;
                 }
 
-                $levelValues[$normalizedWorldType] = max(1, (int) $entry->meta_value);
+                $levelValues[$normalizedWorldType] = max(
+                    $levelValues[$normalizedWorldType] ?? 1,
+                    max(1, (int) $entry->meta_value),
+                );
                 $worldTypes[$normalizedWorldType] = true;
                 continue;
             }
@@ -185,12 +168,14 @@
                 continue;
             }
 
-            // Prefer the canonical world key when both a legacy score-unit
-            // key (for example world_score_spook) and the corrected key exist.
-            $isCanonicalKey = ($rawWorldType === $normalizedWorldType);
-            if (!isset($scoreValues[$normalizedWorldType]) || $isCanonicalKey) {
-                $scoreValues[$normalizedWorldType] = (int) $entry->meta_value;
-            }
+            // Historical saves may have used either the world type or its
+            // score unit as a suffix. A score must never go backwards just
+            // because one of those legacy rows is stale, so merge aliases by
+            // their greatest value until the repair job synchronizes them.
+            $scoreValues[$normalizedWorldType] = max(
+                $scoreValues[$normalizedWorldType] ?? 0,
+                max(0, (int) $entry->meta_value),
+            );
             $worldTypes[$normalizedWorldType] = true;
         }
 
@@ -201,13 +186,199 @@
                 continue;
             }
 
+            $score = max(0, (int) ($scoreValues[$worldType] ?? 0));
+            // The original world-score asset is authoritative. Persisted
+            // levels from old client calls are a compatibility fallback only;
+            // they must not disagree with the visible score meter.
+            $derivedLevel = WorldScoreConfig::levelForScore($scoreUnit, $score);
             $result[$scoreUnit] = [
-                'score' => (int) ($scoreValues[$worldType] ?? 0),
-                'level' => max(1, (int) ($levelValues[$worldType] ?? 1)),
+                'score' => $score,
+                'level' => $derivedLevel ?? max(1, (int) ($levelValues[$worldType] ?? 1)),
             ];
         }
 
         return $result;
+    }
+
+    /**
+     * Reconcile a world score and level from a single authoritative source.
+     *
+     * A score can be reported by an older Flash client, but it is merged
+     * monotonically and never decremented. The associated level is always
+     * calculated from the recovered original world-score table; client levels
+     * are deliberately ignored because requests may be stale or malformed.
+     */
+    function synchronizeWorldScoreState($uid, $worldType, $reportedScore = null, $increment = 0, $force = false) {
+        if (!is_numeric($uid)) {
+            return [];
+        }
+
+        $worldType = getWorldTypeForScoreUnit($worldType);
+        if (!$worldType || $worldType === 'farm') {
+            return [];
+        }
+
+        $hasReportedScore = is_numeric($reportedScore);
+        $increment = is_numeric($increment) ? max(0, (int) $increment) : 0;
+        if (!$force && !$hasReportedScore && $increment === 0) {
+            return [];
+        }
+
+        $uid = (string) $uid;
+        $scoreUnit = getWorldScoreUnitForWorldType($worldType);
+        if ($scoreUnit === null) {
+            return [];
+        }
+        $suffixes = WorldScoreConfig::metadataSuffixesForWorld($worldType);
+        if ($suffixes === []) {
+            $suffixes = [$worldType];
+        }
+        $scoreKeys = array_values(array_unique(array_map(
+            static fn (string $suffix): string => "world_score_$suffix",
+            $suffixes,
+        )));
+        $levelKeys = array_values(array_unique(array_map(
+            static fn (string $suffix): string => "world_score_level_$suffix",
+            $suffixes,
+        )));
+        sort($scoreKeys, SORT_STRING);
+        sort($levelKeys, SORT_STRING);
+        $canonicalScoreKey = "world_score_$worldType";
+        $canonicalLevelKey = "world_score_level_$worldType";
+
+        return Database::transaction(
+            'synchronize world score state',
+            static function () use ($uid, $scoreUnit, $scoreKeys, $levelKeys, $canonicalScoreKey, $canonicalLevelKey, $reportedScore, $hasReportedScore, $increment): array {
+                // Query every historical alias together, in a fixed order,
+                // so concurrently arriving client calls cannot race the
+                // server-side plot awards or leave a stale alias behind.
+                $scoreRows = PlayerMeta::query()
+                    ->where('uid', $uid)
+                    ->whereIn('meta_key', $scoreKeys)
+                    ->orderBy('meta_key')
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get();
+
+                $currentScore = 0;
+                foreach ($scoreRows as $row) {
+                    if (is_numeric($row->meta_value)) {
+                        $currentScore = max($currentScore, max(0, (int) $row->meta_value));
+                    }
+                }
+                $nextScore = $currentScore + $increment;
+                if ($hasReportedScore) {
+                    $nextScore = max($nextScore, max(0, (int) $reportedScore));
+                }
+
+                $scoreKeysPresent = [];
+                foreach ($scoreRows as $row) {
+                    $scoreKeysPresent[$row->meta_key] = true;
+                    $row->update(['meta_value' => (string) $nextScore]);
+                }
+                if (!isset($scoreKeysPresent[$canonicalScoreKey])) {
+                    PlayerMeta::query()->create([
+                        'uid' => $uid,
+                        'meta_key' => $canonicalScoreKey,
+                        'meta_value' => (string) $nextScore,
+                    ]);
+                }
+
+                $configuredLevel = WorldScoreConfig::levelForScore($scoreUnit, $nextScore);
+                $levelRows = PlayerMeta::query()
+                    ->where('uid', $uid)
+                    ->whereIn('meta_key', $levelKeys)
+                    ->orderBy('meta_key')
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get();
+
+                $currentLevel = 1;
+                foreach ($levelRows as $row) {
+                    if (is_numeric($row->meta_value)) {
+                        $currentLevel = max($currentLevel, max(1, (int) $row->meta_value));
+                    }
+                }
+                $nextLevel = $configuredLevel ?? $currentLevel;
+                $levelKeysPresent = [];
+                foreach ($levelRows as $row) {
+                    $levelKeysPresent[$row->meta_key] = true;
+                    // A configured level is intentionally allowed to decrease
+                    // here: it repairs a historic stale client level while the
+                    // score itself remains strictly monotonic.
+                    if ($configuredLevel !== null) {
+                        $row->update(['meta_value' => (string) $nextLevel]);
+                    }
+                }
+                if ($configuredLevel !== null && !isset($levelKeysPresent[$canonicalLevelKey])) {
+                    PlayerMeta::query()->create([
+                        'uid' => $uid,
+                        'meta_key' => $canonicalLevelKey,
+                        'meta_value' => (string) $nextLevel,
+                    ]);
+                }
+
+                foreach (array_merge($scoreKeys, $levelKeys) as $metaKey) {
+                    PlayerMeta::clearCache($uid, $metaKey);
+                }
+
+                return ['score' => $nextScore, 'level' => $nextLevel];
+            },
+        );
+    }
+
+    /**
+     * Persist a client-reported score without trusting its level. Retain the
+     * one-argument legacy call as a no-op, since it carries no state.
+     */
+    function persistMonotonicWorldScore($uid, $worldType, $worldScore = null, $worldLevel = null) {
+        if (!is_numeric($worldScore) && !is_numeric($worldLevel)) {
+            return [];
+        }
+
+        return synchronizeWorldScoreState($uid, $worldType, $worldScore);
+    }
+
+    /** Recalculate and synchronize a saved score's level without changing its score. */
+    function reconcileWorldScoreLevel($uid, $worldType) {
+        return synchronizeWorldScoreState($uid, $worldType, null, 0, true);
+    }
+
+    /**
+     * Add a server-authoritative amount to an individual world's score.
+     *
+     * World actions can arrive concurrently (especially vehicle sweeps), so
+     * this must increment under a row lock rather than read, add, and write
+     * through the ordinary metadata cache.  Duplicate historical metadata
+     * rows are kept in sync for the same reason as persistMonotonicWorldScore.
+     */
+    function incrementWorldScore($uid, $worldType, $amount) {
+        if (!is_numeric($uid) || !is_numeric($amount) || (int) $amount <= 0) {
+            return null;
+        }
+
+        $worldType = getWorldScoreWorldType($uid, $worldType);
+        if ($worldType === 'farm') {
+            return null;
+        }
+
+        $state = synchronizeWorldScoreState($uid, $worldType, null, (int) $amount, true);
+
+        return isset($state['score']) ? (int) $state['score'] : null;
+    }
+
+    /**
+     * Plot actions only contribute to Emerald Valley's rainbow score.  The
+     * caller supplies the already-authoritative normal-XP delta, so the
+     * score cannot be inflated by a client-provided count or item name.
+     */
+    function awardPlotActionWorldScore($uid, $worldType, $xpDelta) {
+        $worldType = getWorldScoreWorldType($uid, $worldType);
+        if ($worldType !== 'oz' || !is_numeric($xpDelta) || (int) $xpDelta <= 0) {
+            return null;
+        }
+
+        return incrementWorldScore($uid, $worldType, (int) $xpDelta);
     }
 
     
@@ -303,6 +474,64 @@
         }
 
         saveGiftBox($uid, $giftbox);
+        return true;
+    }
+
+
+    /**
+     * Consume Giftbox contents while the caller's database transaction is
+     * holding the row lock.  The ordinary removeGiftByCode() helper performs
+     * a read/modify/write through the request cache, which is not safe when a
+     * gift-backed storage action updates a world object in the same request.
+     */
+    function consumeGiftboxItemLocked($uid, string $itemCode, int $quantity = 1): bool {
+        if (!is_numeric($uid) || $itemCode === '' || $quantity <= 0) {
+            return false;
+        }
+
+        $meta = PlayerMeta::query()
+            ->where('uid', (string) $uid)
+            ->where('meta_key', 'giftbox')
+            ->lockForUpdate()
+            ->first();
+
+        if ($meta === null) {
+            return false;
+        }
+
+        $giftbox = @unserialize((string) $meta->meta_value, ['allowed_classes' => false]);
+        if (!is_array($giftbox)
+            || !isset($giftbox[$itemCode])
+            || !is_array($giftbox[$itemCode])
+            || (int) ($giftbox[$itemCode][0] ?? 0) < $quantity) {
+            return false;
+        }
+
+        $remaining = (int) $giftbox[$itemCode][0] - $quantity;
+        $giftbox[$itemCode][0] = $remaining;
+
+        // Keep per-instance metadata and sender queues aligned with the
+        // remaining quantity.  This mirrors the normal Giftbox withdrawal
+        // contract without doing another unlocked read.
+        foreach ([1, 2] as $queueIndex) {
+            if (!isset($giftbox[$itemCode][$queueIndex])
+                || !is_array($giftbox[$itemCode][$queueIndex])) {
+                continue;
+            }
+
+            while (count($giftbox[$itemCode][$queueIndex]) > $remaining) {
+                array_shift($giftbox[$itemCode][$queueIndex]);
+            }
+        }
+
+        if ($remaining <= 0) {
+            unset($giftbox[$itemCode]);
+        }
+
+        $meta->meta_value = serialize($giftbox);
+        $meta->save();
+        PlayerMeta::clearCache($uid, 'giftbox');
+
         return true;
     }
 
@@ -655,8 +884,18 @@
     
     function getFeatureCreditsForClient($uid) {
         $credits = getFeatureCredits($uid);
-        if (empty($credits)) {
-            return new \stdClass();
+
+        // Flash's Player.getFeatureCredits dereferences the current world's
+        // bucket before it can create a missing feature entry.  A player who
+        // has not yet earned credits in that world would otherwise crash when
+        // a credits building (for example, a Beehive) updates on a visit.
+        // Supply empty buckets for every world this server supports; this is
+        // response normalization only and never grants or persists credits.
+        $worldTypes = array_merge(['farm'], VALID_PURCHASABLE_WORLDS);
+        foreach ($worldTypes as $worldType) {
+            if (!isset($credits[$worldType]) || !is_array($credits[$worldType])) {
+                $credits[$worldType] = [];
+            }
         }
 
         $result = new \stdClass();
@@ -1264,7 +1503,7 @@
     }
 
     /**
-     * First-load layout for Mistletoe Lane (the client world is internally
+     * First-load layout for Winter Fable (the client world is internally
      * named `winternord`). The original NPC farm file is not part of this
      * deployment, so create the durable starter objects at the same server
      * boundary used by ordinary world snapshots.
@@ -1349,7 +1588,7 @@
                 'itemName' => 'xwx_orchard',
                 'contents' => $emptyContents,
             ],
-            // The Patisserie is the functional Mistletoe Lane crafting
+            // The Patisserie is the functional Winter Fable crafting
             // cottage. Its xwxcrafttype recipes are already present in the
             // bundled crafting catalog; persisting the cottage here makes
             // those recipes available after the first world load.
@@ -1416,6 +1655,8 @@
             "glen"              => "glen_theme",
             "atlantis"          => "atlantis_theme",
             "hallow"            => "hallow_theme",
+            // The client patch completes winternord_theme with the snow
+            // terrain fields while retaining its authentic xwx background.
             "winternord"        => "winternord_theme",
         );
 
