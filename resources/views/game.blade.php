@@ -1668,7 +1668,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "flashRevision": "855037.855026",
                             "phpRevision": "855038",
                             "configRevision": "",
-                            "xml_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v7/",
+                            "xml_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v8/",
                             "items_opt_amf": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v7/items_opt.amf",
                             "master_assethash_url": "<?= $baseUrl ?>/farmville/assethash/v9/",
                             "masterysigns_amf_url": "<?= $baseUrl ?>/farmville/masterysigns/v1/",

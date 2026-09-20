@@ -65,6 +65,11 @@ COPY artisan composer.json composer.lock package.json package-lock.json phpunit.
 # preserving the original background assets.
 RUN php scripts/patch-yimf-winternord.php
 
+# The archived Jade Falls and Hawaiian Paradise Yimf entries retain their
+# original themed backgrounds but omit the terrain fields that YimfMap needs
+# to construct the embedded grass bitmap classes.
+RUN php scripts/patch-yimf-asia-hawaii.php
+
 # The archived quest settings let Flash predict crop/harvest progress. Our
 # server already persists these actions, so make the client consume the
 # authoritative QuestComponent returned with each AMF response instead.
@@ -125,6 +130,12 @@ RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/
 # Force clients to fetch the catalog with the extended limitedEnd dates.
 RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-locale-v7 ]; then \
         ln -s v855038 public/farmville/xml/gz/v855038-locale-v7; \
+    fi
+
+# Force Flash to fetch the Yimf terrain configuration after the safe terrain
+# field repair instead of reusing the v7 XML cache entry.
+RUN if [ -d public/farmville/xml/gz/v855038 ] && [ ! -e public/farmville/xml/gz/v855038-locale-v8 ]; then \
+        ln -s v855038 public/farmville/xml/gz/v855038-locale-v8; \
     fi
 
 # Flash's XML cache is keyed by path on some legacy players and ignores a

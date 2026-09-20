@@ -1296,6 +1296,471 @@
         return $level;
     }
 
+    /**
+     * Convert a compact, hand-authored terrain mask into the row-major code
+     * array expected by FarmGameWorld.
+     *
+     * L = land (1), W = water (2), S = shoreline (3), T = terrace (4).
+     * Keeping the mask as rows makes it possible to adjust the river by eye
+     * against the Jade Falls background instead of hiding the shape in a
+     * mathematical formula.
+     */
+    function getAuthoredTerrainMask(array $rows, int $width, int $height): array {
+        if (count($rows) !== $height) {
+            throw new RuntimeException("Terrain mask height does not match world terrain height");
+        }
+
+        $codes = [
+            'L' => 1,
+            'W' => 2,
+            'S' => 3,
+            'T' => 4,
+        ];
+        $terrain = [];
+
+        foreach ($rows as $row) {
+            if (!is_string($row) || strlen($row) !== $width) {
+                throw new RuntimeException("Terrain mask row width does not match world terrain width");
+            }
+
+            for ($x = 0; $x < $width; $x++) {
+                $cell = $row[$x];
+                if (!isset($codes[$cell])) {
+                    throw new RuntimeException("Terrain mask contains an unknown cell code");
+                }
+                $terrain[] = $codes[$cell];
+            }
+        }
+
+        return $terrain;
+    }
+
+    /**
+     * Hand-authored terrain outside the original 25x25 Jade Falls area.
+     *
+     * Keys are scene coordinates displayed by the client. The original
+     * authored mask occupies scene x=0..24 and y=0..24; expanded territory
+     * uses negative scene coordinates. Keep this sparse so the original mask
+     * remains readable and new tracing can be added without moving it.
+     *
+     * L = land, W = water, S = shoreline, T = terrace.
+     */
+    function getJadeFallsExpansionTerrain(): array {
+        $cells = [];
+
+        $set = static function (int $x, int $y, string $type) use (&$cells): void {
+            $cells["$x,$y"] = $type;
+        };
+
+        $setRange = static function (
+            int $y,
+            int $x1,
+            int $x2,
+            string $type
+        ) use (&$set): void {
+            for ($x = $x1; $x <= $x2; $x++) {
+                $set($x, $y, $type);
+            }
+        };
+
+        // River water and shoreline previously traced farther down the map.
+        $riverWater = [
+              0 => [ -5,  -1],
+              1 => [ -4,  -1],
+              2 => [ -4,  -1],
+              3 => [ -3,  -1],
+              4 => [ -1,  -1],
+             -1 => [ -6,   6],
+             -2 => [ -7,   6],
+             -3 => [ -8,   4],
+             -4 => [ -9,   3],
+             -5 => [-10,   2],
+             -6 => [-11,   1],
+             -7 => [-12,   0],
+             -8 => [-13,   0],
+             -9 => [-14,   0],
+            -10 => [-16,  -1],
+            -11 => [-18,  -2],
+            -12 => [-19,  -3],
+            -13 => [-21,  -4],
+            -14 => [-22,  -5],
+            -15 => [-24,  -7],
+            -16 => [-25,  -8],
+            -17 => [-26, -10],
+            -18 => [-27, -11],
+            -19 => [-28, -12],
+            -20 => [-29, -13],
+            -21 => [-30, -14],
+            -22 => [-31, -14],
+            -23 => [-32, -15],
+            -24 => [-32, -16],
+            -25 => [-33, -17],
+            -26 => [-34, -18],
+            -27 => [-34, -20],
+            -28 => [-35, -19],
+            -29 => [-36, -19],
+            -30 => [-36, -20],
+            -31 => [-36, -20],
+            -32 => [-35, -21],
+            -33 => [-34, -21],
+            -34 => [-33, -21],
+            -35 => [-32, -21],
+            -36 => [-31, -21],
+            -37 => [-30, -26],
+            -38 => [-29, -27],
+        ];
+
+        foreach ($riverWater as $y => [$x1, $x2]) {
+            $setRange($y, $x1, $x2, 'W');
+            $set($x1 - 1, $y, 'S');
+            $set($x2 + 1, $y, 'S');
+        }
+
+        // River/coast continuation visible in the newer reference view.
+        $set(-41, -39, 'S');
+        $setRange(-39, -40, -22, 'W');
+        $set(-21, -39, 'S');
+
+        $set(-42, -40, 'S');
+        $setRange(-40, -41, -21, 'W');
+
+        $set(-43, -41, 'S');
+        $setRange(-41, -42, -21, 'W');
+
+        $set(-44, -42, 'S');
+        $setRange(-42, -43, -20, 'W');
+
+        $setRange(-43, -44, -20, 'W');
+        $setRange(-43, -19, -18, 'S');
+
+        $setRange(-44, -45, -18, 'W');
+        $setRange(-44, -17, -15, 'S');
+
+        $setRange(-45, -46, -15, 'W');
+        $setRange(-45, -14, -7, 'S');
+
+        $set(-47, -46, 'S');
+        $setRange(-46, -46, -8, 'W');
+        $setRange(-46, -7, -4, 'S');
+
+        $set(-48, -47, 'S');
+        $setRange(-47, -47, -3, 'W');
+        $setRange(-47, -2, 14, 'S');
+        $setRange(-47, 15, 24, 'W');
+
+        // At the bottom edge, the river and ocean join continuously.
+        $setRange(-48, -48, 24, 'W');
+
+        // Far-left terrace/cliff strip.
+        $setRange(-8, -42, -41, 'T');
+        $setRange(-9, -44, -42, 'T');
+        $setRange(-10, -45, -44, 'T');
+        $setRange(-11, -46, -45, 'T');
+        $setRange(-12, -47, -46, 'T');
+        $setRange(-13, -48, -47, 'T');
+        $set(-48, -14, 'T');
+
+        /*
+         * ============================================================
+         * WEST-SIDE TERRACES
+         * ============================================================
+         */
+
+        // Continuation of the terrace already traced at (-42,-8).
+        // Keep the band in scene coordinates so it follows the fixed Jade
+        // Falls base when the world expands.
+        for ($y = -8; $y <= 24; $y++) {
+            $x = $y - 34;
+            $setRange($y, $x, $x + 1, 'T');
+        }
+
+        // Parallel terrace farther west. The cells between this band and
+        // the first band remain the default land unless traced separately.
+        for ($y = 4; $y <= 24; $y++) {
+            $x = $y - 52;
+            $setRange($y, $x, $x + 1, 'T');
+        }
+
+        // Curved terrace/ridge previously traced.
+        $terraceRanges = [
+             -3 => [20, 20],
+             -4 => [20, 21],
+             -5 => [20, 21],
+             -6 => [20, 21],
+             -7 => [20, 20],
+             -8 => [20, 21],
+             -9 => [20, 21],
+            -10 => [19, 21],
+            -11 => [19, 20],
+            -12 => [19, 20],
+            -13 => [19, 20],
+            -14 => [18, 19],
+            -15 => [18, 19],
+            -16 => [18, 19],
+            -17 => [17, 18],
+            -18 => [17, 18],
+            -19 => [16, 17],
+            -20 => [15, 16],
+            -21 => [15, 16],
+            -22 => [14, 15],
+            -23 => [13, 14],
+            -24 => [13, 14],
+            -25 => [12, 13],
+            -26 => [11, 12],
+            -27 => [10, 12],
+            -28 => [10, 11],
+            -29 => [9, 10],
+            -30 => [8, 9],
+            -31 => [7, 9],
+            -32 => [7, 8],
+            -33 => [6, 8],
+            -34 => [5, 7],
+            -35 => [5, 7],
+            -36 => [4, 6],
+            -37 => [4, 6],
+            -38 => [4, 6],
+            -39 => [4, 7],
+            -40 => [4, 17],
+            -41 => [6, 16],
+            -42 => [6, 15],
+        ];
+
+        foreach ($terraceRanges as $y => [$x1, $x2]) {
+            $setRange($y, $x1, $x2, 'T');
+        }
+
+        /*
+         * ============================================================
+         * EAST / INNER TERRACE RIDGE
+         * ============================================================
+         */
+        $innerEastTerraceRanges = [
+            -22 => [19, 21],
+            -23 => [19, 21],
+            -24 => [19, 21],
+            -25 => [19, 20],
+            -26 => [19, 20],
+            -27 => [18, 20],
+            -28 => [18, 20],
+            -29 => [18, 19],
+            -30 => [18, 19],
+            -31 => [17, 19],
+            -32 => [17, 19],
+            -33 => [17, 18],
+            -34 => [17, 18],
+            -35 => [16, 18],
+            -36 => [16, 18],
+            -37 => [16, 17],
+            -38 => [16, 17],
+            -39 => [15, 17],
+            -40 => [14, 16],
+            -41 => [13, 15],
+            -42 => [12, 14],
+        ];
+
+        foreach ($innerEastTerraceRanges as $y => [$x1, $x2]) {
+            $setRange($y, $x1, $x2, 'T');
+        }
+
+        /*
+         * ============================================================
+         * UPPER / OUTER TERRACE RIDGE
+         * ============================================================
+         */
+        $outerEastTerraceRanges = [
+            -22 => [22, 24],
+            -23 => [22, 24],
+            -24 => [22, 24],
+            -25 => [22, 24],
+            -26 => [22, 24],
+            -27 => [23, 24],
+            -28 => [23, 24],
+            -29 => [23, 24],
+            -30 => [23, 24],
+            -31 => [23, 24],
+            -32 => [23, 24],
+            -33 => [23, 24],
+            -34 => [23, 24],
+            -35 => [23, 24],
+            -36 => [23, 24],
+        ];
+
+        foreach ($outerEastTerraceRanges as $y => [$x1, $x2]) {
+            $setRange($y, $x1, $x2, 'T');
+        }
+
+        // Lower-right coast.
+        $set(24, -44, 'S');
+        $setRange(-45, 21, 22, 'S');
+        $setRange(-45, 23, 24, 'W');
+        $setRange(-46, 17, 19, 'S');
+        $setRange(-46, 20, 24, 'W');
+
+        return $cells;
+    }
+
+    /**
+     * Return the hand-traced Jade Falls terrain mask, preserving its original
+     * coordinate origin when the world is expanded.
+     *
+     * The recovered map is a 25x25 base mask. Expansion changes the terrain
+     * array dimensions but does not translate existing world objects, so the
+     * base mask remains at stable scene coordinates x=0..24 and y=0..24.
+     * When the terrain array grows, the client exposes the added area before
+     * that fixed scene, so the base mask is placed at the upper/right offset
+     * (width-25,height-25) in raw array coordinates. New cells are explicitly
+     * land until they are traced and assigned a more specific type. This is
+     * preferable to switching to a normalized formula, which moves the river
+     * whenever the farm grows.
+     *
+     * The Flash client expects one terrain code for each cell in a grid that
+     * is half the world dimensions (TerrainUtil.TERRAIN_SCALE_FACTOR == 2),
+     * serialized row-major as y*width+x.
+     */
+    function getAuthoredJadeFallsTerrain(int $sizeX, int $sizeY): array {
+        $width = intdiv(max(0, $sizeX), 2);
+        $height = intdiv(max(0, $sizeY), 2);
+
+        if ($width === 0 || $height === 0) {
+            return [];
+        }
+
+        $baseRows = [
+            'WWWWWWWWSLLLLLLLLLLLLTTTT', // y = 0
+            'WWWWWWWWWSLLLLLLLLLLLTTTT', // y = 1
+            'WWWWWWWWWWSLLLLLLLLLLTTTT', // y = 2
+            'WWWWWWWWWWWSLLLLLLLLLTTTT', // y = 3
+            'SWWWWWWWWWWWSLLLLLLLLLTTT', // y = 4
+            'LLSSSWWWWWWWWSLLLLLLLLLTT', // y = 5
+            'LLLLSSSWWWWWWTTSSSSSSSSSS', // y = 6
+            'LLLLLLSSWWWWWTTWWWWWWWWWW', // y = 7
+            'LLLLLLLLSWWWWTTWWWWWWWWWW', // y = 8
+            'LLLLLLLLLSWWWTTWWWWWWWWWW', // y = 9
+            'LLLLLLLLLLLSSTTWWWWWWWWWW', // y = 10
+            'LLLLLLLLLLLLLLLSSSSSSSSSS', // y = 11
+            'LLLLLLLLLLLLLLLLLLLLLLLLL', // y = 12
+            'LLLLLLLLLLLLLLLLLLLLLLLLL', // y = 13
+            'LLLLLLLLLLLLLLLLLLLLLLLLL', // y = 14
+            'LLLLLLLLLLLLLLLLLLLLLLLLL', // y = 15
+            'LLLLLLLLLLLLLLLLLLLLLLLLL', // y = 16
+            'TTTTTTTTTLLLLLLLLLLLLLLLL', // y = 17
+            'LLTTTTTTTLLLLLLLLLLLLLLLL', // y = 18
+            'TTTTTTTTTTLLLLLLLLLLLLLLL', // y = 19
+            'TTTTTTTTTTLLLLLLLLLLLLLLL', // y = 20
+            'TTTTTTTTTTTTTTLLLLLLLLLLL', // y = 21
+            'TTTTTTTTTTTTTTTTLLLLLLLLL', // y = 22
+            'TTTTTTTTTTTTTTTTLLLLLLLLL', // y = 23
+            'TTTTTTTTTTTTTTTTLLLLLLLLL', // y = 24
+        ];
+
+        $codes = [
+            'L' => 1,
+            'W' => 2,
+            'S' => 3,
+            'T' => 4,
+        ];
+        $baseWidth = 25;
+        $baseHeight = count($baseRows);
+        $baseOffsetX = max(0, $width - $baseWidth);
+        $baseOffsetY = max(0, $height - $baseHeight);
+        $expansionTerrain = getJadeFallsExpansionTerrain();
+        $untracedExpansionCell = 'L';
+        $terrain = [];
+
+        for ($y = 0; $y < $height; $y++) {
+            $sceneY = $y - $baseOffsetY;
+
+            for ($x = 0; $x < $width; $x++) {
+                $sceneX = $x - $baseOffsetX;
+
+                if ($sceneX >= 0 && $sceneX < $baseWidth
+                    && $sceneY >= 0 && $sceneY < $baseHeight) {
+                    // Keep the original 25x25 scene cells untouched.
+                    $cell = $baseRows[$sceneY][$sceneX];
+                } else {
+                    // Expanded cells use the sparse scene-coordinate overlay;
+                    // all not-yet-traced cells remain conservative land.
+                    $cell = $expansionTerrain["$sceneX,$sceneY"] ?? $untracedExpansionCell;
+                }
+
+                if (!isset($codes[$cell])) {
+                    throw new RuntimeException("Jade Falls terrain mask contains an unknown cell code");
+                }
+
+                $terrain[] = $codes[$cell];
+            }
+        }
+
+        return $terrain;
+    }
+    /**
+     * Return a deterministic approximation of the expansion-world terrain
+     * mapping expected by FarmGameWorld.  Hawaii remains formula-based for
+     * now; Jade Falls uses the readable authored mask above.
+     */
+    function getApproximateWorldTerrain(string $type, int $sizeX, int $sizeY): array {
+        if (!in_array($type, ['asia', 'hawaii'], true)) {
+            return [];
+        }
+
+        $width = intdiv(max(0, $sizeX), 2);
+        $height = intdiv(max(0, $sizeY), 2);
+        if ($width === 0 || $height === 0) {
+            return [];
+        }
+
+        if ($type === 'asia') {
+            // Keep the authored base anchored to the fixed scene coordinates
+            // for every expansion; do not regenerate it from normalized data.
+            return getAuthoredJadeFallsTerrain($sizeX, $sizeY);
+        }
+
+        $terrain = [];
+        $lastX = max(1, $width - 1);
+        $lastY = max(1, $height - 1);
+
+        for ($y = 0; $y < $height; $y++) {
+            for ($x = 0; $x < $width; $x++) {
+                $nx = $x / $lastX;
+                $ny = $y / $lastY;
+                $diagonal = $nx - $ny;
+
+                if ($type === 'hawaii') {
+                    // The reference Hawaii farm has ocean on the visual
+                    // left/lower-left side and land on the opposite side.
+                    // A diagonal boundary matches the isometric farm shape.
+                    if ($diagonal < -0.28) {
+                        $code = 2; // water
+                    } elseif ($diagonal < -0.16) {
+                        $code = 3; // shoreline
+                    } else {
+                        $code = 1; // land
+                    }
+                } else {
+                    // Jade Falls is approximated as a river running from the
+                    // top of the map toward the bottom, with farmable
+                    // terraces to either side and small water on the far edge.
+                    $riverCenter = 0.02 + 0.06 * sin($ny * pi() * 1.35);
+                    $riverDistance = abs($diagonal - $riverCenter);
+
+                    if ($riverDistance < 0.105 || ($nx > 0.78 && $ny < 0.27)) {
+                        $code = 2; // water
+                    } elseif ($riverDistance < 0.17 || ($nx > 0.70 && $ny < 0.36)) {
+                        $code = 3; // shoreline
+                    } elseif (abs($diagonal) > 0.27) {
+                        $code = 4; // terrace
+                    } else {
+                        $code = 1; // land
+                    }
+                }
+
+                $terrain[] = $code;
+            }
+        }
+
+        return $terrain;
+    }
+
     function getWorldByType($uid, $type = "farm"){
         if (!isset($GLOBALS['_world_cache'])) {
             $GLOBALS['_world_cache'] = [];
@@ -1344,6 +1809,14 @@
             }
 
             if (!empty($worldData)) {
+                $terrain = getApproximateWorldTerrain(
+                    (string) $worldData["type"],
+                    (int) $worldData["sizeX"],
+                    (int) $worldData["sizeY"]
+                );
+                if (!empty($terrain)) {
+                    $worldData["terrain"] = $terrain;
+                }
                 $worldData["tileSet"] = getTileSetForWorld($worldData["type"]);
             }
         }
@@ -1564,6 +2037,7 @@
             'sizeX' => $size,
             'sizeY' => $size,
             'objectsArray' => $objects,
+            'terrain' => getApproximateWorldTerrain($type, $size, $size),
             'worldId' => $worldId,
             'tileSet' => getTileSetForWorld($type),
             'messageManager' => array(),
@@ -1724,6 +2198,10 @@
             "glen"              => "glen_theme",
             "atlantis"          => "atlantis_theme",
             "hallow"            => "hallow_theme",
+            // These early expansion YIMF terrain configurations use the
+            // internal world IDs directly (see yimf.xml).
+            "asia"              => "asia",
+            "hawaii"            => "hawaii",
             // The client patch completes winternord_theme with the snow
             // terrain fields while retaining its authentic xwx background.
             "winternord"        => "winternord_theme",
