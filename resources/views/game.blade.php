@@ -890,26 +890,28 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                         }
 
                         const PURCHASABLE_WORLDS = [
-                            { id: 'england', name: 'England' },
-                            { id: 'fisherman', name: 'Lighthouse Cove' },
-                            { id: 'winterwonderland', name: 'Winter Wonderland' },
-                            { id: 'australia', name: 'Australia' },
-                            { id: 'space', name: 'Celestial Pastures' },
-                            { id: 'candy', name: 'Candy' },
-                            { id: 'fforest', name: 'Fairy Forest' },
+                            { id: 'england', name: 'My English Farm' },
+                            { id: 'fisherman', name: 'My Lighthouse Cove' },
+                            { id: 'winterwonderland', name: 'My Winter Wonderland' },
+                            { id: 'australia', name: 'My Australian Farm' },
+                            { id: 'space', name: 'Celestial Pasture' },
+                            { id: 'candy', name: 'Sweet Acres' },
+                            { id: 'fforest', name: 'Mystical Groves' },
                             { id: 'hlights', name: 'Holiday Lights' },
-                            { id: 'rainforest', name: 'Rainforest' },
+                            { id: 'rainforest', name: 'Fields of El Dorado' },
                             { id: 'oz', name: 'Emerald Valley' },
-                            { id: 'mediterranean', name: 'Mediterranean' },
-                            { id: 'oasis', name: 'Oasis' },
-                            { id: 'storybook', name: 'Storybook' },
-                            { id: 'sleepyhollow', name: 'Sleepy Hollow' },
-                            { id: 'toyland', name: 'Toyland' },
-                            { id: 'village', name: 'Village' },
-                            { id: 'glen', name: 'Glen' },
+                            { id: 'mediterranean', name: 'Mediterranean Riviera' },
+                            { id: 'oasis', name: 'Oasis Garden' },
+                            { id: 'storybook', name: 'Fairytale Fields' },
+                            { id: 'sleepyhollow', name: "Horseman's Hollow" },
+                            { id: 'toyland', name: 'Toy Town' },
+                            { id: 'village', name: "Farmer's Square" },
+                            { id: 'glen', name: 'Enchanted Glen' },
                             { id: 'atlantis', name: 'Atlantis' },
-                            { id: 'hallow', name: 'Hallow' },
-                            { id: 'winternord', name: 'Winter Fable' }
+                            { id: 'hallow', name: 'Haunted Hollow' },
+                            { id: 'winternord', name: 'A Winter Fable' },
+                            { id: 'asia', name: 'Jade Falls' },
+                            { id: 'hawaii', name: 'Hawaiian Paradise' }
                         ];
 
                         let playerUnlockedWorlds = [];

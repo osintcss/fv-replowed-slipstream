@@ -3,6 +3,8 @@ require_once AMFPHP_ROOTPATH . "Helpers/user_resources.php";
 require_once AMFPHP_ROOTPATH . "Helpers/general_functions.php";
 require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
 
+use App\Support\WorldCurrencyService;
+
 class MarketTransactions {
     private const BUY_XP_GAIN_RATIO = 0.01;
     private const BUY_XP_GAIN_MIN = 0;
@@ -10,6 +12,94 @@ class MarketTransactions {
     private $uid = null;
     public function __construct($pid) {
         $this->uid = $pid;
+    }
+
+    private function currentWorldCurrency(): ?string
+    {
+        return WorldCurrencyService::currencyForWorld(getCurrentWorldType($this->uid));
+    }
+
+    private static function worldCurrencyFor(?string $worldType): ?string
+    {
+        return WorldCurrencyService::currencyForWorld($worldType);
+    }
+
+    /** Resolve the payment unit used by the current world/item combination. */
+    private static function resolveWorldCurrency(
+        ?string $requestedCurrency,
+        array $item,
+        ?string $worldType,
+        bool $defaultToWorld = true,
+    ): ?string {
+        $requestedCurrency = is_string($requestedCurrency) ? trim($requestedCurrency) : '';
+        if (WorldCurrencyService::isSupportedUnit($requestedCurrency)) {
+            return $requestedCurrency;
+        }
+        if (in_array($requestedCurrency, ['cash', 'coins', 'gold'], true)) {
+            return null;
+        }
+
+        $market = is_string($item['market'] ?? null) ? trim($item['market']) : '';
+        if (WorldCurrencyService::isSupportedUnit($market)) {
+            return $market;
+        }
+
+        $worldCurrency = self::worldCurrencyFor($worldType);
+        if ($defaultToWorld && $worldCurrency !== null && ($market === '' || $market === 'coins' || $market === 'gold')) {
+            return $worldCurrency;
+        }
+
+        return null;
+    }
+
+    private static function addWorldCurrencyDelta(array &$deltas, ?string $unit, int $delta): void
+    {
+        if ($unit === null || $delta === 0) {
+            return;
+        }
+
+        $deltas[$unit] = ($deltas[$unit] ?? 0) + $delta;
+    }
+
+    /** Preflight direct placement so an unaffordable plot is never persisted. */
+    public function canAfford(string $type, object $data, ?string $currency = null): bool
+    {
+        if ($type === ACTION_PLOW) {
+            $unit = $this->currentWorldCurrency();
+            return $unit === null
+                ? UserResources::getGold($this->uid) >= 15
+                : WorldCurrencyService::hasSufficient($this->uid, $unit, 15);
+        }
+
+        if ($type !== ACTION_PLANT) {
+            return true;
+        }
+
+        $itemName = $data->itemName ?? null;
+        if (!is_string($itemName) || $itemName === '') {
+            return false;
+        }
+
+        $res = null;
+        if ($currency === 'cash') {
+            $res = getItemByName($itemName . '_cash', 'db');
+        }
+        $res = $res ?: getItemByName($itemName, 'db');
+        if (!is_array($res)) {
+            return false;
+        }
+
+        $market = is_string($res['market'] ?? null) ? trim($res['market']) : 'coins';
+        $cashCost = (int) ($res['cash'] ?? 0);
+        $cost = (int) ($res['cost'] ?? 0);
+        if (($market === 'cash' || $currency === 'cash') && $cashCost > 0) {
+            return UserResources::getCash($this->uid) >= $cashCost;
+        }
+
+        $unit = self::resolveWorldCurrency($currency, $res, getCurrentWorldType($this->uid));
+        return $unit === null
+            ? UserResources::getGold($this->uid) >= $cost
+            : WorldCurrencyService::hasSufficient($this->uid, $unit, $cost);
     }
 
     public function newTransaction(string $type, object $data, ?string $currency = null){
@@ -174,7 +264,10 @@ class MarketTransactions {
 
         if ($res){
             $coinYield = (int) ($res["coinYield"] ?? 0);
-            $success = UserResources::addGold($this->uid, $coinYield);
+            $worldCurrency = $this->currentWorldCurrency();
+            $success = $worldCurrency !== null
+                ? WorldCurrencyService::grant($this->uid, $worldCurrency, $coinYield, 'harvest')
+                : UserResources::addGold($this->uid, $coinYield);
 
             $masteryLevelUp = processMastery($this->uid, $res, 1);
             $harvestReward = $this->grantHarvestReward($res, (string) $data->itemName);
@@ -220,8 +313,22 @@ class MarketTransactions {
                 $buyXp = (int) $explicitXp;
             }
 
+            $worldCurrency = self::resolveWorldCurrency(
+                $currency,
+                $res,
+                getCurrentWorldType($this->uid),
+            );
+
             if (($market === "cash" || $currency === "cash") && $cashCost > 0) {
                 $result1 = UserResources::removeCash($this->uid, $cashCost);
+            } elseif ($worldCurrency !== null) {
+                $result1 = WorldCurrencyService::spend(
+                    $this->uid,
+                    $worldCurrency,
+                    $goldCost,
+                    'market.buy',
+                    ['itemName' => $itemName],
+                );
             } else {
                 $result1 = UserResources::removeGold($this->uid, $goldCost);
             }
@@ -237,7 +344,10 @@ class MarketTransactions {
     public function plowLand(){
         $cost = 15;
         $plowXp = 1;
-        $result1 = UserResources::removeGold($this->uid, $cost);
+        $worldCurrency = $this->currentWorldCurrency();
+        $result1 = $worldCurrency !== null
+            ? WorldCurrencyService::spend($this->uid, $worldCurrency, $cost, 'plow')
+            : UserResources::removeGold($this->uid, $cost);
         if (!$result1) return false;
         $result2 = UserResources::addXp($this->uid, $plowXp);
         return $result2;
@@ -248,18 +358,26 @@ class MarketTransactions {
         if ($count <= 0) return true;
         $totalCost = 15 * $count;
         $totalXp = 1 * $count;
-        $result1 = UserResources::removeGold($this->uid, $totalCost);
+        $worldCurrency = $this->currentWorldCurrency();
+        $result1 = $worldCurrency !== null
+            ? WorldCurrencyService::spend($this->uid, $worldCurrency, $totalCost, 'plow.batch')
+            : UserResources::removeGold($this->uid, $totalCost);
         if (!$result1) return false;
         $result2 = UserResources::addXp($this->uid, $totalXp);
         return $result2;
     }
 
     
-    public static function calculatePlowDeltas(int $count): array {
-        if ($count <= 0) return ['goldDelta' => 0, 'xpDelta' => 0];
+    public static function calculatePlowDeltas(int $count, ?string $worldType = null): array {
+        if ($count <= 0) return ['goldDelta' => 0, 'xpDelta' => 0, 'worldCurrencyDeltas' => []];
+
+        $worldCurrency = self::worldCurrencyFor($worldType);
         return [
-            'goldDelta' => -(15 * $count),
-            'xpDelta' => 1 * $count
+            'goldDelta' => $worldCurrency === null ? -(15 * $count) : 0,
+            'xpDelta' => 1 * $count,
+            'worldCurrencyDeltas' => $worldCurrency === null
+                ? []
+                : [$worldCurrency => -(15 * $count)],
         ];
     }
 
@@ -280,7 +398,12 @@ class MarketTransactions {
         }
 
         if ($totalCoins > 0) {
-            UserResources::addGold($this->uid, $totalCoins);
+            $worldCurrency = $this->currentWorldCurrency();
+            if ($worldCurrency !== null) {
+                WorldCurrencyService::grant($this->uid, $worldCurrency, $totalCoins, 'harvest.batch');
+            } else {
+                UserResources::addGold($this->uid, $totalCoins);
+            }
         }
 
         foreach ($itemCounts as $itemName => $count) {
@@ -297,8 +420,8 @@ class MarketTransactions {
     }
 
     
-    public static function calculateHarvestDeltas(array $itemNames): array {
-        if (empty($itemNames)) return ['goldDelta' => 0, 'xpDelta' => 0, 'itemCounts' => []];
+    public static function calculateHarvestDeltas(array $itemNames, ?string $worldType = null): array {
+        if (empty($itemNames)) return ['goldDelta' => 0, 'xpDelta' => 0, 'itemCounts' => [], 'worldCurrencyDeltas' => []];
 
         $totalCoins = 0;
         $itemCounts = [];
@@ -311,10 +434,14 @@ class MarketTransactions {
             }
         }
 
+        $worldCurrency = self::worldCurrencyFor($worldType);
         return [
-            'goldDelta' => $totalCoins,
+            'goldDelta' => $worldCurrency === null ? $totalCoins : 0,
             'xpDelta' => 0,
-            'itemCounts' => $itemCounts
+            'itemCounts' => $itemCounts,
+            'worldCurrencyDeltas' => $worldCurrency === null || $totalCoins === 0
+                ? []
+                : [$worldCurrency => $totalCoins],
         ];
     }
 
@@ -355,9 +482,22 @@ class MarketTransactions {
         $totalGold = $goldCost * $count;
         $totalCash = $cashCost * $count;
         $totalXp = $buyXp * $count;
+        $worldCurrency = self::resolveWorldCurrency(
+            $currency,
+            $res,
+            getCurrentWorldType($this->uid),
+        );
 
         if (($market === "cash" || $currency === "cash") && $totalCash > 0) {
             $result1 = UserResources::removeCash($this->uid, $totalCash);
+        } elseif ($worldCurrency !== null) {
+            $result1 = WorldCurrencyService::spend(
+                $this->uid,
+                $worldCurrency,
+                $totalGold,
+                'market.buy.batch',
+                ['itemName' => $itemName, 'count' => $count],
+            );
         } else {
             $result1 = UserResources::removeGold($this->uid, $totalGold);
         }
@@ -371,9 +511,14 @@ class MarketTransactions {
     }
 
     
-    public static function calculateBuyDeltas(string $itemName, int $count, ?string $currency = null): array {
+    public static function calculateBuyDeltas(
+        string $itemName,
+        int $count,
+        ?string $currency = null,
+        ?string $worldType = null,
+    ): array {
         if ($count <= 0 || empty($itemName)) {
-            return ['goldDelta' => 0, 'xpDelta' => 0, 'cashDelta' => 0];
+            return ['goldDelta' => 0, 'xpDelta' => 0, 'cashDelta' => 0, 'worldCurrencyDeltas' => []];
         }
 
         $res = null;
@@ -392,7 +537,7 @@ class MarketTransactions {
         }
 
         if (!$res) {
-            return ['goldDelta' => 0, 'xpDelta' => 0, 'cashDelta' => 0];
+            return ['goldDelta' => 0, 'xpDelta' => 0, 'cashDelta' => 0, 'worldCurrencyDeltas' => []];
         }
 
         $market = $res["market"] ?? "coins";
@@ -409,18 +554,28 @@ class MarketTransactions {
         }
 
         $totalXp = $buyXp * $count;
+        $worldCurrency = self::resolveWorldCurrency($currency, $res, $worldType);
 
         if (($market === "cash" || $currency === "cash") && $cashCost > 0) {
             return [
                 'goldDelta' => 0,
                 'xpDelta' => $totalXp,
-                'cashDelta' => -($cashCost * $count)
+                'cashDelta' => -($cashCost * $count),
+                'worldCurrencyDeltas' => [],
+            ];
+        } elseif ($worldCurrency !== null) {
+            return [
+                'goldDelta' => 0,
+                'xpDelta' => $totalXp,
+                'cashDelta' => 0,
+                'worldCurrencyDeltas' => [$worldCurrency => -($goldCost * $count)],
             ];
         } else {
             return [
                 'goldDelta' => -($goldCost * $count),
                 'xpDelta' => $totalXp,
-                'cashDelta' => 0
+                'cashDelta' => 0,
+                'worldCurrencyDeltas' => [],
             ];
         }
     }

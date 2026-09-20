@@ -368,13 +368,15 @@
     }
 
     /**
-     * Plot actions only contribute to Emerald Valley's rainbow score.  The
-     * caller supplies the already-authoritative normal-XP delta, so the
-     * score cannot be inflated by a client-provided count or item name.
+     * Plot actions contribute to the configured expansion score for worlds
+     * that use an action score. The caller supplies the already-authoritative
+     * normal-XP delta, so the score cannot be inflated by client input.
      */
     function awardPlotActionWorldScore($uid, $worldType, $xpDelta) {
         $worldType = getWorldScoreWorldType($uid, $worldType);
-        if ($worldType !== 'oz' || !is_numeric($xpDelta) || (int) $xpDelta <= 0) {
+        if (!in_array($worldType, ['oz', 'asia'], true)
+            || !is_numeric($xpDelta)
+            || (int) $xpDelta <= 0) {
             return null;
         }
 

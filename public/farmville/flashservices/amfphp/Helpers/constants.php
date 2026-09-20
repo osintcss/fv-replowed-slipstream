@@ -253,7 +253,11 @@ define('VALID_PURCHASABLE_WORLDS', [
     'england', 'fisherman', 'winterwonderland', 'australia',
     'space', 'candy', 'fforest', 'hlights', 'rainforest', 'oz',
     'mediterranean', 'oasis', 'storybook', 'sleepyhollow', 'toyland',
-    'village', 'glen', 'atlantis', 'hallow', 'winternord'
+    'village', 'glen', 'atlantis', 'hallow', 'winternord',
+    // These early expansion worlds are already supported by the Flash
+    // client and gameSettings.json.  Keep them in the same server-side
+    // allowlist so unlocks, world loading, and feature-credit buckets agree.
+    'asia', 'hawaii'
 ]);
 
 define('ACTION_HARVEST', 'harvest');

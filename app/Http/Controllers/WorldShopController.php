@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\PlayerMeta;
 use App\Models\UserMeta;
 use App\Support\PlayerLevel;
+use App\Support\WorldCurrencyService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -20,7 +21,8 @@ class WorldShopController extends Controller
         'england', 'fisherman', 'winterwonderland', 'australia',
         'space', 'candy', 'fforest', 'hlights', 'rainforest', 'oz',
         'mediterranean', 'oasis', 'storybook', 'sleepyhollow', 'toyland',
-        'village', 'glen', 'atlantis', 'hallow', 'winternord'
+        'village', 'glen', 'atlantis', 'hallow', 'winternord',
+        'asia', 'hawaii'
     ];
 
     public function status()
@@ -120,6 +122,30 @@ class WorldShopController extends Controller
                 ['uid' => $uid, 'meta_key' => self::META_KEY],
                 ['meta_value' => serialize($unlockedWorlds)],
             );
+
+            // Expansion config grants the first world-currency bundle when a
+            // world is unlocked. Keep the grant idempotent so a retried claim
+            // cannot mint another 6,000 units.
+            WorldCurrencyService::initializeForWorld($uid, $worldId);
+
+            // Jade Falls also starts its Zen score at one. Store the canonical
+            // world-type key used by the AMF score loader, preserving any
+            // score that may already exist from an older client.
+            if ($worldId === 'asia') {
+                $scoreMeta = PlayerMeta::where('uid', $uid)
+                    ->where('meta_key', 'world_score_asia')
+                    ->lockForUpdate()
+                    ->first();
+                if ($scoreMeta === null) {
+                    PlayerMeta::create([
+                        'uid' => $uid,
+                        'meta_key' => 'world_score_asia',
+                        'meta_value' => '1',
+                    ]);
+                } elseif ((int) $scoreMeta->meta_value < 1) {
+                    $scoreMeta->update(['meta_value' => '1']);
+                }
+            }
 
             $updatedStatus = $this->getClaimStatus($playerLevel, $claims, array_merge(self::FREE_WORLDS, $unlockedWorlds));
 

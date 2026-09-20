@@ -4,6 +4,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/general_functions.php";
 require_once AMFPHP_ROOTPATH . "Helpers/logger.php";
 
 use App\Models\Quest;
+use App\Support\WorldCurrencyService;
 
 define('META_QUEST_ACTIVE', 'quest_active');
 define('META_QUEST_COMPLETED', 'quest_completed');
@@ -406,6 +407,26 @@ function grantQuestRewards($uid, $rewards, $worldType = null) {
             case 'cash':
                 UserResources::addCash($uid, (int)$value);
                 $granted[] = ['type' => 'cash', 'amount' => (int)$value];
+                break;
+
+            case 'world_currency':
+                $unit = $reward['unit'] ?? $reward['currency'] ?? null;
+                $amount = (int) $value * max(1, $quantity);
+                if (is_string($unit) && WorldCurrencyService::isSupportedUnit($unit)
+                    && WorldCurrencyService::grant($uid, $unit, $amount, 'quest.reward')) {
+                    $granted[] = [
+                        'type' => 'world_currency',
+                        'unit' => $unit,
+                        'amount' => $amount,
+                    ];
+                } else {
+                    $granted[] = [
+                        'type' => 'world_currency',
+                        'unit' => $unit,
+                        'amount' => $amount,
+                        'skipped' => true,
+                    ];
+                }
                 break;
 
             case 'item_grant':

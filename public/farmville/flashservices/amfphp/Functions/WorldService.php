@@ -531,9 +531,10 @@ class WorldService
             $energyCost = (int) $extraParams->energyCost;
         }
 
+        $energyRemoved = false;
         if ($energyCost > 0) {
             $uid = $playerObj->getUid();
-            UserResources::removeEnergy($uid, $energyCost);
+            $energyRemoved = UserResources::removeEnergy($uid, $energyCost);
         }
 
         switch ($action) {
@@ -772,6 +773,31 @@ class WorldService
 
                     $withdrawnBuildingItemCode = $itemCode;
                 }
+
+                // Market placements are charged after the legacy world write.
+                // Preflight the authoritative balance first so Jade/Coconuts
+                // shortfalls cannot leave a free building or crop behind.
+                if ($isStorageWithdrawal === 0 && !$isUGCPlacement) {
+                    $placementCurrency = ($extraParams !== null && isset($extraParams->currency))
+                        ? (string) $extraParams->currency : null;
+                    if (!$market->canAfford(ACTION_PLANT, $marketPurchaseObj, $placementCurrency)) {
+                        if ($energyRemoved) {
+                            UserResources::addEnergy($playerObj->getUid(), $energyCost);
+                        }
+                        Logger::warning('WorldService', sprintf(
+                            'Rejected unaffordable market placement: uid=%s item=%s world=%s',
+                            $playerObj->getUid(),
+                            $marketPurchaseObj->itemName ?? '',
+                            getCurrentWorldType($playerObj->getUid()),
+                        ));
+
+                        return [
+                            'id' => 0,
+                            'data' => ['id' => 0, 'success' => false, 'error' => 'Not enough currency for this item'],
+                        ];
+                    }
+                }
+
                 $retId = $playerObj->setWorld($plantObj, $action);
 
                 // An unsuccessful placement must not consume the item.
@@ -1218,6 +1244,21 @@ class WorldService
                     ]);
                     $data['id'] = 0;
                     $data['data'] = ['id' => 0, 'stale' => true];
+                    break;
+                }
+
+                if (!$market->canAfford(ACTION_PLOW, $plowObject, null)) {
+                    if ($energyRemoved) {
+                        UserResources::addEnergy($uid, $energyCost);
+                    }
+                    Logger::warning('PlowAudit', 'Single plow rejected for insufficient currency', [
+                        'uid' => (string) $uid,
+                        'world_type' => $currentWorldType,
+                        'x' => $posX,
+                        'y' => $posY,
+                    ]);
+                    $data['id'] = 0;
+                    $data['data'] = ['id' => 0, 'success' => false, 'error' => 'Not enough currency to plow'];
                     break;
                 }
 
@@ -2703,8 +2744,10 @@ class WorldService
 
     public static function loadNeighborWorld($playerObj, $request){
         $neighborUid = $request->params[0];
-        $travelWorld = getWorldByType($neighborUid);
         $neighborWorldType = get_meta($neighborUid, "currentWorldType") ?: "farm";
+        // A neighbor may currently be in a themed farm.  Load that same
+        // world explicitly instead of falling back to the legacy farm type.
+        $travelWorld = getWorldByType($neighborUid, $neighborWorldType);
 
         $data["data"] = array(
             "user" => array(

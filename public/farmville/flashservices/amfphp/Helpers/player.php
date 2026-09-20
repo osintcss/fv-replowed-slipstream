@@ -19,6 +19,7 @@ use App\Models\WorldObject;
 use App\Support\ResourceAudit;
 use App\Support\StorageConfig;
 use App\Support\WorldPersistence;
+use App\Support\WorldCurrencyService;
 
 class Player {
 
@@ -725,6 +726,9 @@ class Player {
                     "gold" => $row['gold'],
                     "cash" => $row['cash'],
                     "xp" => $row['xp'],
+                    // The client uses a nested balance map during InitUser;
+                    // keep this separate from postInit's legacy flat map.
+                    "worldCurrencies" => WorldCurrencyService::balancesForClient($this->uid),
                     // Player.loadObject only restores world-score progress
                     // when this map is present in InitUser.  Omitting it made
                     // every world HUD reset to level zero after a reload.

@@ -11,6 +11,7 @@ require_once AMFPHP_ROOTPATH . "Functions/AvatarService.php";
 use App\Helpers\JsonHelper;
 use App\Models\User;
 use App\Models\UserMeta;
+use App\Support\WorldCurrencyService;
 
 class UserService{
     function __construct()
@@ -118,7 +119,11 @@ class UserService{
             "communityGoalsData" => null,
             "turtleInnovationData" => array(),
             "dragonCollection" => null,
-            "worldCurrencies" => array(),
+            // TPostInit/SpecialQuestManager expects the current totals as a
+            // flat unit => amount map, unlike InitUser's nested player map.
+            "worldCurrencies" => $playerObj
+                ? WorldCurrencyService::totalsForPostInit($playerObj->getUid())
+                : array(),
             "lotteryData" => array(),
             "popupTwitterDialog" => false,
             "storageExpansionBuildingId" => null,
