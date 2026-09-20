@@ -65,7 +65,10 @@ class Item extends Model
 
         $cacheKey = "item:code:{$code}";
         $data = Cache::remember($cacheKey, 3600, function () use ($code) {
-            $item = static::whereRaw('BINARY code = ?', [$code])->first();
+            $query = static::query();
+            $item = $query->getConnection()->getDriverName() === 'sqlite'
+                ? $query->where('code', $code)->first()
+                : $query->whereRaw('BINARY code = ?', [$code])->first();
             if (!$item) {
                 return false;
             }

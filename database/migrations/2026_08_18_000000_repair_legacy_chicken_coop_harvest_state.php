@@ -14,12 +14,21 @@ return new class extends Migration
         // already-populated coops whose missing timer cannot be recovered,
         // so make them immediately collectible once. Future harvests already
         // reset them to `bare` with a new plant_time timer.
-        DB::table('world_objects')
+        $query = DB::table('world_objects')
             ->where('deleted', false)
             ->where('item_name', 'like', '%chickencoop%')
             ->where('state', 'built')
-            ->whereNotNull('contents')
-            ->whereRaw('JSON_LENGTH(contents) > 0')
+            ->whereNotNull('contents');
+
+        // MariaDB and SQLite expose the same JSON array operation under
+        // different names. Keeping this migration portable lets the feature
+        // suite run against its in-memory SQLite database without changing
+        // the production repair criteria.
+        $jsonLengthFunction = DB::getDriverName() === 'sqlite'
+            ? 'json_array_length'
+            : 'JSON_LENGTH';
+
+        $query->whereRaw("{$jsonLengthFunction}(contents) > 0")
             ->update([
                 'state' => 'grown',
                 'plant_time' => 0,
