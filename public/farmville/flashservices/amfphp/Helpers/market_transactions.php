@@ -24,12 +24,17 @@ class MarketTransactions {
         return WorldCurrencyService::currencyForWorld($worldType);
     }
 
-    /** Resolve the payment unit used by the current world/item combination. */
+    /**
+     * Resolve an explicitly selected expansion-currency payment.
+     *
+     * Legacy catalog entries with a missing market field are coin-priced by
+     * default. Do not silently reinterpret those prices based on the current
+     * world; expansion currencies must be explicitly requested by the client
+     * or declared by the catalog item.
+     */
     private static function resolveWorldCurrency(
         ?string $requestedCurrency,
         array $item,
-        ?string $worldType,
-        bool $defaultToWorld = true,
     ): ?string {
         $requestedCurrency = is_string($requestedCurrency) ? trim($requestedCurrency) : '';
         if (WorldCurrencyService::isSupportedUnit($requestedCurrency)) {
@@ -42,11 +47,6 @@ class MarketTransactions {
         $market = is_string($item['market'] ?? null) ? trim($item['market']) : '';
         if (WorldCurrencyService::isSupportedUnit($market)) {
             return $market;
-        }
-
-        $worldCurrency = self::worldCurrencyFor($worldType);
-        if ($defaultToWorld && $worldCurrency !== null && ($market === '' || $market === 'coins' || $market === 'gold')) {
-            return $worldCurrency;
         }
 
         return null;
@@ -96,7 +96,7 @@ class MarketTransactions {
             return UserResources::getCash($this->uid) >= $cashCost;
         }
 
-        $unit = self::resolveWorldCurrency($currency, $res, getCurrentWorldType($this->uid));
+        $unit = self::resolveWorldCurrency($currency, $res);
         return $unit === null
             ? UserResources::getGold($this->uid) >= $cost
             : WorldCurrencyService::hasSufficient($this->uid, $unit, $cost);
@@ -316,7 +316,6 @@ class MarketTransactions {
             $worldCurrency = self::resolveWorldCurrency(
                 $currency,
                 $res,
-                getCurrentWorldType($this->uid),
             );
 
             if (($market === "cash" || $currency === "cash") && $cashCost > 0) {
@@ -485,7 +484,6 @@ class MarketTransactions {
         $worldCurrency = self::resolveWorldCurrency(
             $currency,
             $res,
-            getCurrentWorldType($this->uid),
         );
 
         if (($market === "cash" || $currency === "cash") && $totalCash > 0) {
@@ -554,7 +552,7 @@ class MarketTransactions {
         }
 
         $totalXp = $buyXp * $count;
-        $worldCurrency = self::resolveWorldCurrency($currency, $res, $worldType);
+        $worldCurrency = self::resolveWorldCurrency($currency, $res);
 
         if (($market === "cash" || $currency === "cash") && $cashCost > 0) {
             return [
