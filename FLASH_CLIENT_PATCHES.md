@@ -1,5 +1,94 @@
 # Flash client patches
 
+## Lonely Animal progress callback guard
+
+`LonelyAnimal.onTransactionComplete()` could dereference incomplete feature XML,
+friend-set state, or timing data while the startup AMF batch was still being
+initialized. The resulting Error #1009 stopped `TransactionManager` from
+finishing the rest of that batch, which could leave later client actions
+unsubmitted even though the server was healthy.
+
+The client now treats incomplete Lonely Animal state as an unavailable cosmetic
+feature and isolates callback exceptions so one optional feature cannot abort
+the remaining batch. The patched SWF is served as
+`FarmGame-10-lonelyanimalguard1.swf` to force the Flash preloader to fetch the
+new client.
+
+## Turbo Combine coin pre-check
+
+`GameMode.GMCombineAll.performResourceCheck()` blocked Turbo Combine locally
+when the selected plots' seed cost exceeded the player's coin balance. The
+bulk combine request itself is handled by `EquipmentWorldService` and does not
+charge coins, so the client check only prevented an otherwise valid action.
+
+The patched `FarmGame-10.swf` removes only that coin-balance branch. Turbo
+chargers, fuel, world currency, and seed requirements remain enforced. The
+revision is served as `FarmGame-10-turbocombinefree1.swf` so the legacy Flash
+preloader cannot retain the previous client through its immutable SWF cache.
+
+## Market items scoped to the active farm
+
+`Managers.FarmGameSettingsManager.getFarmItemsMergedByWorld()` first obtains
+the current farm's catalog, then deliberately appended entries from every
+other world (including items whose other-world license had been acquired).
+That made themed catalogs such as Winter Fable and Haunted Hollow appear in
+every farm's market.
+
+The patched merge retains the current world's items and `ANY_WORLD` items only.
+Both market-search paths now apply the same restriction, so searching cannot
+surface an item belonging to a different farm. The special world-specific sale
+path remains intact for its dedicated sale tab. The client is served as
+`FarmGame-10-marketbyworld2.swf`; a new filename is required so the preloader
+cannot reuse the prior immutable SWF.
+
+## Market search for global items
+
+### Symptom
+
+Searching the market for `plaza` returned no results, even though the catalog
+contained Plaza Tile, Plaza Mosaic Tile, and `adobe_plaza`. The same items were
+available when browsing the market normally.
+
+The expiration-date repair was not sufficient: `adobe_plaza` had its
+`limitedEnd` changed from `8/12/2010` to `12/31/2099`, and the server served the
+updated catalog, but the old client still filtered it out during a search.
+
+### Root cause
+
+The non-optimized search in
+`Managers.FarmGameSettingsManager.getFarmItemsArray()` used this condition:
+
+```actionscript
+farmItem.isVisible &&
+(farmItem.worldRestrictions.indexOf(Global.worldManager.currentWorldType) != -1 ||
+ farmItem.worldRestrictions.indexOf(ANY_WORLD) != -1)
+```
+
+The optimized ternary-tree search in `Widgets.Windows.Market.MarketWindow`
+performed the equivalent check. Items without a `WorldRequirement` have an
+empty `worldRestrictions` array, so both paths rejected them. That contradicted
+the client’s `FarmItem.meetsWorldRestrictions()` implementation, which treats
+an empty restriction list as globally available.
+
+### Fix and delivery
+
+Both search paths now call `farmItem.meetsWorldRestrictions()` (or
+`matchedItem.meetsWorldRestrictions()`). World-specific items still require a
+matching world, while items with no world restriction are searchable on every
+farm.
+
+The patched SWF was rebuilt with JPEXS Free Flash Decompiler 26.2.1 and
+deployed as the cache-busted revision
+`FarmGame-10-marketsearchworld1.swf`. The revision is routed through
+`public/.htaccess`, and `resources/views/game.blade.php` selects it for new
+sessions.
+
+### Verification
+
+After deployment, the revisioned SWF returned HTTP 200 and its SHA-256 matched
+the locally verified build. A hard refresh followed by searching `plaza`
+returned Plaza Tile, Plaza Mosaic Tile, Adobe Plaza, and related items.
+
 ## Gopher Garden progression during world attachment
 
 `GopherImageProgressionFObject` can be asked to redraw a placed Gopher Garden
@@ -275,6 +364,37 @@ gain, rather than only when a level-up occurs. The resulting client is served
 as `FarmGame-10-worldscorepersist2.swf`; the revisioned URL is mapped to the
 tracked SWF in `public/.htaccess` and selected by `resources/views/game.blade.php`.
 
+## World-score persistence transaction coalescing
+
+`Player.addWorldScore` must keep the score persistent, but a Turbo Combine
+updates the local score once per affected plot. The persistence patch now
+coalesces `TWorldScoreLevelUp` transactions by score unit: one request may be
+queued or in flight at a time, and completion schedules one follow-up only
+when the score changed while that request was running. This prevents a large
+combine from filling the Flash client's 50-transaction queue while preserving
+the final score and level.
+
+The resulting client is served as `FarmGame-10-worldscorecoalesce1.swf`.
+
+## Emerald Valley planting and plowing world score
+
+Emerald Valley is internally named `oz`, but its expansion configuration uses
+the score unit `rainbowPoints`. The server previously generated `ozPoints`,
+which the Emerald Valley HUD never reads. The score-unit mapping now returns
+`rainbowPoints` and resolves that unit back to `oz` for persistence.
+
+Valid plows and crop plantings in Emerald Valley now grant the same base XP
+amount to the Emerald Valley score as to normal farmer XP. The server awards
+and atomically persists that score only after the authoritative plot write and
+resource transaction succeed. `UserService` accepts the client-reported level
+for the original HUD flow but ignores a client-reported `rainbowPoints` score,
+so that callback cannot overwrite or double the server award.
+
+The client adds the matching local `rainbowPoints` amount in `Plot.plow()` and
+`Plot.plant()` so the world meter refreshes immediately. Its existing
+coalesced score transaction saves the calculated level. The client is served
+as `FarmGame-10-emeraldscore1.swf`.
+
 ## Witcher Hut shadow-only rendering
 
 The Sleepy Hollow Witcher Hut is a `CraftingCottageBuilding` with craft type
@@ -289,3 +409,22 @@ exist for this event-only craft type. That returned craft level `0`, causing
 craft-state/config entry exists. The resulting client is served as
 `FarmGame-10-witcherhut1.swf`; the revisioned URL is mapped to the tracked SWF
 in `public/.htaccess` and selected by `resources/views/game.blade.php`.
+
+## Optional terrain coordinate overlay
+
+The Jade Falls terrain coordinate labels are now controlled by the Account
+Settings checkbox `Show map coordinates`. The preference is stored per player
+under the `show_terrain_coordinates` metadata key; an absent key is treated as
+`false`, so existing and new players start with the overlay hidden.
+
+The game view passes the preference as the `fv_show_terrain_coordinates`
+FlashVar. `InvisibleTerrainMap` reads it when constructed and also checks it
+at render time, so stale debug state cannot draw labels while the preference is
+off. The existing context-menu toggle is available only when the preference or
+the developer terrain-mapping experiment is enabled. The patched client is
+served as `FarmGame-10-terraincoordinates2.swf`; the revisioned URL is mapped
+to the tracked SWF in `public/.htaccess` and selected by
+`resources/views/game.blade.php`.
+
+The SWF was exported and re-imported with JPEXS Free Flash Decompiler 26.2.1,
+then re-exported to confirm the FlashVar and context-menu changes.
