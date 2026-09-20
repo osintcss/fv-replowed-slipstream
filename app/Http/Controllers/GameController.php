@@ -22,6 +22,7 @@ class GameController extends Controller
             'neighborsBase64' => $neighborsData['neighborsBase64'],
             'user' => $user,
             'autoAcceptNeighborRequests' => NeighborController::autoAcceptNeighborRequests($user->uid),
+            'showTerrainCoordinates' => $this->showTerrainCoordinates($user->uid),
             'currentWorldType' => $this->currentWorldType($user->uid),
             'amfToken' => $amfToken,
             'fotdImages' => $this->getFotdImages()
@@ -42,6 +43,7 @@ class GameController extends Controller
             'neighborsBase64' => $neighborsData['neighborsBase64'],
             'user' => $user,
             'autoAcceptNeighborRequests' => NeighborController::autoAcceptNeighborRequests($user->uid),
+            'showTerrainCoordinates' => $this->showTerrainCoordinates($user->uid),
             'currentWorldType' => $this->currentWorldType($user->uid),
             'amfToken' => $amfToken,
             'isLauncher' => true,
@@ -58,6 +60,11 @@ class GameController extends Controller
         return is_string($worldType) && preg_match('/^[a-z]+$/', $worldType)
             ? $worldType
             : 'farm';
+    }
+
+    private function showTerrainCoordinates(string $uid): bool
+    {
+        return PlayerMeta::getValue($uid, 'show_terrain_coordinates') === '1';
     }
 
     private function getFotdImages(int $count = 5): string

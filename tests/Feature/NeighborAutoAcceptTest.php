@@ -61,3 +61,36 @@ test('neighbor acceptance preference is saved from settings', function () {
     ]);
     expect(NeighborController::autoAcceptNeighborRequests($user->uid))->toBeFalse();
 });
+
+test('terrain coordinates are hidden by default and saved from settings', function () {
+    $user = User::factory()->create();
+    UserMeta::create([
+        'uid' => $user->uid,
+        'firstName' => 'Test',
+        'lastName' => 'User',
+    ]);
+
+    expect(PlayerMeta::getValue($user->uid, 'show_terrain_coordinates'))->toBeFalse();
+
+    $response = $this->actingAs($user)
+        ->postJson('/profile/settings', [
+            'show_terrain_coordinates' => true,
+        ]);
+
+    $response->assertOk()->assertJson([
+        'success' => true,
+        'showTerrainCoordinates' => true,
+    ]);
+    expect(PlayerMeta::getValue($user->uid, 'show_terrain_coordinates'))->toBe('1');
+
+    $response = $this->actingAs($user)
+        ->postJson('/profile/settings', [
+            'show_terrain_coordinates' => false,
+        ]);
+
+    $response->assertOk()->assertJson([
+        'success' => true,
+        'showTerrainCoordinates' => false,
+    ]);
+    expect(PlayerMeta::getValue($user->uid, 'show_terrain_coordinates'))->toBe('0');
+});

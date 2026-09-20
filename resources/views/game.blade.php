@@ -1750,7 +1750,8 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "zaspWait": "false",
                             "zaspWF": "false",
                             "zaspGPI": "false",
-                            "fv_dev_terrain_mapping_creation_tool": 0,
+                            "fv_dev_terrain_mapping_creation_tool": <?= config('experiments.fv_dev_terrain_mapping_creation_tool', 0) ? 'true' : 'false' ?>,
+                            "fv_show_terrain_coordinates": <?= !empty($showTerrainCoordinates) ? 'true' : 'false' ?>,
                             "disallowWither": 0,
                             "disallowPetRunaway": 0,
                             "featureExtraMastery": 0,
@@ -2093,6 +2094,10 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                                             <input type="checkbox" id="settingsAutoAcceptNeighbors" @checked($autoAcceptNeighborRequests ?? true) style="margin-top: 3px;">
                                             <span>Automatically accept neighbor requests</span>
                                         </label>
+                                        <label style="display: flex; gap: 8px; align-items: flex-start; margin-bottom: 20px; color: #333; font-size: 14px; line-height: 1.4;">
+                                            <input type="checkbox" id="settingsShowTerrainCoordinates" @checked($showTerrainCoordinates ?? false) style="margin-top: 3px;">
+                                            <span>Show map coordinates</span>
+                                        </label>
                                         <button type="submit" style="width: 100%; padding: 12px; background: linear-gradient(180deg, #10b981, #059669); color: white; border: none; border-radius: 5px; font-size: 16px; font-weight: 600; cursor: pointer;">Save Changes</button>
                                     </form>
                                 </div>
@@ -2122,7 +2127,8 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                                 body: JSON.stringify({
                                     firstName: document.getElementById('settingsFirstName').value,
                                     lastName: document.getElementById('settingsLastName').value,
-                                    auto_accept_neighbor_requests: document.getElementById('settingsAutoAcceptNeighbors').checked
+                                    auto_accept_neighbor_requests: document.getElementById('settingsAutoAcceptNeighbors').checked,
+                                    show_terrain_coordinates: document.getElementById('settingsShowTerrainCoordinates').checked
                                 })
                             })
                             .then(res => res.json())

@@ -17,6 +17,8 @@ use App\Models\PlayerMeta;
 
 class ProfileController extends Controller
 {
+    private const SHOW_TERRAIN_COORDINATES_META_KEY = 'show_terrain_coordinates';
+
     public function edit(Request $request): View
     {
         return view('profile.edit', [
@@ -46,6 +48,7 @@ class ProfileController extends Controller
             'firstName' => 'nullable|string|max:255',
             'lastName' => 'nullable|string|max:255',
             'auto_accept_neighbor_requests' => 'sometimes|boolean',
+            'show_terrain_coordinates' => 'sometimes|boolean',
         ]);
 
         $nameChanged = false;
@@ -72,6 +75,14 @@ class ProfileController extends Controller
             );
         }
 
+        if (array_key_exists('show_terrain_coordinates', $validated)) {
+            PlayerMeta::setValue(
+                $user->uid,
+                self::SHOW_TERRAIN_COORDINATES_META_KEY,
+                $validated['show_terrain_coordinates'] ? '1' : '0',
+            );
+        }
+
         $userMeta->save();
 
         return response()->json([
@@ -80,6 +91,10 @@ class ProfileController extends Controller
             'firstName' => $userMeta->firstName,
             'lastName' => $userMeta->lastName,
             'autoAcceptNeighborRequests' => NeighborController::autoAcceptNeighborRequests($user->uid),
+            'showTerrainCoordinates' => PlayerMeta::getValue(
+                $user->uid,
+                self::SHOW_TERRAIN_COORDINATES_META_KEY,
+            ) === '1',
         ]);
     }
 
