@@ -93,8 +93,9 @@ class Amfphp_Core_Config {
         $this->sharedConfig = array();
         $this->disabledPlugins = array();
         
-        //logging enabled
-        //$this->disabledPlugins[] = 'AmfphpLogger';
+        // The AMF request logger records full request/response payloads and is
+        // for development diagnostics only. Keep it disabled in production.
+        $this->disabledPlugins[] = 'AmfphpLogger';
         //$this->disabledPlugins[] = 'AmfphpErrorHandler';
  
         //AmfphpDummy serves the default gateway page

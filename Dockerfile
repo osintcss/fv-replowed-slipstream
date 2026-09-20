@@ -25,7 +25,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
 RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf \
-    && sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+    && sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf \
+    && printf '%s\n' 'expose_php=Off' > /usr/local/etc/php/conf.d/99-security.ini \
+    && printf '%s\n' 'ServerTokens Prod' 'ServerSignature Off' > /etc/apache2/conf-available/security-hardening.conf \
+    && a2enconf security-hardening
 
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 
@@ -157,8 +160,12 @@ RUN mkdir -p storage/framework/cache storage/framework/sessions storage/framewor
     && rm -rf node_modules \
     && php artisan key:generate --force \
     && chown -R www-data:www-data storage bootstrap/cache \
-    && if [ -d public/farmville/flashservices/amfphp/Plugins/AmfphpLogger ]; then \
-        touch public/farmville/flashservices/amfphp/Plugins/AmfphpLogger/amfphplog.log; \
-        chown www-data:www-data public/farmville/flashservices/amfphp/Plugins/AmfphpLogger/amfphplog.log; \
-        chmod 664 public/farmville/flashservices/amfphp/Plugins/AmfphpLogger/amfphplog.log; \
-    fi
+    && rm -f public/farmville/flashservices/amfphp/Plugins/AmfphpLogger/amfphplog.log
+
+# Debian's stock security.conf loads after alphabetically earlier snippets.
+# Set the effective values directly so error pages and direct-origin responses
+# do not disclose the Apache build or operating system.
+RUN sed -ri \
+    -e 's/^ServerTokens .*/ServerTokens Prod/' \
+    -e 's/^ServerSignature .*/ServerSignature Off/' \
+    /etc/apache2/conf-enabled/security.conf

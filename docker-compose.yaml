@@ -1,13 +1,15 @@
 services:
   fv-replowed-slipstream:
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     build:
       context: .
     image: fv-replowed-slipstream:local
     env_file:
       - .env
     ports:
-      - "8000:80"
+      - "127.0.0.1:8000:80"
     volumes:
       # Keep the large immutable asset tree off the SD-backed repository.
       # Production sets FV_ASSETS_PATH to the mounted SSD; local development
@@ -74,8 +76,6 @@ services:
       MARIADB_ROOT_PASSWORD: ${DB_PASSWORD:-fv_pass}
       MARIADB_USER: ${DB_USERNAME:-fv_usr}
       MARIADB_PASSWORD: ${DB_PASSWORD:-fv_pass}
-    ports:
-      - "33061:3306"
     volumes:
       - dbdata:/var/lib/mysql
     healthcheck:
@@ -86,6 +86,11 @@ services:
 
   reverb:
     restart: unless-stopped
+    user: www-data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     image: fv-replowed-slipstream:local
     command: php artisan reverb:start --host=0.0.0.0 --port=8080
     env_file:
@@ -105,10 +110,15 @@ services:
       REVERB_PORT: 8080
       REVERB_SCHEME: http
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
 
   scheduler:
     restart: unless-stopped
+    user: www-data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     image: fv-replowed-slipstream:local
     command: php artisan schedule:work
     env_file:

@@ -43,6 +43,7 @@ _ide_helper*.php
 /*.bundle
 /*.patch
 /hs_err_pid*.log
+/operational-notes/
 
 # Storage 
 storage/framework/cache/*

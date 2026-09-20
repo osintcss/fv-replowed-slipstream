@@ -21,6 +21,8 @@
 </IfModule>
 
 <IfModule mod_headers.c>
+    Header always unset X-Powered-By
+
     <FilesMatch "\.(png|jpg|jpeg|gif|swf|svg)$">
         Header set Cache-Control "public, max-age=31536000, immutable"
     </FilesMatch>
@@ -51,6 +53,9 @@
     </IfModule>
 
     RewriteEngine On
+
+    # Never serve diagnostic or application log files from the public tree.
+    RewriteRule \.log$ - [F,L,NC]
 
     # The bundled AMFphp test harness, examples, and documentation are not
     # part of the production application. Keep their PHP entry points out of

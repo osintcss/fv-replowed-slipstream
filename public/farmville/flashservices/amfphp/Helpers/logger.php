@@ -8,6 +8,17 @@ class Logger
     private static $enabled = null;
     private static $traceUids = null;
 
+    private static function positiveIntegerEnv($key, $default)
+    {
+        $value = self::envValue($key);
+        if ($value === null || !preg_match('/^\d+$/', (string) $value)) {
+            return $default;
+        }
+
+        $integer = (int) $value;
+        return $integer > 0 ? $integer : $default;
+    }
+
     private static function envValue($key)
     {
         $value = getenv($key);
@@ -229,7 +240,71 @@ class Logger
         }
 
         $content = implode("\n", self::$buffer) . "\n";
-        file_put_contents(self::$logFile, $content, FILE_APPEND | LOCK_EX);
+        $lockPath = dirname(self::$logFile) . '/farmville-log-rotation.lock';
+        $lock = @fopen($lockPath, 'c');
+
+        if ($lock !== false && flock($lock, LOCK_EX)) {
+            self::rotateIfNeeded(strlen($content));
+            file_put_contents(self::$logFile, $content, FILE_APPEND | LOCK_EX);
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        } else {
+            if (is_resource($lock)) {
+                fclose($lock);
+            }
+            file_put_contents(self::$logFile, $content, FILE_APPEND | LOCK_EX);
+        }
+
         self::$buffer = [];
+    }
+
+    private static function rotateIfNeeded($incomingBytes)
+    {
+        if (!is_file(self::$logFile)) {
+            return;
+        }
+
+        clearstatcache(true, self::$logFile);
+        $modifiedAt = @filemtime(self::$logFile);
+        $size = @filesize(self::$logFile);
+        $maxBytes = self::positiveIntegerEnv('FARMVILLE_LOG_MAX_BYTES', 25 * 1024 * 1024);
+        $crossedDay = $modifiedAt !== false && date('Y-m-d', $modifiedAt) !== date('Y-m-d');
+        $crossedSize = $size !== false && ($size + $incomingBytes) > $maxBytes;
+
+        if (!$crossedDay && !$crossedSize) {
+            return;
+        }
+
+        $archiveTime = $modifiedAt !== false ? $modifiedAt : time();
+        $archiveBase = dirname(self::$logFile) . '/farmville-' . date('Y-m-d-His', $archiveTime);
+        $archivePath = $archiveBase . '.log';
+        $suffix = 1;
+        while (file_exists($archivePath)) {
+            $archivePath = $archiveBase . '-' . $suffix . '.log';
+            $suffix++;
+        }
+
+        if (@rename(self::$logFile, $archivePath)) {
+            self::pruneArchives();
+        }
+    }
+
+    private static function pruneArchives()
+    {
+        $retentionDays = self::positiveIntegerEnv('FARMVILLE_LOG_RETENTION_DAYS', 7);
+        $maxFiles = self::positiveIntegerEnv('FARMVILLE_LOG_MAX_FILES', 10);
+        $cutoff = time() - ($retentionDays * 86400);
+        $archives = glob(dirname(self::$logFile) . '/farmville-*.log') ?: [];
+
+        usort($archives, static function ($left, $right) {
+            return (@filemtime($right) ?: 0) <=> (@filemtime($left) ?: 0);
+        });
+
+        foreach ($archives as $index => $archive) {
+            $modifiedAt = @filemtime($archive);
+            if ($index >= $maxFiles || ($modifiedAt !== false && $modifiedAt < $cutoff)) {
+                @unlink($archive);
+            }
+        }
     }
 }
