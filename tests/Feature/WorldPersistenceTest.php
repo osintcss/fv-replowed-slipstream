@@ -3,6 +3,7 @@
 use App\Models\UserWorld;
 use App\Models\Item;
 use App\Models\PlayerMeta;
+use App\Models\UserMeta;
 use App\Models\WorldActionReceipt;
 use App\Models\WorldObject;
 use App\Support\WorldPersistence;
@@ -106,7 +107,7 @@ it('rejects building parts from garages and filters legacy malformed contents', 
 
     $flashGarage = $garage->toFlashObject();
     expect($flashGarage->contents)->toBe([
-        ['itemCode' => 'GT1', 'numItem' => 1],
+        ['itemCode' => 'GT1', 'numItem' => 1, 'numParts' => 0],
     ]);
 
     $result = (new Player($world->uid))->storeItem(
@@ -125,6 +126,216 @@ it('rejects building parts from garages and filters legacy malformed contents', 
         ->and($garage->fresh()->contents)->toBe([
             ['itemCode' => 'GB1', 'numItem' => 10],
             ['itemCode' => 'GT1', 'numItem' => 1],
+        ]);
+});
+
+it('stores and reloads a direct market combine purchase exactly once', function (): void {
+    require_once AMFPHP_ROOTPATH.'Functions/WorldService.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    Item::query()->create([
+        'name' => 'test_orange_combine',
+        'code' => 'OC1',
+        'data' => serialize([
+            'name' => 'test_orange_combine',
+            'code' => 'OC1',
+            'className' => 'Combine',
+            'type' => 'vehicle',
+            'market' => 'cash',
+            'cost' => 1000,
+            'cash' => 5,
+            'buyXp' => 10,
+            'buyable' => 'true',
+        ]),
+    ]);
+    Item::clearCache();
+
+    $world = persistenceTestWorld();
+    UserMeta::query()->create([
+        'uid' => $world->uid,
+        'firstName' => 'Test',
+        'lastName' => 'Farmer',
+        'gold' => 5000,
+        'cash' => 10,
+        'xp' => 0,
+    ]);
+    UserResources::invalidateCache($world->uid);
+    $garage = persistenceTestObject($world, 603, [
+        'class_name' => 'GarageBuilding',
+        'item_name' => 'garage_finished',
+        'contents' => [],
+    ]);
+    unset($GLOBALS['_world_cache']['900001:farm']);
+
+    $player = new Player($world->uid);
+    $request = static function (int $sequence): object {
+        return (object) [
+            'sequence' => $sequence,
+            'sequenceID' => 'garage-market-test',
+            'params' => [
+                ACTION_STORE,
+                (object) [
+                    'id' => 603,
+                    'className' => 'GarageBuilding',
+                    'itemName' => 'garage_finished',
+                ],
+                [(object) [
+                    'resource' => 0,
+                    'cameFromLocation' => 0,
+                    'storedItemCode' => 'OC1',
+                    'storedItemName' => 'test_orange_combine',
+                    'storedClassName' => 'Combine',
+                    'currency' => 'cash',
+                    'numToStore' => 1,
+                ]],
+            ],
+        ];
+    };
+    $first = WorldService::performAction($player, $request(1), null);
+    $retry = WorldService::performAction($player, $request(1), null);
+
+    expect($first['data']['success'] ?? false)->toBeTrue()
+        ->and($retry['data']['success'] ?? false)->toBeTrue()
+        ->and(WorldActionReceipt::query()->where('uid', $world->uid)->count())->toBe(1)
+        ->and(UserMeta::query()->where('uid', $world->uid)->value('gold'))->toBe(5000)
+        ->and(UserMeta::query()->where('uid', $world->uid)->value('cash'))->toBe(5)
+        ->and($garage->fresh()->contents)->toBe([
+            ['itemCode' => 'OC1', 'numItem' => 1, 'numParts' => 0],
+        ])
+        ->and($garage->fresh()->toFlashObject()->contents)->toBe([
+            ['itemCode' => 'OC1', 'numItem' => 1, 'numParts' => 0],
+        ]);
+});
+
+it('persists a cash vehicle-part upgrade and makes a retry idempotent', function (): void {
+    require_once AMFPHP_ROOTPATH.'Functions/EquipmentWorldService.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    Item::query()->create([
+        'name' => 'vehiclepart',
+        'code' => 'VP1',
+        'data' => serialize(['name' => 'vehiclepart', 'code' => 'VP1', 'cash' => 1]),
+    ]);
+    Item::query()->create([
+        'name' => 'test_upgrade_combine',
+        'code' => 'EQ1',
+        'data' => serialize(['name' => 'test_upgrade_combine', 'code' => 'EQ1', 'className' => 'Combine']),
+    ]);
+    Item::clearCache();
+
+    $world = persistenceTestWorld();
+    UserMeta::query()->create([
+        'uid' => $world->uid,
+        'firstName' => 'Garage',
+        'lastName' => 'Tester',
+        'gold' => 5000,
+        'cash' => 10,
+        'xp' => 0,
+    ]);
+    UserResources::invalidateCache($world->uid);
+    $garage = persistenceTestObject($world, 604, [
+        'class_name' => 'GarageBuilding',
+        'item_name' => 'garage_finished',
+        'contents' => [
+            ['itemCode' => 'EQ1', 'numItem' => 1, 'numParts' => 0],
+        ],
+    ]);
+    unset($GLOBALS['_world_cache']['900001:farm']);
+
+    $player = new Player($world->uid);
+    $request = (object) [
+        'sequence' => 1,
+        'sequenceID' => 'garage-upgrade-cash-test',
+        'params' => [604, 'EQ1:0', false],
+    ];
+    $first = EquipmentWorldService::onAddPartToEquipmentInGarage($player, $request, null);
+    $retry = EquipmentWorldService::onAddPartToEquipmentInGarage($player, $request, null);
+
+    expect($first['data']['success'] ?? false)->toBeTrue()
+        ->and($retry['data']['success'] ?? false)->toBeTrue()
+        ->and(WorldActionReceipt::query()->where('uid', $world->uid)->where('action', 'garage_part')->count())->toBe(1)
+        ->and(UserMeta::query()->where('uid', $world->uid)->value('cash'))->toBe(9)
+        ->and($garage->fresh()->contents)->toBe([
+            ['itemCode' => 'EQ1', 'numItem' => 1, 'numParts' => 1],
+        ])
+        ->and($garage->fresh()->toFlashObject()->contents)->toBe([
+            ['itemCode' => 'EQ1', 'numItem' => 1, 'numParts' => 1],
+        ]);
+});
+
+it('consumes one deferred vehicle-part gift with the Garage upgrade', function (): void {
+    require_once AMFPHP_ROOTPATH.'Functions/EquipmentWorldService.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    Item::query()->create([
+        'name' => 'vehiclepart',
+        'code' => 'VP1',
+        'data' => serialize(['name' => 'vehiclepart', 'code' => 'VP1', 'cash' => 1]),
+    ]);
+    Item::query()->create([
+        'name' => 'test_upgrade_tractor',
+        'code' => 'EQ2',
+        'data' => serialize(['name' => 'test_upgrade_tractor', 'code' => 'EQ2', 'className' => 'Tractor']),
+    ]);
+    Item::clearCache();
+
+    $world = persistenceTestWorld();
+    UserMeta::query()->create([
+        'uid' => $world->uid,
+        'firstName' => 'Gift',
+        'lastName' => 'Tester',
+        'gold' => 5000,
+        'cash' => 10,
+        'xp' => 0,
+    ]);
+    PlayerMeta::setValue($world->uid, 'giftbox', serialize([
+        'VP1' => [1, [], []],
+    ]));
+    UserResources::invalidateCache($world->uid);
+    $garage = persistenceTestObject($world, 605, [
+        'class_name' => 'GarageBuilding',
+        'item_name' => 'garage_finished',
+        'contents' => [
+            ['itemCode' => 'EQ2', 'numItem' => 1, 'numParts' => 1],
+        ],
+    ]);
+    unset($GLOBALS['_world_cache']['900001:farm']);
+
+    $player = new Player($world->uid);
+    $request = (object) [
+        'sequence' => 2,
+        'sequenceID' => 'garage-upgrade-gift-test',
+        'params' => [605, 'EQ2:1', true],
+    ];
+    $useResult = \App\Support\ConsumableActionHandler::handle(
+        $player,
+        (object) [
+            'params' => [
+                ACTION_USE,
+                (object) ['itemName' => 'vehiclepart', 'itemCode' => 'VP1'],
+            ],
+        ],
+        (object) [
+            'isGift' => true,
+            'isFree' => false,
+            'storageId' => GIFTBOX_ID,
+            'itemCount' => 1,
+        ],
+    );
+    $giftboxAfterUse = unserialize(
+        PlayerMeta::getValue($world->uid, 'giftbox'),
+        ['allowed_classes' => false],
+    );
+    $result = EquipmentWorldService::onAddPartToEquipmentInGarage($player, $request, null);
+
+    expect($useResult['success'] ?? false)->toBeTrue()
+        ->and($useResult['deferred'] ?? false)->toBeTrue()
+        ->and($giftboxAfterUse)->toHaveKey('VP1')
+        ->and($result['data']['success'] ?? false)->toBeTrue()
+        ->and(UserMeta::query()->where('uid', $world->uid)->value('cash'))->toBe(10)
+        ->and(unserialize(PlayerMeta::getValue($world->uid, 'giftbox'), ['allowed_classes' => false]))->toBe([])
+        ->and($garage->fresh()->contents)->toBe([
+            ['itemCode' => 'EQ2', 'numItem' => 1, 'numParts' => 2],
         ]);
 });
 

@@ -236,6 +236,23 @@ it.
 | `store` | Remove the loose resource and increment the target building's `contents` using Flash entries shaped as `{ itemCode, numItem }`. Do **not** substitute generic home inventory for a building's own contents. A store immediately following a placement may still name Flash's temporary object ID (63000–65500), so resolve that player's short-lived placement-to-persisted-ID mapping and verify the resource's item before moving it. | Implemented. See animal pen contract below. |
 | `setMultipleFeaturedItems` | Save a feature building's featured slot map and return it under `data.featuredItems`. | Implemented. Store an animal, reload, and verify the displayed animal remains. |
 
+### Derived withered plot state
+
+**Verified/implemented.** Flash keeps a planted crop's saved row as
+`state = planted` and derives its visible `grown` or `withered` state from the
+plant timestamp, grid position, crop `growTime`, and the MD5-seeded wither
+window. The server uses the same calculation before validating harvest,
+unwither, single plow, and equipment plow actions. Crops with `expires=false`
+can mature but never enter the withered state, and active Unwither Ring
+protection prevents withering.
+
+A visually withered plot sent through the client's `plow` path is converted to
+`plowed`, its crop fields are cleared, and the normal plow transaction is
+applied exactly once. Genuinely planted or grown plots remain protected from
+stale plow replays. The derived state is not periodically written to every
+plot; it is evaluated at the action boundary so the persisted representation
+continues to match Flash's world contract.
+
 ### World-object serialization
 
 **Verified/implemented.** A world object is not only its visible fields.

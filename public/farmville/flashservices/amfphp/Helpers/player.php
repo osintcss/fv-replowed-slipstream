@@ -16,6 +16,7 @@ use App\Models\User;
 use App\Models\PlayerMeta;
 use App\Models\WorldActionReceipt;
 use App\Models\WorldObject;
+use App\Support\GarageEquipmentCatalog;
 use App\Support\ResourceAudit;
 use App\Support\StorageConfig;
 use App\Support\WorldPersistence;
@@ -548,21 +549,89 @@ class Player {
      * is usable.  Resolve the stored world object through the server catalog,
      * rather than trusting the class/name supplied by the client.
      */
-    private static function isValidGarageEquipment(?WorldObject $resource, string $itemCode): bool {
-        if ($resource === null || $itemCode === '') {
+    private static function garageEquipmentItem(
+        ?WorldObject $resource,
+        ?string $storedItemName,
+        string $itemCode,
+    ): ?array {
+        if ($itemCode === '') {
+            return null;
+        }
+
+        $itemName = $resource !== null
+            ? (string) $resource->item_name
+            : (string) ($storedItemName ?? '');
+        if ($itemName === '') {
+            return null;
+        }
+
+        $item = getItemByName($itemName, 'db');
+        return GarageEquipmentCatalog::matches($item, $itemCode) ? $item : null;
+    }
+
+    private static function catalogBoolean($value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_numeric($value)) {
+            return (int) $value !== 0;
+        }
+
+        return is_string($value)
+            && in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
+    }
+
+    /** Charge a direct market purchase while the Garage transaction is open. */
+    private function chargeDirectGaragePurchase(
+        string $itemName,
+        string $itemCode,
+        string $currency,
+        int $quantity,
+    ): bool {
+        $catalogItem = getItemByName($itemName, 'db');
+        if (!GarageEquipmentCatalog::matches($catalogItem, $itemCode)) {
+            return false;
+        }
+        if (!self::catalogBoolean($catalogItem['buyable'] ?? false)) {
             return false;
         }
 
-        $item = getItemByName((string) $resource->item_name, 'db');
-        if (!is_array($item) || ($item['code'] ?? null) !== $itemCode) {
+        $baseItem = $catalogItem;
+        $chargeItem = $catalogItem;
+        if ($currency === 'cash') {
+            $cashVariant = getItemByName($itemName . '_cash', 'db');
+            if (is_array($cashVariant)) {
+                $chargeItem = $cashVariant;
+            }
+        }
+
+        $market = (string) ($chargeItem['market'] ?? 'coins');
+        $cashCost = (int) ($chargeItem['cash'] ?? 0);
+        $goldCost = (int) ($chargeItem['cost'] ?? 0);
+        $useCash = ($market === 'cash' || $currency === 'cash') && $cashCost > 0;
+        $unitCost = $useCash ? $cashCost : $goldCost;
+        if ($unitCost <= 0 || $quantity <= 0) {
             return false;
         }
 
-        return in_array($item['className'] ?? null, [
-            'Tractor',
-            'Seeder',
-            'Harvester',
-        ], true);
+        $totalCost = $unitCost * $quantity;
+        $charged = $useCash
+            ? UserResources::removeCash($this->uid, $totalCost)
+            : UserResources::removeGold($this->uid, $totalCost);
+        if (!$charged) {
+            return false;
+        }
+
+        $buyXp = (int) floor((int) ($baseItem['cost'] ?? $goldCost) * 0.01);
+        $explicitXp = $chargeItem['plantXp']
+            ?? $chargeItem['buyXp']
+            ?? ($baseItem['plantXp'] ?? $baseItem['buyXp'] ?? null);
+        if ($explicitXp !== null && $explicitXp !== '') {
+            $buyXp = (int) $explicitXp;
+        }
+
+        return $buyXp <= 0 || UserResources::addXp($this->uid, $buyXp * $quantity);
     }
 
     public function getData($requ) {
@@ -1612,6 +1681,7 @@ class Player {
         $numToStore = (int) ($storeParams->numToStore ?? 1);
         $storedClassName = (string) ($storeParams->storedClassName ?? '');
         $storedMetadata = $storeParams->metadata ?? null;
+        $currency = (string) ($storeParams->currency ?? '');
 
         if (!$buildingId || !$itemCode) return false;
 
@@ -1655,7 +1725,7 @@ class Player {
         // its later delete/reinsert used to erase the pen contents that had
         // just appeared client-side. Lock and update only the pen and the
         // animal being moved.
-        $contents = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $resourceId, $sourceBuildingId, $itemCode, $storedItemName, $numToStore, $storedClassName, $storedMetadata, $isGiftboxStore, $idempotencyKey) {
+        $contents = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $resourceId, $sourceBuildingId, $itemCode, $storedItemName, $numToStore, $storedClassName, $storedMetadata, $isGiftboxStore, $idempotencyKey, $currency) {
             $storedBuilding = WorldObject::query()
                 ->where('world_id', $worldId)
                 ->where('object_id', (int) $buildingId)
@@ -1667,8 +1737,11 @@ class Player {
                 throw new \RuntimeException("Storage building {$buildingId} no longer exists");
             }
 
-            $receipt = null;
-            if ($isGiftboxStore && $idempotencyKey !== null) {
+            $directGaragePurchase = $storedBuilding->class_name === 'GarageBuilding'
+                && $resourceId <= 0
+                && $sourceBuildingId <= 0
+                && !$isGiftboxStore;
+            if (($isGiftboxStore || $directGaragePurchase) && $idempotencyKey !== null) {
                 $receipt = WorldActionReceipt::query()
                     ->where('uid', (string) $this->uid)
                     ->where('action', 'store')
@@ -1789,9 +1862,25 @@ class Player {
                 $resource->item_name = 'pig';
             }
 
-            if ($storedBuilding->class_name === 'GarageBuilding'
-                && !self::isValidGarageEquipment($resource, (string) $itemCode)) {
-                throw new \RuntimeException('invalid_garage_equipment');
+            if ($storedBuilding->class_name === 'GarageBuilding') {
+                $garageItem = self::garageEquipmentItem(
+                    $resource,
+                    $storedItemName,
+                    (string) $itemCode,
+                );
+                if ($garageItem === null) {
+                    throw new \RuntimeException('invalid_garage_equipment');
+                }
+
+                if ($directGaragePurchase
+                    && !$this->chargeDirectGaragePurchase(
+                        (string) $storedItemName,
+                        (string) $itemCode,
+                        $currency,
+                        max(1, $numToStore),
+                    )) {
+                    throw new \RuntimeException('garage_purchase_failed');
+                }
             }
 
             // Generic pigs used to be accepted into the breeding pen because
@@ -1830,24 +1919,54 @@ class Player {
 
             $contents = is_array($storedBuilding->contents) ? $storedBuilding->contents : [];
             $contentIndex = null;
-            foreach ($contents as $key => $content) {
-                $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
-                if ($code === $storageItemCode) {
-                    $contentIndex = $key;
-                    break;
-                }
-            }
+            $garageParts = $resource !== null
+                ? max(0, (int) $resource->equipment_parts_count)
+                : 0;
 
-            if ($contentIndex === null) {
-                $contents[] = ['itemCode' => $storageItemCode, 'numItem' => max(1, $numToStore)];
+            if ($storedBuilding->class_name === 'GarageBuilding') {
+                // GarageBuilding keys are `itemCode:numParts`, while its
+                // database representation is an array. Normalize legacy
+                // entries first so an old `{itemCode,numItem}` row behaves
+                // exactly like Flash's initial `code:0` equipment key.
+                $contents = GarageEquipmentCatalog::normalizeContents($contents);
+                foreach ($contents as $key => $content) {
+                    if (($content['itemCode'] ?? null) === $storageItemCode
+                        && GarageEquipmentCatalog::entryParts($content) === $garageParts) {
+                        $contentIndex = $key;
+                        break;
+                    }
+                }
+
+                if ($contentIndex === null) {
+                    $contents[] = [
+                        'itemCode' => $storageItemCode,
+                        'numItem' => max(1, $numToStore),
+                        'numParts' => $garageParts,
+                    ];
+                } else {
+                    $contents[$contentIndex]['numItem'] = (int) ($contents[$contentIndex]['numItem'] ?? 0)
+                        + max(1, $numToStore);
+                }
             } else {
-                $currentCount = is_object($contents[$contentIndex])
-                    ? (int) ($contents[$contentIndex]->numItem ?? 0)
-                    : (int) ($contents[$contentIndex]['numItem'] ?? 0);
-                $contents[$contentIndex] = [
-                    'itemCode' => $storageItemCode,
-                    'numItem' => $currentCount + max(1, $numToStore),
-                ];
+                foreach ($contents as $key => $content) {
+                    $code = is_object($content) ? ($content->itemCode ?? null) : ($content['itemCode'] ?? null);
+                    if ($code === $storageItemCode) {
+                        $contentIndex = $key;
+                        break;
+                    }
+                }
+
+                if ($contentIndex === null) {
+                    $contents[] = ['itemCode' => $storageItemCode, 'numItem' => max(1, $numToStore)];
+                } else {
+                    $currentCount = is_object($contents[$contentIndex])
+                        ? (int) ($contents[$contentIndex]->numItem ?? 0)
+                        : (int) ($contents[$contentIndex]['numItem'] ?? 0);
+                    $contents[$contentIndex] = [
+                        'itemCode' => $storageItemCode,
+                        'numItem' => $currentCount + max(1, $numToStore),
+                    ];
+                }
             }
 
             if ($resource !== null && $resource->exists) {
@@ -1992,7 +2111,7 @@ class Player {
                 ],
             ];
 
-            if ($isGiftboxStore && $idempotencyKey !== null) {
+            if (($isGiftboxStore || $directGaragePurchase) && $idempotencyKey !== null) {
                 $receiptResponse = [
                     'success' => true,
                     'id' => $resourceId,

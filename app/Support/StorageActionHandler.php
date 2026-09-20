@@ -37,7 +37,20 @@ final class StorageActionHandler
         $buildingClassName = $buildingObj->className ?? null;
         $isGiftboxStore = self::flashBoolean($extraParams->isGift ?? false, false)
             && $storageTarget !== \HOME_INVENTORY_ID;
-        $storeIdempotencyKey = $isGiftboxStore
+        $hasNoStandaloneSource = (int) ($extraParams->resource ?? 0) <= 0
+            && (int) ($extraParams->cameFromLocation ?? 0) <= 0;
+        $authoritativeBuildingClassName = $buildingClassName;
+        if (!$isGiftboxStore && $hasNoStandaloneSource && $buildingId) {
+            $authoritativeBuildingClassName = WorldObject::query()
+                ->where('world_id', \getWorldId($uid, $storeWorldType))
+                ->where('object_id', (int) $buildingId)
+                ->where('deleted', false)
+                ->value('class_name') ?? $buildingClassName;
+        }
+        $isDirectGaragePurchase = !$isGiftboxStore
+            && $hasNoStandaloneSource
+            && $authoritativeBuildingClassName === 'GarageBuilding';
+        $storeIdempotencyKey = ($isGiftboxStore || $isDirectGaragePurchase)
             ? self::actionIdempotencyKey($request, \ACTION_STORE)
             : null;
 

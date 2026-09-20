@@ -538,6 +538,73 @@
     }
 
 
+    /**
+     * Add Giftbox contents while the caller's transaction owns the row lock.
+     * This is the write-side counterpart to consumeGiftboxItemLocked(); using
+     * addGiftByCode() here would read and overwrite a stale request cache.
+     */
+    function addGiftboxItemLocked($uid, string $itemCode, int $quantity = 1, $senderId = null, $extraData = null): bool {
+        if (!is_numeric($uid) || $itemCode === '' || $quantity <= 0) {
+            return false;
+        }
+
+        $meta = PlayerMeta::query()
+            ->where('uid', (string) $uid)
+            ->where('meta_key', 'giftbox')
+            ->lockForUpdate()
+            ->first();
+        if ($meta === null) {
+            // Most players already have this row, but the legacy metadata
+            // table does not require one. Match set_meta()/addGiftByCode() by
+            // creating an empty bucket for accounts that never received a gift.
+            PlayerMeta::query()->create([
+                'uid' => (string) $uid,
+                'meta_key' => 'giftbox',
+                'meta_value' => serialize([]),
+            ]);
+            $meta = PlayerMeta::query()
+                ->where('uid', (string) $uid)
+                ->where('meta_key', 'giftbox')
+                ->lockForUpdate()
+                ->first();
+            if ($meta === null) {
+                return false;
+            }
+        }
+
+        $giftbox = @unserialize((string) $meta->meta_value, ['allowed_classes' => false]);
+        $giftbox = is_array($giftbox) ? $giftbox : [];
+        $extraDataObj = $extraData === null
+            ? null
+            : (is_array($extraData) ? (object) $extraData : $extraData);
+
+        if (!isset($giftbox[$itemCode]) || !is_array($giftbox[$itemCode])) {
+            $giftbox[$itemCode] = [0, [], []];
+        }
+        $giftbox[$itemCode][0] = (int) ($giftbox[$itemCode][0] ?? 0) + $quantity;
+        if ($senderId !== null && $senderId !== '') {
+            $giftbox[$itemCode][1] = is_array($giftbox[$itemCode][1] ?? null)
+                ? $giftbox[$itemCode][1] : [];
+            for ($i = 0; $i < $quantity; $i++) {
+                $giftbox[$itemCode][1][] = $senderId;
+            }
+        }
+        if ($extraDataObj !== null) {
+            $giftbox[$itemCode][2] = is_array($giftbox[$itemCode][2] ?? null)
+                ? $giftbox[$itemCode][2] : [];
+            for ($i = 0; $i < $quantity; $i++) {
+                $giftbox[$itemCode][2][] = $extraDataObj;
+            }
+        }
+
+        $meta->meta_value = serialize($giftbox);
+        $meta->save();
+        PlayerMeta::clearCache($uid, 'giftbox');
+
+        return true;
+    }
+
+
     function buildGiftBoxStorageData($uid) {
         $giftbox = getGiftBox($uid);
         $storageData = [];

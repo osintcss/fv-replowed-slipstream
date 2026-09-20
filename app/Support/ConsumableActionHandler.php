@@ -64,6 +64,19 @@ final class ConsumableActionHandler
             \HOME_INVENTORY_ID,
             \PERSONAL_CRAFTING_INVENTORY_ID,
         ], true);
+
+        // CVehiclePart is optimistic: TUseConsumable opens the Garage upgrade
+        // mode and TAddPartToEquipmentInGarage is the transaction that
+        // actually spends the part. Defer the Giftbox decrement until that
+        // transaction so cancelling the picker cannot consume a part without
+        // upgrading a vehicle, and so the two mutations can be atomic.
+        if ($isGift
+            && $storageIsPersisted
+            && ($item['name'] ?? '') === 'vehiclepart'
+            && in_array($storageId, [\GIFTBOX_ID, (int) \GIFTBOX_STORAGE_KEY], true)) {
+            return ['success' => true, 'consumed' => 0, 'deferred' => true];
+        }
+
         // Market/free uses have no persisted source to consume. Preserve
         // their existing client-side behavior while making storage-backed
         // uses durable.

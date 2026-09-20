@@ -7,6 +7,7 @@ use App\Helpers\ObjectHelper;
 use App\Models\CraftingQueue;
 use App\Models\CraftingSkill;
 use App\Support\CraftingCottages;
+use App\Support\GarageEquipmentCatalog;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\Log;
@@ -497,34 +498,13 @@ class WorldObject extends Model
 
     /**
      * Flash treats garage contents as equipment unconditionally.  Only the
-     * three equipment subclasses in the FarmVille catalogue are safe to send
-     * there; imported or previously malformed part entries must stay out of
-     * the load payload until they have been recovered server-side.
+     * equipment subclasses in the FarmVille catalogue are safe to send there;
+     * imported or previously malformed part entries must stay out of the load
+     * payload until they have been recovered server-side.
      */
     private static function garageEquipmentContents($contents): array
     {
-        if (!is_array($contents)) {
-            return [];
-        }
-
-        $validClasses = ['Tractor', 'Seeder', 'Harvester'];
-        $filtered = [];
-        foreach ($contents as $entry) {
-            $code = is_object($entry) ? ($entry->itemCode ?? null) : ($entry['itemCode'] ?? null);
-            $count = is_object($entry) ? (int) ($entry->numItem ?? 0) : (int) ($entry['numItem'] ?? 0);
-            if (!is_string($code) || $code === '' || $count <= 0) {
-                continue;
-            }
-
-            $item = Item::findByCode($code);
-            if (!is_array($item) || !in_array($item['className'] ?? null, $validClasses, true)) {
-                continue;
-            }
-
-            $filtered[] = $entry;
-        }
-
-        return $filtered;
+        return GarageEquipmentCatalog::normalizeContents($contents);
     }
 
     /**
@@ -965,7 +945,9 @@ class WorldObject extends Model
                 $itemName,
                 $className,
                 $state,
-                $obj->contents ?? [],
+                $className === 'GarageBuilding'
+                    ? GarageEquipmentCatalog::normalizeContents($obj->contents ?? [])
+                    : ($obj->contents ?? []),
             )),
             'expansion_level' => $obj->expansionLevel ?? 1,
             'expansion_parts' => JsonHelper::safeEncode($obj->expansionParts ?? null),
