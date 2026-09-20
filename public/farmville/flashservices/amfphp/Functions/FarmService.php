@@ -248,10 +248,11 @@ class FarmService
                 }
 
                 $energyAdded = (int) floor($count * max(0, (int) $userMeta->energyMax));
+                $clamp = \DB::connection()->getDriverName() === 'sqlite' ? 'MIN' : 'LEAST';
                 $updated = UserMeta::query()
                     ->where('uid', $uid)
                     ->update([
-                        'energy' => \DB::raw("LEAST(energy + {$energyAdded}, 2147483647)"),
+                        'energy' => \DB::raw("{$clamp}(energy + {$energyAdded}, 2147483647)"),
                     ]);
 
                 if ($updated < 1) {

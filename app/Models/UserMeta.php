@@ -66,11 +66,13 @@ class UserMeta extends Model
             return $amount === 0;
         }
 
+        $clamp = \DB::connection()->getDriverName() === 'sqlite' ? 'MIN' : 'LEAST';
+
         $affected = Database::run(
             'add player resource',
             static fn () => static::where('uid', $uid)
                 ->update([
-                    $field => \DB::raw("LEAST({$field} + {$amount}, {$max})")
+                    $field => \DB::raw("{$clamp}({$field} + {$amount}, {$max})")
                 ]),
         );
 
@@ -108,14 +110,18 @@ class UserMeta extends Model
         $goldMax = self::GOLD_MAX;
         $xpMax = self::XP_MAX;
         $cashMax = self::CASH_MAX;
+        $isSqlite = \DB::connection()->getDriverName() === 'sqlite';
+        $boundedDelta = static fn (string $field, int $delta, int $max): string => $isSqlite
+            ? "MAX(0, MIN({$field} + {$delta}, {$max}))"
+            : "GREATEST(0, LEAST({$field} + {$delta}, {$max}))";
 
         $affected = Database::run(
             'batch update player resources',
             static fn () => static::where('uid', $uid)
                 ->update([
-                    'gold' => \DB::raw("GREATEST(0, LEAST(gold + {$goldDelta}, {$goldMax}))"),
-                    'xp' => \DB::raw("GREATEST(0, LEAST(xp + {$xpDelta}, {$xpMax}))"),
-                    'cash' => \DB::raw("GREATEST(0, LEAST(cash + {$cashDelta}, {$cashMax}))"),
+                    'gold' => \DB::raw($boundedDelta('gold', $goldDelta, $goldMax)),
+                    'xp' => \DB::raw($boundedDelta('xp', $xpDelta, $xpMax)),
+                    'cash' => \DB::raw($boundedDelta('cash', $cashDelta, $cashMax)),
                 ]),
         );
 
