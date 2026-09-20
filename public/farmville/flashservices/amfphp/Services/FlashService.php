@@ -109,18 +109,33 @@ class FlashService {
 
     public function dispatchBatch($userData, $reqData, $params3) {
         $data = array();
-        $player = null;
-        $market = null;
-
-        if (isset($userData->masterId) && $userData->masterId != ""){
-            $player = new Player($userData->masterId);
-            $market = new MarketTransactions($userData->masterId);
-        }else{
-            $player = new Player($userData->zy_user);
-            $market = new MarketTransactions($userData->zy_user);
+        $claimedUid = trim((string) self::readValue($userData, 'masterId', ''));
+        if ($claimedUid === '') {
+            $claimedUid = trim((string) self::readValue($userData, 'zy_user', ''));
         }
 
-        $uid = (string) $player->getUid();
+        $token = (string) self::readValue($userData, 'token', '');
+        $uid = \App\Support\AmfAuthToken::verifyForClaimedUid($token, $claimedUid);
+
+        if (!is_array($reqData)) {
+            throw new \UnexpectedValueException('AMF batch requests must be an array.');
+        }
+
+        $maxBatchRequests = max(1, (int) config('amf.max_batch_requests', 250));
+        if (count($reqData) > $maxBatchRequests) {
+            throw new \LengthException('AMF batch contains too many requests.');
+        }
+
+        $userRateLimit = max(1, (int) config('amf.user_rate_limit_per_minute', 600));
+        $userRateKey = 'amf:user:' . $uid;
+        if (\Illuminate\Support\Facades\RateLimiter::tooManyAttempts($userRateKey, $userRateLimit)) {
+            throw new \RuntimeException('AMF account rate limit exceeded.');
+        }
+        \Illuminate\Support\Facades\RateLimiter::hit($userRateKey, 60);
+
+        $player = new Player($uid);
+        $market = new MarketTransactions($uid);
+
         $batchStart = microtime(true);
         $requestSummaries = [];
         foreach ($reqData as $request) {
@@ -260,7 +275,12 @@ class FlashService {
             "zySig" => array(
                 "zy_user" => $player->getUid(),
                 "zy_ts" => time(),
-                "zy_session" => "thetestofthetime"
+                "zy_session" => "thetestofthetime",
+                // The legacy client replaces all signed parameters with
+                // zySig after every successful batch. Return the same token
+                // so later batches remain authenticated without extending
+                // its original expiration time.
+                "token" => $token
             ),
             "data" => $data
         );

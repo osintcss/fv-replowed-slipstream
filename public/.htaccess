@@ -32,6 +32,12 @@
     </FilesMatch>
 </IfModule>
 
+# Normal game batches are small. Reject oversized AMF bodies before PHP and
+# the legacy AMF deserializer allocate memory for them.
+<Files "gateway.php">
+    LimitRequestBody 16777216
+</Files>
+
 # Cache all static files in the assets directory (including octet-stream)
 <IfModule mod_headers.c>
     <If "%{REQUEST_URI} =~ m#^/farmville/assets/#">

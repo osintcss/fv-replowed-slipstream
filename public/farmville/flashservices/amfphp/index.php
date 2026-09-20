@@ -16,6 +16,27 @@ require_once __DIR__ . '/../../../../vendor/autoload.php';
 $app = require_once __DIR__ . '/../../../../bootstrap/app.php';
 $app->make('Illuminate\Contracts\Console\Kernel')->bootstrap();
 
+// Cloudflare supplies the original address through CF-Connecting-IP. Direct
+// requests fall back to the peer address. Account-specific limiting is also
+// enforced after the signed AMF token is verified in FlashService.
+$clientIp = $_SERVER['HTTP_CF_CONNECTING_IP'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+if (filter_var($clientIp, FILTER_VALIDATE_IP) === false) {
+    $clientIp = 'unknown';
+}
+
+$ipLimit = max(1, (int) config('amf.ip_rate_limit_per_minute', 1200));
+$ipRateKey = 'amf:ip:' . hash('sha256', $clientIp);
+if (\Illuminate\Support\Facades\RateLimiter::tooManyAttempts($ipRateKey, $ipLimit)) {
+    $retryAfter = \Illuminate\Support\Facades\RateLimiter::availableIn($ipRateKey);
+    http_response_code(429);
+    header('Content-Type: text/plain; charset=UTF-8');
+    header('Cache-Control: no-store');
+    header('Retry-After: ' . max(1, $retryAfter));
+    echo 'AMF request rate limit exceeded.';
+    exit;
+}
+\Illuminate\Support\Facades\RateLimiter::hit($ipRateKey, 60);
+
 /**
  *  This file is part of amfPHP
  *

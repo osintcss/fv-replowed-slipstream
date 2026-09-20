@@ -1653,7 +1653,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                     </script>
                     <script>
                         var flashVars = {
-                            "token": "2f0daceecd5afb8e59c89777513e844e92",
+                            "token": @json($amfToken),
                             "master_id": "{{ auth()->user()->uid }}",
                             "serverTime": <?= time() ?>,
                             "app_url": "<?= $baseUrl ?>/farmville/",

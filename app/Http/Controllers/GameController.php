@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\PlayerMeta;
+use App\Support\AmfAuthToken;
 use Illuminate\Support\Facades\Auth;
 
 class GameController extends Controller
@@ -13,6 +14,7 @@ class GameController extends Controller
         $neighborsData = $neighborController->getNeighborsData();
 
         $user = Auth::user()->load('userMeta');
+        $amfToken = AmfAuthToken::issue((string) $user->uid);
 
         return view('game', [
             'neighbors' => $neighborsData['neighbors'],
@@ -21,6 +23,7 @@ class GameController extends Controller
             'user' => $user,
             'autoAcceptNeighborRequests' => NeighborController::autoAcceptNeighborRequests($user->uid),
             'currentWorldType' => $this->currentWorldType($user->uid),
+            'amfToken' => $amfToken,
             'fotdImages' => $this->getFotdImages()
         ]);
     }
@@ -31,6 +34,7 @@ class GameController extends Controller
         $neighborsData = $neighborController->getNeighborsData();
 
         $user = Auth::user()->load('userMeta');
+        $amfToken = AmfAuthToken::issue((string) $user->uid);
 
         return view('game', [
             'neighbors' => $neighborsData['neighbors'],
@@ -39,6 +43,7 @@ class GameController extends Controller
             'user' => $user,
             'autoAcceptNeighborRequests' => NeighborController::autoAcceptNeighborRequests($user->uid),
             'currentWorldType' => $this->currentWorldType($user->uid),
+            'amfToken' => $amfToken,
             'isLauncher' => true,
             'fotdImages' => $this->getFotdImages()
         ]);
