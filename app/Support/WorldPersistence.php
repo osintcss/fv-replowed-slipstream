@@ -166,6 +166,54 @@ final class WorldPersistence
     public static function persistEquipmentChanges($uid, string $worldType, array $modifiedObjects, array $newObjects): bool
     {
         return self::transaction($uid, $worldType, function (int $worldId) use ($modifiedObjects, $newObjects): bool {
+            if ($newObjects !== []) {
+                // Equipment sweeps can arrive as overlapping AMF requests.
+                // Their request-local world snapshots may allocate the same
+                // next ID, and soft-deleted rows still occupy the unique
+                // (world_id, object_id) key. Serialize plot inserts on the
+                // owning world and allocate against every persisted ID.
+                $lockedWorld = UserWorld::query()
+                    ->whereKey($worldId)
+                    ->lockForUpdate()
+                    ->first(['id']);
+                if ($lockedWorld === null) {
+                    return false;
+                }
+
+                $idThreshold = defined('TEMP_ID_THRESHOLD')
+                    ? (int) constant('TEMP_ID_THRESHOLD')
+                    : 63000;
+                $maxObjectId = $idThreshold - 1;
+                $usedIds = array_fill_keys(
+                    WorldObject::query()
+                        ->where('world_id', $worldId)
+                        ->whereBetween('object_id', [1, $maxObjectId])
+                        ->lockForUpdate()
+                        ->pluck('object_id')
+                        ->map(static fn ($objectId): int => (int) $objectId)
+                        ->all(),
+                    true,
+                );
+
+                $nextObjectId = 1;
+                foreach ($newObjects as $object) {
+                    while ($nextObjectId <= $maxObjectId && isset($usedIds[$nextObjectId])) {
+                        $nextObjectId++;
+                    }
+
+                    if ($nextObjectId > $maxObjectId) {
+                        throw new \RuntimeException('No available persistent world object IDs for equipment plots');
+                    }
+
+                    // The caller may have chosen an ID from a stale snapshot.
+                    // Mutate the shared object so its response can use this
+                    // database-verified ID after the transaction commits.
+                    $object->id = $nextObjectId;
+                    $usedIds[$nextObjectId] = true;
+                    $nextObjectId++;
+                }
+            }
+
             foreach ($modifiedObjects as $object) {
                 [$positionX, $positionY] = \App\Helpers\ObjectHelper::getPosition($object);
                 if ($positionX === null || $positionY === null) {

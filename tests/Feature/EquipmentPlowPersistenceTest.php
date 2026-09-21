@@ -81,6 +81,126 @@ it('persists one plot when an equipment plow bundle repeats a coordinate', funct
         ->and(UserMeta::query()->where('uid', $uid)->value('xp'))->toBe(1);
 });
 
+it('reallocates equipment plow IDs when its cached world snapshot is stale', function (): void {
+    $uid = '900012';
+    $world = UserWorld::query()->create([
+        'uid' => $uid,
+        'type' => 'farm',
+        'sizeX' => 12,
+        'sizeY' => 12,
+        'objects' => '[]',
+        'messageManager' => serialize(['messages' => [], 'allowSendEmails' => true]),
+    ]);
+    UserMeta::query()->create([
+        'uid' => $uid,
+        'firstName' => 'Equipment',
+        'lastName' => 'StaleId',
+        'gold' => 1000,
+        'xp' => 0,
+        'cash' => 0,
+        'energy' => 10,
+        'energyMax' => 10,
+    ]);
+    WorldObject::query()->create([
+        'world_id' => $world->id,
+        'object_id' => 1,
+        'class_name' => 'Plot',
+        'position_x' => 1,
+        'position_y' => 1,
+        'position_z' => 0,
+        'state' => PLOT_STATE_PLOWED,
+        'deleted' => false,
+    ]);
+    PlayerMeta::setValue($uid, 'currentWorldType', 'farm');
+    invalidateWorldCache($uid, 'farm');
+
+    // Load the request-local snapshot before another request commits IDs 2,
+    // 3, and a soft-deleted 4. The stale handler will tentatively select ID 2.
+    getWorldByType($uid, 'farm');
+    WorldObject::query()->create([
+        'world_id' => $world->id,
+        'object_id' => 2,
+        'class_name' => 'Plot',
+        'position_x' => 2,
+        'position_y' => 2,
+        'position_z' => 0,
+        'state' => PLOT_STATE_PLOWED,
+        'deleted' => false,
+    ]);
+    WorldObject::query()->create([
+        'world_id' => $world->id,
+        'object_id' => 3,
+        'class_name' => 'Plot',
+        'position_x' => 3,
+        'position_y' => 3,
+        'position_z' => 0,
+        'state' => PLOT_STATE_PLOWED,
+        'deleted' => false,
+    ]);
+    WorldObject::query()->create([
+        'world_id' => $world->id,
+        'object_id' => 4,
+        'class_name' => 'Plot',
+        'position_x' => 4,
+        'position_y' => 4,
+        'position_z' => 0,
+        'state' => PLOT_STATE_PLOWED,
+        'deleted' => true,
+    ]);
+
+    $request = (object) ['params' => [
+        ACTION_PLOW,
+        (object) [],
+        [
+            (object) [
+                'id' => 63001,
+                'position' => (object) ['x' => 4, 'y' => 8, 'z' => 0],
+            ],
+            (object) [
+                'id' => 63002,
+                'position' => (object) ['x' => 5, 'y' => 8, 'z' => 0],
+            ],
+        ],
+        PLOT_STATE_PLOWED,
+    ]];
+    $player = new class ($uid) {
+        public function __construct(private readonly string $uid) {}
+
+        public function getUid(): string
+        {
+            return $this->uid;
+        }
+    };
+
+    $result = EquipmentWorldService::onUseEquipment($player, $request, null);
+
+    expect($result['data'][0]['id'])->toBe(5)
+        ->and($result['data'][0]['data']['id'])->toBe(5)
+        ->and($result['data'][1]['id'])->toBe(6)
+        ->and($result['data'][1]['data']['id'])->toBe(6);
+    $this->assertDatabaseHas('world_objects', [
+        'world_id' => $world->id,
+        'object_id' => 5,
+        'position_x' => 4,
+        'position_y' => 8,
+        'state' => PLOT_STATE_PLOWED,
+        'deleted' => false,
+    ]);
+    $this->assertDatabaseHas('world_objects', [
+        'world_id' => $world->id,
+        'object_id' => 6,
+        'position_x' => 5,
+        'position_y' => 8,
+        'state' => PLOT_STATE_PLOWED,
+        'deleted' => false,
+    ]);
+    $this->assertDatabaseHas('world_objects', [
+        'world_id' => $world->id,
+        'object_id' => 4,
+        'deleted' => true,
+    ]);
+});
+
 it('acknowledges a replayed equipment plow without charging it twice', function (): void {
     $uid = '900006';
     $world = UserWorld::query()->create([

@@ -381,6 +381,8 @@ class EquipmentWorldService
 
         $modifiedObjects = [];
         $newObjects = [];
+        $newObjectResultIndexes = [];
+        $newObjectAuditIndexes = [];
         $skippedPositions = [];
         // Keep the server-side audit trail positional.  Flash can issue many
         // small equipment requests while a player sweeps a large field; the
@@ -508,6 +510,8 @@ class EquipmentWorldService
                     $usedIds[$newId] = true;
                     $world["objectsArray"][] = $plotObj;
                     $newObjects[] = $plotObj;
+                    $newObjectResultIndexes[] = count($results);
+                    $newObjectAuditIndexes[] = count($acceptedPositions);
                     $plowCount++;
                     $acceptedPositions[] = [
                         'x' => $posX,
@@ -716,6 +720,23 @@ class EquipmentWorldService
             );
             if (!$worldPersisted) {
                 Logger::error('EquipmentWorldService', "Failed to persist equipment changes for uid=$uid");
+            } elseif ($action === ACTION_PLOW) {
+                // Persistence may replace IDs selected from a stale request
+                // snapshot. Return the committed IDs to Flash, not the stale
+                // candidates that were present before the transaction.
+                foreach ($newObjects as $index => $object) {
+                    $objectId = (int) ($object->id ?? 0);
+                    $resultIndex = $newObjectResultIndexes[$index] ?? null;
+                    if ($resultIndex !== null && isset($results[$resultIndex]) && is_array($results[$resultIndex])) {
+                        $results[$resultIndex]['id'] = $objectId;
+                        $results[$resultIndex]['data']['id'] = $objectId;
+                    }
+
+                    $auditIndex = $newObjectAuditIndexes[$index] ?? null;
+                    if ($auditIndex !== null && isset($acceptedPositions[$auditIndex])) {
+                        $acceptedPositions[$auditIndex]['object_id'] = $objectId;
+                    }
+                }
             }
         }
 
