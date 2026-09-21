@@ -21,6 +21,45 @@ class WorldService
 {
     const LOG = 'World';
     private const PIGPEN_TRUFFLE_COOLDOWN_SECONDS = 172800;
+    private const STORAGE_UPGRADE_BUILDING_CLASSES = [
+        'StorageBuilding',
+        'InventoryCellar',
+    ];
+    private const CONFIGURED_ANIMAL_STORAGE_BUILDING_CLASSES = [
+        'AnimalStorageBuilding',
+        'ChickenCoopBuilding',
+        'DairyFarmBuilding',
+        'FeatureBuilding',
+        'HalloweenCastleDuckulaBuilding',
+        'HalloweenHauntedHouseBuilding',
+        'HorseStableBuilding',
+        'NurseryBuilding',
+        'PigpenBuilding',
+        'TurkeyRoostBuilding',
+    ];
+
+    private static function supportsStorageUpgradeClass($className, $itemData): bool
+    {
+        if (!is_string($className)) {
+            return false;
+        }
+
+        if (in_array($className, self::STORAGE_UPGRADE_BUILDING_CLASSES, true)) {
+            return true;
+        }
+
+        if (!in_array($className, self::CONFIGURED_ANIMAL_STORAGE_BUILDING_CLASSES, true)
+            || !is_array($itemData)) {
+            return false;
+        }
+
+        // Legacy coop items point to the next item name directly. Other
+        // animal-storage subclasses use the catalog's `features.expand`
+        // upgrade data. Require one of those declarations before allowing
+        // the upgrade actions for a concrete subclass.
+        return (isset($itemData['expansion']) && $itemData['expansion'] !== '')
+            || hasExpandFeature($itemData);
+    }
 
     /** Read a named value from an AMF object or associative array. */
     private static function flashValue($source, string $key, $default = null)
@@ -2545,7 +2584,9 @@ class WorldService
                     break;
                 }
 
-                if (!in_array($building->class_name, ['StorageBuilding', 'InventoryCellar'])) {
+                $itemName = $building->item_name;
+                $itemData = getItemByName($itemName, "db");
+                if (!self::supportsStorageUpgradeClass($building->class_name, $itemData)) {
                     $data["data"] = ["error" => "invalid_building_type"];
                     break;
                 }
@@ -2606,13 +2647,13 @@ class WorldService
                     break;
                 }
 
-                if (!in_array($building->class_name, ['StorageBuilding', 'InventoryCellar'])) {
+                $itemName = $building->item_name;
+                $itemData = getItemByName($itemName, "db");
+                if (!self::supportsStorageUpgradeClass($building->class_name, $itemData)) {
                     $data["data"] = ["error" => "invalid_building_type"];
                     break;
                 }
 
-                $itemName = $building->item_name;
-                $itemData = getItemByName($itemName, "db");
                 $currentLevel = $building->expansion_level ?? 1;
 
                 $upgradeCost = 5;

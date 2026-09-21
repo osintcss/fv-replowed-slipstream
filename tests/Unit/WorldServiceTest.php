@@ -31,3 +31,21 @@ it('uses the canonical green hue for Pig Pen starter boars', function (): void {
         ->and($dna->P->H)->toBe(['66', '66'])
         ->and($dna->P->T)->toBe(['a']);
 });
+
+it('accepts the expandable chicken coop subclass for storage upgrades', function (): void {
+    $method = new ReflectionMethod(WorldService::class, 'supportsStorageUpgradeClass');
+    $method->setAccessible(true);
+    $expandFeature = [
+        'features' => (object) [
+            'feature' => (object) ['name' => 'expand'],
+        ],
+    ];
+
+    expect($method->invoke(null, 'StorageBuilding', null))->toBeTrue()
+        ->and($method->invoke(null, 'InventoryCellar', null))->toBeTrue()
+        ->and($method->invoke(null, 'ChickenCoopBuilding', ['expansion' => 'chickencoop2']))->toBeTrue()
+        ->and($method->invoke(null, 'DairyFarmBuilding', $expandFeature))->toBeTrue()
+        ->and($method->invoke(null, 'FeatureBuilding', []))->toBeFalse()
+        ->and($method->invoke(null, 'GarageBuilding', ['expansion' => 'barn2']))->toBeFalse()
+        ->and($method->invoke(null, null, null))->toBeFalse();
+});
