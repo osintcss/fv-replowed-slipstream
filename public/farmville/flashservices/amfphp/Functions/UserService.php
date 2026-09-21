@@ -19,6 +19,33 @@ class UserService{
 
     }
 
+    private static function logStoredItemSaleRejection(
+        $uid,
+        $itemCode,
+        int $inventoryId,
+        int $quantity,
+        string $reason,
+        ?int $availableQuantity = null,
+    ): void {
+        $context = [
+            'uid' => (string) $uid,
+            'reason' => $reason,
+            'item_code' => is_string($itemCode) ? substr($itemCode, 0, 80) : null,
+            'inventory_id' => $inventoryId,
+            'quantity_requested' => $quantity,
+            'storage' => in_array($inventoryId, [
+                (int) GIFTBOX_ID,
+                (int) GIFTBOX_STORAGE_KEY,
+            ], true) ? 'giftbox' : 'inventory_storage',
+        ];
+
+        if ($availableQuantity !== null) {
+            $context['quantity_available'] = max(0, $availableQuantity);
+        }
+
+        Logger::warning('InventorySale', 'Stored-item sale rejected', $context);
+    }
+
     public static function initUser($playerObj, $request){
         $playerData = $playerObj->getData($request);
 
@@ -223,11 +250,13 @@ class UserService{
         $quantity = (int) ($request->params[3] ?? 1);
 
         if (!$itemCode || $quantity <= 0) {
+            self::logStoredItemSaleRejection($uid, $itemCode, $inventoryId, $quantity, 'invalid_parameters');
             return ["data" => ["success" => false, "error" => "Invalid parameters"]];
         }
 
         $item = getItemByCode($itemCode);
         if (!$item) {
+            self::logStoredItemSaleRejection($uid, $itemCode, $inventoryId, $quantity, 'item_not_found');
             return ["data" => ["success" => false, "error" => "Item not found"]];
         }
 
@@ -245,6 +274,18 @@ class UserService{
             : removeFromInventoryStorage($uid, $itemCode, $quantity);
         if (!$removed) {
             $storageName = $isGiftbox ? 'Giftbox' : 'storage';
+            $storedItems = $isGiftbox ? getGiftBox($uid) : getInventoryStorage($uid);
+            $storedEntry = $storedItems[$itemCode] ?? null;
+            $availableQuantity = is_array($storedEntry) ? (int) ($storedEntry[0] ?? 0) : 0;
+            self::logStoredItemSaleRejection(
+                $uid,
+                $itemCode,
+                $inventoryId,
+                $quantity,
+                'insufficient_persisted_quantity',
+                $availableQuantity,
+            );
+
             return ["data" => [
                 "success" => false,
                 "sellable" => false,
