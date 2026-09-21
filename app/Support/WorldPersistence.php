@@ -197,20 +197,33 @@ final class WorldPersistence
 
                 $nextObjectId = 1;
                 foreach ($newObjects as $object) {
-                    while ($nextObjectId <= $maxObjectId && isset($usedIds[$nextObjectId])) {
-                        $nextObjectId++;
-                    }
+                    $requestedObjectId = isset($object->id) && is_numeric($object->id)
+                        ? (int) $object->id
+                        : null;
 
-                    if ($nextObjectId > $maxObjectId) {
-                        throw new \RuntimeException('No available persistent world object IDs for equipment plots');
+                    if ($requestedObjectId !== null
+                        && $requestedObjectId >= 1
+                        && $requestedObjectId <= $maxObjectId
+                        && !isset($usedIds[$requestedObjectId])) {
+                        $objectId = $requestedObjectId;
+                    } else {
+                        while ($nextObjectId <= $maxObjectId && isset($usedIds[$nextObjectId])) {
+                            $nextObjectId++;
+                        }
+
+                        if ($nextObjectId > $maxObjectId) {
+                            throw new \RuntimeException('No available persistent world object IDs for equipment plots');
+                        }
+
+                        $objectId = $nextObjectId;
+                        $nextObjectId++;
                     }
 
                     // The caller may have chosen an ID from a stale snapshot.
                     // Mutate the shared object so its response can use this
                     // database-verified ID after the transaction commits.
-                    $object->id = $nextObjectId;
-                    $usedIds[$nextObjectId] = true;
-                    $nextObjectId++;
+                    $object->id = $objectId;
+                    $usedIds[$objectId] = true;
                 }
             }
 
