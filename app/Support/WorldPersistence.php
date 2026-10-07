@@ -235,6 +235,9 @@ final class WorldPersistence
 
                 $updated = WorldObject::query()
                     ->where('world_id', $worldId)
+                    // Legacy worlds can contain overlapping objects. Match
+                    // the selected server object as well as its coordinates.
+                    ->where('object_id', (int) ($object->id ?? 0))
                     ->where('position_x', (int) $positionX)
                     ->where('position_y', (int) $positionY)
                     ->where('deleted', false)

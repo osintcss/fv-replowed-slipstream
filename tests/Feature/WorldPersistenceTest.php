@@ -58,6 +58,30 @@ function persistenceTestFlashObject(int $objectId, array $attributes = []): stdC
     ], $attributes);
 }
 
+it('rebuilds expansion-world terrain after changing its dimensions', function (): void {
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    $uid = '900002';
+    UserWorld::query()->create([
+        'uid' => $uid,
+        'type' => 'glen',
+        'sizeX' => 66,
+        'sizeY' => 66,
+        'objects' => '[]',
+        'messageManager' => serialize(['messages' => [], 'allowSendEmails' => true]),
+    ]);
+    PlayerMeta::setValue($uid, 'currentWorldType', 'glen');
+    unset($GLOBALS['_world_cache']["{$uid}:glen"]);
+
+    $expanded = (new Player($uid))->expandWorld(74, 74);
+
+    expect($expanded['sizeX'])->toBe(74)
+        ->and($expanded['sizeY'])->toBe(74)
+        ->and(count($expanded['terrain']))->toBe(37 * 37)
+        ->and(UserWorld::query()->where('uid', $uid)->where('type', 'glen')->value('sizeX'))->toBe(74)
+        ->and(UserWorld::query()->where('uid', $uid)->where('type', 'glen')->value('sizeY'))->toBe(74);
+});
+
 it('enables turbo-ring mode only while a turbo ring is placed in the world', function (): void {
     $world = persistenceTestWorld();
 
@@ -540,6 +564,134 @@ it('canonicalizes the Bloom Garden store placeholder on read and write', functio
         ->and($persisted['state'])->toBe('ripe');
 });
 
+it('returns an authoritative inventory delta for a successful Home Inventory placement', function (): void {
+    require_once AMFPHP_ROOTPATH.'Functions/WorldService.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    Item::query()->create([
+        'name' => 'test_inventory_placeable',
+        'code' => 'TIP1',
+        'data' => serialize([
+            'name' => 'test_inventory_placeable',
+            'code' => 'TIP1',
+            'className' => 'FeatureBuilding',
+        ]),
+    ]);
+    Item::clearCache();
+
+    $world = persistenceTestWorld();
+    PlayerMeta::setValue($world->uid, 'inventory_storage', serialize([
+        'TIP1' => [1, [], []],
+    ]));
+
+    $request = (object) [
+        'sequence' => 1,
+        'sequenceID' => 'inventory-delta-test',
+        'params' => [
+            ACTION_PLANT,
+            (object) [
+                'id' => 0,
+                'className' => 'FeatureBuilding',
+                'itemName' => 'test_inventory_placeable',
+                'position' => (object) ['x' => 2, 'y' => 2, 'z' => 0],
+                'state' => 'bare',
+            ],
+            [(object) [
+                'isStorageWithdrawal' => HOME_INVENTORY_ID,
+                'isInventoryWithdrawal' => true,
+                'inventoryKey' => 'TIP1',
+            ]],
+        ],
+    ];
+
+    $result = WorldService::performAction(new Player($world->uid), $request, null);
+
+    expect($result['data']['id'])->toBeGreaterThan(0)
+        ->and($result['data']['inventoryDelta'])->toMatchArray([
+            'storageId' => HOME_INVENTORY_ID,
+            'code' => 'TIP1',
+            'remaining' => 0,
+            'itemName' => 'test_inventory_placeable',
+        ]);
+
+    PlayerMeta::clearCache($world->uid, 'inventory_storage');
+    expect(unserialize(PlayerMeta::getValue($world->uid, 'inventory_storage'), ['allowed_classes' => false]))
+        ->toBe([]);
+});
+
+it('consumes the exact source key for finished-item inventory aliases and rejects repeats', function (): void {
+    require_once AMFPHP_ROOTPATH.'Functions/WorldService.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    Item::query()->create([
+        'name' => 'flower_garden',
+        'code' => '51r',
+        'data' => serialize([
+            'name' => 'flower_garden',
+            'code' => '51r',
+            'className' => 'FeatureBuilding',
+            'finishedName' => 'flower_garden_finished',
+        ]),
+    ]);
+    Item::query()->create([
+        'name' => 'flower_garden_finished',
+        'code' => '6aK',
+        'data' => serialize([
+            'name' => 'flower_garden_finished',
+            'code' => '6aK',
+            'className' => 'FeatureBuilding',
+        ]),
+    ]);
+    Item::clearCache();
+
+    $world = persistenceTestWorld();
+    PlayerMeta::setValue($world->uid, 'inventory_storage', serialize([
+        '51r' => [1, [], []],
+    ]));
+
+    $request = static function (int $sequence, int $x): object {
+        return (object) [
+            'sequence' => $sequence,
+            'sequenceID' => 'bloom-garden-alias-test',
+            'params' => [
+                ACTION_PLANT,
+                (object) [
+                    'id' => 0,
+                    'className' => 'FeatureBuilding',
+                    'itemName' => 'flower_garden_finished',
+                    'position' => (object) ['x' => $x, 'y' => 3, 'z' => 0],
+                    'state' => 'bare',
+                ],
+                [(object) [
+                    'isStorageWithdrawal' => HOME_INVENTORY_ID,
+                    'isInventoryWithdrawal' => true,
+                    'inventoryKey' => '51r',
+                ]],
+            ],
+        ];
+    };
+
+    $player = new Player($world->uid);
+    $first = WorldService::performAction($player, $request(1, 3), null);
+    $second = WorldService::performAction($player, $request(2, 4), null);
+
+    expect($first['data']['id'])->toBeGreaterThan(0)
+        ->and($first['data']['inventoryDelta'])->toMatchArray([
+            'storageId' => HOME_INVENTORY_ID,
+            'code' => '51r',
+            'remaining' => 0,
+        ])
+        ->and($second['data']['id'])->toBe(0)
+        ->and($second['data']['success'])->toBeFalse()
+        ->and($second['data']['error'])->toBe('Item is not available in storage')
+        ->and($second['data']['inventoryDelta'])->toMatchArray([
+            'storageId' => HOME_INVENTORY_ID,
+            'code' => '51r',
+            'remaining' => 0,
+        ])
+        ->and(WorldObject::query()->where('world_id', $world->id)->count())->toBe(1);
+});
+
 it('does not let a stale conditional update overwrite a harvested plot', function (): void {
     $world = persistenceTestWorld();
     $plot = persistenceTestObject($world, 101);
@@ -654,6 +806,72 @@ it('normalizes legacy finished orchards without losing their contents', function
         ->and(json_decode($persisted['contents'], true))->toBe([
             ['itemCode' => 'AP', 'numItem' => 2],
             ['itemCode' => 'OR', 'numItem' => 1],
+        ]);
+});
+
+it('normalizes grown world-prefixed orchards on read and write', function (): void {
+    $world = UserWorld::query()->create([
+        'uid' => '900001',
+        'type' => 'england',
+        'sizeX' => 130,
+        'sizeY' => 130,
+        'objects' => '[]',
+        'messageManager' => serialize(['messages' => [], 'allowSendEmails' => true]),
+    ]);
+    $orchard = persistenceTestObject($world, 2505, [
+        'class_name' => 'OrchardFeatureBuilding',
+        'item_name' => 'xukorchard_featurebuilding_finished',
+        'state' => 'grown',
+    ]);
+
+    expect($orchard->toFlashObject()->state)->toBe('bare');
+
+    $persisted = WorldObject::fromFlashObject(
+        persistenceTestFlashObject(2506, [
+            'className' => 'OrchardFeatureBuilding',
+            'itemName' => 'xukorchard_featurebuilding_finished',
+            'state' => 'grown',
+        ]),
+        $world->id,
+    );
+
+    expect($persisted['state'])->toBe('bare');
+});
+
+it('normalizes transient busy states for completed animal pens on read and write', function (): void {
+    $world = persistenceTestWorld();
+    $pen = persistenceTestObject($world, 2504, [
+        'class_name' => 'FeatureBuilding',
+        'item_name' => 'animal_breeding_xfflivestock_finished',
+        'state' => 'busy',
+        'contents' => [
+            ['itemCode' => 'mnc', 'numItem' => 1],
+            ['itemCode' => 'mgh', 'numItem' => 2],
+        ],
+    ]);
+
+    $flash = $pen->toFlashObject();
+    expect($flash->state)->toBe('bare')
+        ->and($flash->contents)->toBe([
+            ['itemCode' => 'mnc', 'numItem' => 1],
+            ['itemCode' => 'mgh', 'numItem' => 2],
+        ]);
+
+    $persisted = WorldObject::fromFlashObject(
+        persistenceTestFlashObject(2504, [
+            'className' => 'FeatureBuilding',
+            'itemName' => 'animal_breeding_xfflivestock_finished',
+            'state' => 'busy',
+            'contents' => [
+                ['itemCode' => 'mnc', 'numItem' => 1],
+            ],
+        ]),
+        $world->id,
+    );
+
+    expect($persisted['state'])->toBe('bare')
+        ->and(json_decode($persisted['contents'], true))->toBe([
+            ['itemCode' => 'mnc', 'numItem' => 1],
         ]);
 });
 

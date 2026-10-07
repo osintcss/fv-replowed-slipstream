@@ -65,6 +65,18 @@ final class ConsumableActionHandler
             \PERSONAL_CRAFTING_INVENTORY_ID,
         ], true);
 
+        $isPetFood = is_array($item)
+            && ($item['className'] ?? null) === 'CPetsKibble'
+            && in_array($item['name'] ?? null, ['consume_kibble', 'consume_treat'], true);
+        $petTargetId = (int) self::flashValue($extraParams, 'targetPetId', 0);
+        $petWorldType = $isPetFood ? \getCurrentWorldType($uid) : null;
+        $petWorldId = $isPetFood ? \getWorldId($uid, $petWorldType) : null;
+        if ($isPetFood && (!$isOwnWorldUse || !$storageIsPersisted || $isFree
+            || (!$isGift && in_array($storageId, [\GIFTBOX_ID, (int) \GIFTBOX_STORAGE_KEY], true))
+            || $itemCount !== 1 || $petTargetId <= 0 || $petWorldId === null)) {
+            return ['success' => false, 'consumed' => 0, 'error' => 'Invalid pet feeding request.'];
+        }
+
         // CVehiclePart is optimistic: TUseConsumable opens the Garage upgrade
         // mode and TAddPartToEquipmentInGarage is the transaction that
         // actually spends the part. Defer the Giftbox decrement until that
@@ -92,6 +104,9 @@ final class ConsumableActionHandler
                 $itemCount,
                 $storageId,
                 $isOwnWorldUse,
+                $isPetFood,
+                $petTargetId,
+                $petWorldId,
             ) {
                 if (in_array($storageId, [\GIFTBOX_ID, (int) \GIFTBOX_STORAGE_KEY], true)) {
                     PlayerMeta::query()
@@ -116,8 +131,37 @@ final class ConsumableActionHandler
                     ->where('uid', $uid)
                     ->lockForUpdate()
                     ->first();
+                $pet = null;
+                $newPetState = null;
+                if ($isPetFood) {
+                    $pet = WorldObject::query()
+                        ->where('world_id', $petWorldId)
+                        ->where('object_id', $petTargetId)
+                        ->where('class_name', 'Pet')
+                        ->where('deleted', false)
+                        ->lockForUpdate()
+                        ->first();
+                    $newPetState = $pet === null ? null : PetState::feed(
+                        $pet->components,
+                        $pet->item_name,
+                        (int) $pet->plant_time,
+                        (int) \getCurrentTimeMs(),
+                        (string) ($item['name'] ?? ''),
+                    );
+                    if ($newPetState === null) {
+                        return false;
+                    }
+                }
                 if (!$userMeta || !\consumeStoredItem($uid, $itemCode, $itemCount, $storageId)) {
                     return false;
+                }
+
+                if ($pet !== null) {
+                    $components = $pet->components;
+                    $components = is_object($components) ? $components : new \stdClass();
+                    $components->petState = $newPetState;
+                    $pet->components = $components;
+                    $pet->save();
                 }
 
                 \UserResources::invalidateCache($uid);
@@ -147,6 +191,7 @@ final class ConsumableActionHandler
                     'xpAdded' => $resourceDeltas['xp'],
                     'cashAdded' => $resourceDeltas['cash'],
                     'unwitheredCount' => $unwitheredCount,
+                    'petFed' => $pet !== null,
                 ];
             });
         } catch (\Throwable $e) {
@@ -167,6 +212,10 @@ final class ConsumableActionHandler
 
         if ($transactionResult === false) {
             return ['success' => false, 'consumed' => 0, 'error' => 'Consumable is no longer available.'];
+        }
+
+        if ($isPetFood) {
+            \invalidateWorldCache($uid, $petWorldType);
         }
 
         return array_merge(

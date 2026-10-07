@@ -55,16 +55,18 @@ class AnimalBreedingService
                     throw new \RuntimeException('invalid_building');
                 }
 
+                $featureName = (string) $building->item_name;
+                $config = self::breedingConfig($featureName);
                 $components = is_object($building->components) ? $building->components : new \stdClass();
-                $hashes = self::validatedBreedHashes($building->contents, $breedObjects, $components);
+                $hashes = self::validatedBreedHashes($building->contents, $breedObjects, $components, $config['asexual']);
                 if ($hashes === null) {
                     throw new \RuntimeException('invalid_animals');
                 }
+                if ($featureName === 'turtlepen_finished' && !self::areTurtleBreedCodes($hashes)) {
+                    throw new \RuntimeException('invalid_animals');
+                }
 
-                $featureName = (string) $building->item_name;
-                $config = self::breedingConfig($featureName);
-
-                $parents = self::validatedParents($hashes, $components);
+                $parents = self::validatedParents($hashes, $components, $config['asexual']);
                 if ($parents === null) {
                     throw new \RuntimeException('invalid_parent_pair');
                 }
@@ -75,8 +77,7 @@ class AnimalBreedingService
                 }
                 $state = isset($components->extraDataState) && is_object($components->extraDataState)
                     ? $components->extraDataState : new \stdClass();
-                $queue = isset($state->breedingQueue) && is_array($state->breedingQueue)
-                    ? $state->breedingQueue : [];
+                $queue = self::breedingQueue($state);
 
                 if (count($queue) >= self::MAX_ACTIVE_SESSIONS || isset($queue[$suiteSlot])) {
                     throw new \RuntimeException('breeding_slot_unavailable');
@@ -109,8 +110,7 @@ class AnimalBreedingService
                     'patternGuarantee' => !empty($session->patternGuarantee),
                 ];
                 $queue[$suiteSlot] = $savedSession;
-                ksort($queue);
-                $state->breedingQueue = $queue;
+                self::saveBreedingQueue($state, $queue);
                 $state->breedHistory = isset($state->breedHistory) && is_object($state->breedHistory)
                     ? $state->breedHistory : new \stdClass();
                 $components->extraDataState = $state;
@@ -335,7 +335,7 @@ class AnimalBreedingService
             $config = self::breedingConfig($featureName);
             $components = is_object($building->components) ? $building->components : new \stdClass();
             $state = isset($components->extraDataState) && is_object($components->extraDataState) ? $components->extraDataState : new \stdClass();
-            $queue = isset($state->breedingQueue) && is_array($state->breedingQueue) ? $state->breedingQueue : [];
+            $queue = self::breedingQueue($state);
             $session = $queue[$slot] ?? null;
             if (!is_object($session)) {
                 throw new \RuntimeException('session_not_found');
@@ -350,7 +350,7 @@ class AnimalBreedingService
 
             $outcome = self::breedingOutcome($config, (int) ($session->numPotions ?? 0));
             unset($queue[$slot]);
-            $state->breedingQueue = $queue;
+            self::saveBreedingQueue($state, $queue);
             if (!$outcome) {
                 $components->extraDataState = $state;
                 $building->components = $components;
@@ -359,6 +359,10 @@ class AnimalBreedingService
             }
 
             $reward = self::animalOffspring($uid, $state, $session, $components, $config);
+            $rewardItem = getItemByName($reward['itemName'], 'db');
+            if (!is_array($rewardItem) || empty($rewardItem['code'])) {
+                throw new \RuntimeException('breeding_reward_unavailable');
+            }
             $history = isset($state->breedHistory) && is_object($state->breedHistory) ? $state->breedHistory : new \stdClass();
             $history->gender = substr((string) ($history->gender ?? '') . $reward['gender'], -3);
             $state->breedHistory = $history;
@@ -396,15 +400,15 @@ class AnimalBreedingService
                     $hashes[] = $breedObject->hash;
                 }
             }
-            $parents = self::validatedParents($hashes, $components) ?? [];
+            $parents = self::validatedParents($hashes, $components, $config['asexual']) ?? [];
         }
         if (count($parents) !== 2) {
             throw new \RuntimeException('parent_dna_missing');
         }
         $parents = array_map(static fn ($parent): array => self::normalizeDna($parent) ?? [], $parents);
         if (!self::isUsableDna($parents[0]) || !self::isUsableDna($parents[1])
-            || !in_array('F', array_column($parents, 'G'), true)
-            || !in_array('M', array_column($parents, 'G'), true)) {
+            || (!$config['asexual'] && (!in_array('F', array_column($parents, 'G'), true)
+                || !in_array('M', array_column($parents, 'G'), true)))) {
             throw new \RuntimeException('parent_dna_missing');
         }
         $history = (string) ($state->breedHistory->gender ?? '');
@@ -416,14 +420,22 @@ class AnimalBreedingService
         // complete hexadecimal range 0..f.  The latter must not wrap: a
         // bright parent at f would otherwise roll over to 0 and make an
         // otherwise pink offspring render black.
-        $base = self::childColor($parents[array_rand($parents)]['B'], 240, 16, 16);
-        $samePattern = $parents[0]['P']['T'][0] === $parents[1]['P']['T'][0];
-        $inherit = !empty($session->patternGuarantee)
-            || mt_rand() / mt_getrandmax() <= $config['patternChance'] * ($samePattern ? $config['samePatternMultiplier'] : 1);
-        $patternParent = $parents[array_rand($parents)]['P'];
-        $pattern = self::childColor($patternParent, 240, 16, 16);
-        $maleParent = $parents[0]['G'] === 'M' ? $parents[0] : $parents[1];
-        $pattern['T'] = [$inherit ? $maleParent['P']['T'][0] : $config['defaultPatternCode']];
+        if ($config['fixedOutcome']) {
+            // Turtle Pen previews combinations of its parents' existing
+            // colors and patterns, rather than mutated sheep/pig traits.
+            $base = $parents[array_rand($parents)]['B'];
+            $pattern = $parents[array_rand($parents)]['P'];
+            $pattern['T'] = [$parents[array_rand($parents)]['P']['T'][0]];
+        } else {
+            $base = self::childColor($parents[array_rand($parents)]['B'], 240, 16, 16);
+            $samePattern = $parents[0]['P']['T'][0] === $parents[1]['P']['T'][0];
+            $inherit = !empty($session->patternGuarantee)
+                || mt_rand() / mt_getrandmax() <= $config['patternChance'] * ($samePattern ? $config['samePatternMultiplier'] : 1);
+            $patternParent = $parents[array_rand($parents)]['P'];
+            $pattern = self::childColor($patternParent, 240, 16, 16);
+            $maleParent = $parents[0]['G'] === 'M' ? $parents[0] : $parents[1];
+            $pattern['T'] = [$inherit ? $maleParent['P']['T'][0] : $config['defaultPatternCode']];
+        }
         $dna = [
             'N' => '', 'U' => (string) $uid, 'G' => $gender, 'B' => $base, 'P' => $pattern,
         ];
@@ -485,8 +497,8 @@ class AnimalBreedingService
         return null;
     }
 
-    /** Require two distinct stored animals: exactly one ram/boar and one ewe/sow. */
-    private static function validatedParents(array $hashes, \stdClass $components): ?array
+    /** Resolve exact stored DNA; sexual pens require opposite-gender parents. */
+    private static function validatedParents(array $hashes, \stdClass $components, bool $asexual = false): ?array
     {
         $parents = [];
         foreach ($hashes as $hash) {
@@ -502,7 +514,7 @@ class AnimalBreedingService
 
         $genders = array_column($parents, 'G');
         sort($genders);
-        return $genders === ['F', 'M'] ? $parents : null;
+        return $asexual || $genders === ['F', 'M'] ? $parents : null;
     }
 
     private static function normalizeDna($dna): ?array
@@ -655,6 +667,8 @@ class AnimalBreedingService
             'maleItemName' => $values['maleItemName'], 'femaleItemName' => $values['femaleItemName'], 'xpBreedSuccess' => (int) ($values['xpBreedSuccess'] ?? 0),
             'defaultBreedItem' => $values['defaultBreedItem'],
             'baseSuccessChance' => (float) ($values['baseSuccessChance'] ?? 1),
+            'asexual' => ($values['femaleItemName'] ?? '') === ($values['maleItemName'] ?? ''),
+            'fixedOutcome' => ($values['fixedOutcome'] ?? '') === 'true',
             'lovePotionBonusChance' => (float) ($values['lovePotionBonusChance'] ?? 0),
             'cashToFinishNow' => (int) ($values['cashToFinishNow'] ?? 10),
             'breedTimes' => $breedTimes === [] ? [24] : $breedTimes,
@@ -763,10 +777,57 @@ class AnimalBreedingService
 
     private static function isBreedingHabitat(string $itemName): bool
     {
-        return in_array($itemName, ['pigpenv2_finished', 'xuk_sheep_pen_finished'], true);
+        return in_array($itemName, ['pigpenv2_finished', 'xuk_sheep_pen_finished', 'turtlepen_finished'], true);
     }
 
-    private static function validatedBreedHashes($contents, array $breedObjects, \stdClass $components): ?array
+    /** Restore slot identity from both JSON lists and older sparse JSON objects. */
+    private static function breedingQueue(\stdClass $state): array
+    {
+        $stored = $state->breedingQueue ?? [];
+        if (!is_array($stored) && !is_object($stored)) {
+            return [];
+        }
+
+        $queue = [];
+        foreach ($stored as $key => $session) {
+            if (!is_object($session)) {
+                continue;
+            }
+            $slot = is_numeric($session->suiteSlot ?? null) ? (int) $session->suiteSlot
+                : (is_numeric($key) ? (int) $key : -1);
+            if ($slot < 0 || isset($queue[$slot])) {
+                throw new \RuntimeException('invalid_breeding_queue');
+            }
+            $queue[$slot] = $session;
+        }
+        ksort($queue, SORT_NUMERIC);
+
+        return $queue;
+    }
+
+    /** Flash rebuilds slots from each session's suiteSlot, so store a JSON list. */
+    private static function saveBreedingQueue(\stdClass $state, array $queue): void
+    {
+        ksort($queue, SORT_NUMERIC);
+        $state->breedingQueue = array_values($queue);
+    }
+
+    /** A valid DNA envelope must also belong to an adult turtle catalog item. */
+    private static function areTurtleBreedCodes(array $hashes): bool
+    {
+        foreach ($hashes as $hash) {
+            $code = explode(':', $hash, 2)[0];
+            $item = getItemByCode($code);
+            if (!is_array($item) || ($item['className'] ?? null) !== 'MutableAnimal'
+                || !str_starts_with((string) ($item['name'] ?? ''), 'turtle_')) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function validatedBreedHashes($contents, array $breedObjects, \stdClass $components, bool $asexual = false): ?array
     {
         if (!is_array($contents)) {
             return null;
@@ -792,7 +853,15 @@ class AnimalBreedingService
             $hashes[] = $hash;
         }
 
-        return count(array_unique($hashes)) === 2 ? $hashes : null;
+        if (count(array_unique($hashes)) === 2) {
+            return $hashes;
+        }
+        // Identical turtle DNA can belong to two separate stored animals.
+        // Require both a count of two and two persisted metadata entries.
+        $metadata = $components->storageMetadata ?? null;
+        return $asexual && count($hashes) === 2 && $hashes[0] === $hashes[1]
+            && is_object($metadata) && is_array($metadata->{$hashes[0]} ?? null)
+            && count($metadata->{$hashes[0]}) >= 2 ? $hashes : null;
     }
 
     /**

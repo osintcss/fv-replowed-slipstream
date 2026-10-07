@@ -14,6 +14,9 @@ use App\Models\UserMeta;
 use App\Models\WorldObject;
 use App\Support\ConsumableActionHandler;
 use App\Support\CraftingCottages;
+use App\Support\PetState;
+use App\Support\PetActionHandler;
+use App\Support\PlowFuelDiscovery;
 use App\Support\StorageActionHandler;
 use App\Support\WorldPersistence;
 
@@ -86,6 +89,130 @@ class WorldService
             return !in_array(strtolower(trim($value)), ['', '0', 'false', 'off', 'no'], true);
         }
         return $default;
+    }
+
+    /**
+     * Resolve the exact Home Inventory key that a placement is withdrawing.
+     *
+     * Flash normally sends the catalog code in `inventoryKey`, but older
+     * clients sometimes send the finished-item code while the inventory still
+     * contains the unfinished/source code (Bloom Garden is the known example).
+     * Accept only catalog entries that describe the same item family; never
+     * let an arbitrary client-supplied key select an unrelated inventory item.
+     */
+    private static function resolveInventoryPlacement($uid, $plantObj, $extraParams): ?array
+    {
+        $itemName = (string) self::flashValue($plantObj, 'itemName', '');
+        $canonical = getItemByName($itemName, 'db');
+        if (!is_array($canonical) || !is_string($canonical['code'] ?? null) || $canonical['code'] === '') {
+            return null;
+        }
+
+        $inventory = getInventoryStorage($uid);
+        $requestedKey = self::flashValue($extraParams, 'inventoryKey');
+        $requestedKey = is_scalar($requestedKey) ? trim((string) $requestedKey) : '';
+
+        $expectedNames = array_values(array_filter([
+            $itemName,
+            $canonical['name'] ?? null,
+            $canonical['finishedName'] ?? null,
+        ], static fn ($name): bool => is_string($name) && $name !== ''));
+
+        $candidate = static function (string $storageKey, array $itemData) use ($inventory): ?array {
+            $available = (int) (($inventory[$storageKey][0] ?? 0));
+            if ($available < 1) {
+                return null;
+            }
+
+            return [
+                'storageKey' => $storageKey,
+                'catalogCode' => (string) ($itemData['code'] ?? $storageKey),
+                'available' => $available,
+            ];
+        };
+
+        if ($requestedKey !== '') {
+            $requestedCode = explode(':', $requestedKey, 2)[0];
+            $requestedData = getItemByCode($requestedCode);
+            if (!is_array($requestedData)) {
+                return null;
+            }
+
+            $requestedNames = array_values(array_filter([
+                $requestedData['name'] ?? null,
+                $requestedData['finishedName'] ?? null,
+            ], static fn ($name): bool => is_string($name) && $name !== ''));
+
+            if ($requestedCode !== ($canonical['code'] ?? null)
+                && array_intersect($expectedNames, $requestedNames) === []) {
+                return null;
+            }
+
+            $resolved = $candidate($requestedKey, $requestedData);
+            if ($resolved !== null) {
+                return $resolved;
+            }
+
+            // Inventory keys with per-instance metadata are rendered as
+            // `code:metadata` by Flash. If the metadata suffix is stale but
+            // the base stack still exists, use the base key rather than
+            // consuming a different catalog item.
+            if ($requestedCode !== $requestedKey) {
+                $resolved = $candidate($requestedCode, $requestedData);
+                if ($resolved !== null) {
+                    return $resolved;
+                }
+            }
+
+            return [
+                'storageKey' => $requestedKey,
+                'catalogCode' => $requestedCode,
+                'available' => 0,
+            ];
+        }
+
+        $resolved = $candidate($canonical['code'], $canonical);
+        if ($resolved !== null) {
+            return $resolved;
+        }
+
+        return [
+            'storageKey' => $canonical['code'],
+            'catalogCode' => $canonical['code'],
+            'available' => 0,
+        ];
+    }
+
+    /** Return the authoritative Home Inventory count for the Flash client. */
+    private static function inventoryPlacementDelta($uid, ?string $storageKey, string $itemName = ''): ?array
+    {
+        if ($storageKey === null || $storageKey === '') {
+            return null;
+        }
+
+        $inventory = getInventoryStorage($uid);
+
+        return [
+            'storageId' => HOME_INVENTORY_ID,
+            'code' => $storageKey,
+            'remaining' => max(0, (int) ($inventory[$storageKey][0] ?? 0)),
+            'itemName' => $itemName,
+        ];
+    }
+
+    /** Attach a storage reconciliation payload without changing old fields. */
+    private static function addInventoryPlacementDelta(
+        array $response,
+        $uid,
+        ?string $storageKey,
+        string $itemName = ''
+    ): array {
+        $delta = self::inventoryPlacementDelta($uid, $storageKey, $itemName);
+        if ($delta !== null) {
+            $response['data']['inventoryDelta'] = $delta;
+        }
+
+        return $response;
     }
 
     /**
@@ -577,11 +704,48 @@ class WorldService
         }
 
         switch ($action) {
+            case 'runaway':
+                $petId = (int) ($request->params[1]->id ?? 0);
+                $success = PetActionHandler::runaway($playerObj->getUid(), getCurrentWorldType($playerObj->getUid()), $petId);
+                $data['data'] = ['id' => $petId, 'success' => $success];
+                break;
+
+            case 'rescuePet':
+                $petId = (int) ($request->params[1]->id ?? 0);
+                $rescueTime = PetActionHandler::rescue($playerObj->getUid(), getCurrentWorldType($playerObj->getUid()), $petId);
+                $data['data'] = $rescueTime === null
+                    ? ['id' => $petId, 'success' => false]
+                    : ['id' => $petId, 'success' => true, 'lastFedTime' => $rescueTime];
+                break;
+
+            case 'performTrick':
+                $petId = (int) ($request->params[1]->id ?? 0);
+                $params = $request->params[2][0] ?? null;
+                $data['data'] = PetActionHandler::trick($playerObj->getUid(), getCurrentWorldType($playerObj->getUid()), $petId, $params);
+                break;
+
             case ACTION_PLANT:
                 $marketPurchaseObj = $request->params[1];
                 $plantObj = clone $marketPurchaseObj;
                 $cottage = CraftingCottages::normalizeMarketPlacement($plantObj);
                 $className = $plantObj->className ?? '';
+                if ($className === 'Pet') {
+                    $petItem = getItemByName($plantObj->itemName ?? '', 'db');
+                    $petState = is_array($petItem) && is_object($extraParams)
+                        ? PetState::initial($extraParams, $petItem, (int) getCurrentTimeMs())
+                        : null;
+                    if ($petState === null) {
+                        return [
+                            'id' => 0,
+                            'data' => ['id' => 0, 'success' => false, 'error' => 'Invalid pet placement'],
+                        ];
+                    }
+                    $components = $plantObj->components ?? null;
+                    $components = is_object($components) ? $components : new \stdClass();
+                    $components->petState = $petState;
+                    $plantObj->components = $components;
+                    $plantObj->plantTime = (int) getCurrentTimeMs();
+                }
                 $isStorageWithdrawal = $extraParams !== null
                     ? (int) ($extraParams->isStorageWithdrawal ?? 0) : 0;
                 // Flash identifies the giftbox itself as -6 in storageData.
@@ -698,10 +862,13 @@ class WorldService
                 // did nothing when item lookup or storage data was missing,
                 // which allowed the same animal to be placed repeatedly.
                 if ($isInventoryWithdrawal) {
-                    $itemData = getItemByName($plantObj->itemName ?? '', 'db');
-                    $itemCode = $itemData['code'] ?? null;
-                    $inventory = $itemCode ? getInventoryStorage($playerObj->getUid()) : [];
-                    $available = $itemCode ? (int) ($inventory[$itemCode][0] ?? 0) : 0;
+                    $inventoryPlacement = self::resolveInventoryPlacement(
+                        $playerObj->getUid(),
+                        $plantObj,
+                        $extraParams,
+                    );
+                    $itemCode = $inventoryPlacement['storageKey'] ?? null;
+                    $available = (int) ($inventoryPlacement['available'] ?? 0);
 
                     if (!$itemCode || $available < 1) {
                         Logger::error(self::LOG, sprintf(
@@ -713,10 +880,10 @@ class WorldService
                             $available
                         ));
 
-                        return [
+                        return self::addInventoryPlacementDelta([
                             'id' => 0,
                             'data' => ['id' => 0, 'success' => false, 'error' => 'Item is not available in storage'],
-                        ];
+                        ], $playerObj->getUid(), $itemCode, (string) ($plantObj->itemName ?? ''));
                     }
 
                     $withdrawnInventoryItemCode = $itemCode;
@@ -736,10 +903,10 @@ class WorldService
                                 $withdrawnInventoryExtraData
                             );
 
-                            return [
+                            return self::addInventoryPlacementDelta([
                                 'id' => 0,
                                 'data' => ['id' => 0, 'success' => false, 'error' => 'Crate metadata is not available in storage'],
-                            ];
+                            ], $playerObj->getUid(), $itemCode, (string) ($plantObj->itemName ?? ''));
                         }
                     }
                 } elseif ($isBuildingWithdrawal) {
@@ -848,10 +1015,10 @@ class WorldService
                         $withdrawnInventoryExtraData
                     );
 
-                    return [
+                    return self::addInventoryPlacementDelta([
                         'id' => 0,
                         'data' => ['id' => 0, 'success' => false, 'error' => 'Could not place item'],
-                    ];
+                    ], $playerObj->getUid(), $withdrawnInventoryItemCode, (string) ($plantObj->itemName ?? ''));
                 }
 
                 if ($isBuildingWithdrawal && $retId <= 0) {
@@ -1203,6 +1370,16 @@ class WorldService
 
                 $data["id"] = $retId;
                 $data["data"] = array("id" => $retId);
+                if ($isInventoryWithdrawal) {
+                    $inventoryDelta = self::inventoryPlacementDelta(
+                        $playerObj->getUid(),
+                        $withdrawnInventoryItemCode,
+                        (string) ($plantObj->itemName ?? ''),
+                    );
+                    if ($inventoryDelta !== null) {
+                        $data["data"]["inventoryDelta"] = $inventoryDelta;
+                    }
+                }
                 break;
 
             case ACTION_PLOW:
@@ -1357,12 +1534,87 @@ class WorldService
 
                 $data["id"] = $retId;
                 $data["data"] = array("id" => $retId);
+                if ($marketTransactionSucceeded && is_numeric($posX) && is_numeric($posY)) {
+                    try {
+                        $fuelAdded = PlowFuelDiscovery::grantForPlow(
+                            (string) $uid,
+                            (int) $posX,
+                            (int) $posY,
+                        );
+                        if ($fuelAdded > 0) {
+                            $data['data']['fuelDiscovery'] = true;
+                            $data['data']['fuelAdded'] = $fuelAdded;
+                            Logger::debug('FuelDiscovery', 'Plow fuel granted', [
+                                'uid' => (string) $uid,
+                                'x' => (int) $posX,
+                                'y' => (int) $posY,
+                                'fuel_added' => $fuelAdded,
+                            ]);
+                        }
+                    } catch (\Throwable $e) {
+                        // A reward failure must not turn an already committed
+                        // plow into a retryable action with a second coin cost.
+                        Logger::error('FuelDiscovery', 'Plow fuel grant failed', [
+                            'uid' => (string) $uid,
+                            'x' => (int) $posX,
+                            'y' => (int) $posY,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
+                break;
+
+            case 'adulthoodReached':
+                $uid = $playerObj->getUid();
+                $worldType = getCurrentWorldType($uid);
+                $petId = (int) ($request->params[1]->id ?? 0);
+                $matured = $petId > 0 && WorldPersistence::mutateObject(
+                    $uid,
+                    $worldType,
+                    $petId,
+                    static function (WorldObject $pet): bool {
+                        if ($pet->class_name !== 'Pet') {
+                            return false;
+                        }
+                        $components = $pet->components;
+                        $current = PetState::forFlash(
+                            $components,
+                            $pet->item_name,
+                            (int) $pet->plant_time,
+                        );
+                        if ((int) $current->petLevel > 0) {
+                            return true;
+                        }
+                        $adultState = PetState::mature(
+                            $components,
+                            $pet->item_name,
+                            (int) $pet->plant_time,
+                            (int) getCurrentTimeMs(),
+                        );
+                        if ($adultState === null) {
+                            return false;
+                        }
+                        $components = is_object($components) ? $components : new \stdClass();
+                        $components->petState = $adultState;
+                        $pet->components = $components;
+
+                        return true;
+                    },
+                );
+                $data['data'] = ['id' => 0, 'success' => (bool) $matured];
                 break;
 
             case ACTION_MOVE:
             case ACTION_CLEAR:
             case ACTION_CLEAR_WITHERED:
-                $retId = $playerObj->setWorld($request->params[1], $action);
+                $actionObject = $request->params[1];
+                if ($action === ACTION_MOVE && ($actionObject->className ?? null) === 'Pet') {
+                    unset($actionObject->petFollowPreference);
+                    if (is_object($extraParams) && isset($extraParams->allowFollow)) {
+                        $actionObject->petFollowPreference = (bool) $extraParams->allowFollow;
+                    }
+                }
+                $retId = $playerObj->setWorld($actionObject, $action);
                 $data["id"] = $retId;
                 $data["data"] = array("id" => $retId);
                 break;
@@ -1373,41 +1625,23 @@ class WorldService
 
                 $currentWorldType = getCurrentWorldType($uid);
                 $world = getWorldByType($uid, $currentWorldType);
-                $positionIndex = buildPositionIndex($world["objectsArray"] ?? []);
-
-                $posX = isset($clientObj->position) ? ($clientObj->position->x ?? ($clientObj->position['x'] ?? null)) : null;
-                $posY = isset($clientObj->position) ? ($clientObj->position->y ?? ($clientObj->position['y'] ?? null)) : null;
-
-                $foundKey = findByPosition($positionIndex, $posX, $posY);
-                // Most harvests identify the persisted object by position,
-                // but FeatureBuilding transactions also carry the stable
-                // object ID.  Some habitat snapshots omit or normalize their
-                // position before this request is processed; falling back to
-                // the ID keeps the authoritative harvest and its quest credit
-                // tied to the same stored building.
-                if ($foundKey === null && isset($clientObj->id) && is_numeric($clientObj->id)) {
-                    $clientObjectId = (int) $clientObj->id;
-                    foreach ($world['objectsArray'] ?? [] as $key => $worldObject) {
-                        if ((int) ($worldObject->id ?? 0) === $clientObjectId) {
-                            $foundKey = $key;
-                            Logger::debug('WorldService', sprintf(
-                                'Harvest resolved by object ID: uid=%s id=%d',
-                                $uid,
-                                $clientObjectId
-                            ));
+                $objectId = $playerObj->resolveFlashObjectId($clientObj, $currentWorldType);
+                $serverObj = null;
+                if ($objectId !== null) {
+                    foreach ($world['objectsArray'] ?? [] as $worldObject) {
+                        if ((int) ($worldObject->id ?? 0) === $objectId) {
+                            $serverObj = $worldObject;
                             break;
                         }
                     }
                 }
-                $serverItemName = null;
+                $serverItemName = $serverObj->itemName ?? null;
 
-                if ($foundKey !== null && isset($world["objectsArray"][$foundKey])) {
-                    $serverObj = $world["objectsArray"][$foundKey];
-                    $serverItemName = $serverObj->itemName ?? null;
+                if ($serverObj !== null) {
                     $clientItemName = $clientObj->itemName ?? null;
 
                     if ($clientItemName !== null && $serverItemName !== null && $clientItemName !== $serverItemName) {
-                        Logger::warning('WorldService', "Sell mismatch: uid=$uid, pos=($posX,$posY), client=$clientItemName, server=$serverItemName");
+                        Logger::warning('WorldService', "Sell mismatch: uid=$uid, id=$objectId, client=$clientItemName, server=$serverItemName");
                     }
                 }
 
@@ -1537,6 +1771,15 @@ class WorldService
                         "difficulty" => $levelUp['newLevel'],
                         "link" => ""
                     ]];
+                }
+
+                // The Flash client updates its in-memory market tooltip from
+                // absolute goalCounters.  Level-up goals alone are not
+                // enough: ordinary harvests must refresh 0/120-style
+                // mastery progress without requiring a full reload.
+                if (is_array($transactionResult)
+                    && !empty($transactionResult['goalCounters'])) {
+                    $data['data']['goalCounters'] = $transactionResult['goalCounters'];
                 }
 
                 // Harvest rewards are written to the server Giftbox by the
@@ -2771,6 +3014,10 @@ class WorldService
             "world" => $travelWorld
         );
 
+        // Keep the legacy account preference for non-AMF callers, but bind
+        // this AMF request to the selected world before any later request in
+        // the same batch can perform a write.
+        \App\Support\AmfWorldContext::set($uid, $travelWorld["type"]);
         set_meta($uid, 'currentWorldType', $travelWorld["type"]);
 
         // Winter Fable's original quest definitions are present in the
@@ -2786,6 +3033,9 @@ class WorldService
     public static function loadNeighborWorld($playerObj, $request){
         $neighborUid = $request->params[0];
         $neighborWorldType = get_meta($neighborUid, "currentWorldType") ?: "farm";
+        if (!in_array($neighborWorldType, getUnlockedWorlds($neighborUid), true)) {
+            $neighborWorldType = 'farm';
+        }
         // A neighbor may currently be in a themed farm.  Load that same
         // world explicitly instead of falling back to the legacy farm type.
         $travelWorld = getWorldByType($neighborUid, $neighborWorldType);

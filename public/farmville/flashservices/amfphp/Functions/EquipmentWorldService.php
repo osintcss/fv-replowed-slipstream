@@ -9,6 +9,7 @@ require_once AMFPHP_ROOTPATH . "Helpers/quest_progress.php";
 require_once AMFPHP_ROOTPATH . "Helpers/crafting_helper.php";
 
 use App\Support\WorldPersistence;
+use App\Helpers\ObjectHelper;
 use App\Models\Item;
 use App\Models\WorldActionReceipt;
 use App\Models\WorldObject;
@@ -364,6 +365,18 @@ class EquipmentWorldService
         $worldId = $world['worldId'] ?? getWorldId($uid, $currentWorldType);
 
         $positionIndex = buildPositionIndex($world["objectsArray"]);
+        $objectIdIndex = [];
+        $positionCounts = [];
+        foreach ($world["objectsArray"] as $objectKey => $object) {
+            if (isset($object->id)) {
+                $objectIdIndex[(string) $object->id] = $objectKey;
+            }
+            [$objectX, $objectY] = ObjectHelper::getPosition($object);
+            if ($objectX !== null && $objectY !== null) {
+                $positionKey = $objectX . ',' . $objectY;
+                $positionCounts[$positionKey] = ($positionCounts[$positionKey] ?? 0) + 1;
+            }
+        }
 
         $usedIds = [];
         if ($action === ACTION_PLOW) {
@@ -539,11 +552,38 @@ class EquipmentWorldService
                 $posX = $plotData->position->x ?? ($plotData->position['x'] ?? null);
                 $posY = $plotData->position->y ?? ($plotData->position['y'] ?? null);
 
-                $foundKey = findByPosition($positionIndex, $posX, $posY);
+                // Flash identifies each object by ID, including when old
+                // plots overlap. Never redirect an explicit but stale ID to
+                // a different crop merely because it shares the coordinates.
+                $foundKey = null;
+                if (isset($plotData->id)) {
+                    $objectId = filter_var($plotData->id, FILTER_VALIDATE_INT, [
+                        // Old saves can contain IDs in Flash's temporary
+                        // range. An exact saved ID plus position is still an
+                        // authoritative target; the threshold applies when
+                        // allocating new IDs, not when finding existing rows.
+                        'options' => ['min_range' => 1],
+                    ]);
+                    if ($objectId !== false) {
+                        $foundKey = $objectIdIndex[(string) $objectId] ?? null;
+                    }
+                    if ($foundKey !== null) {
+                        [$objectX, $objectY] = ObjectHelper::getPosition($world["objectsArray"][$foundKey]);
+                        if ($posX === null || $posY === null || $objectX != $posX || $objectY != $posY) {
+                            $foundKey = null;
+                        }
+                    }
+                } elseif (($positionCounts[$posX . ',' . $posY] ?? 0) === 1) {
+                    // Retain compatibility with position-only clients when
+                    // there is exactly one authoritative target.
+                    $foundKey = findByPosition($positionIndex, $posX, $posY);
+                }
 
                 if ($foundKey !== null) {
                     $foundPlot = $world["objectsArray"][$foundKey];
                     $className = $foundPlot->className ?? 'Plot';
+                    $sourceState = $foundPlot->state ?? null;
+                    $sourceItemName = $foundPlot->itemName ?? null;
                     $wasModified = false;
 
                     switch ($action) {
@@ -603,6 +643,13 @@ class EquipmentWorldService
                                 $combineHarvestResults[] = null;
                                 $combinePlowResults[] = null;
                                 $combinePlaceResults[] = null;
+                                $skippedPositions[] = [
+                                    'x' => $posX,
+                                    'y' => $posY,
+                                    'object_id' => $foundPlot->id,
+                                    'reason' => 'crop_not_mature',
+                                    'itemName' => $sourceItemName,
+                                ];
                                 break;
                             }
 
@@ -644,7 +691,9 @@ class EquipmentWorldService
                         $acceptedPositions[] = [
                             'x' => $posX,
                             'y' => $posY,
-                            'fromState' => $foundPlot->state ?? null,
+                            'object_id' => $foundPlot->id,
+                            'fromState' => $sourceState,
+                            'fromItemName' => $sourceItemName,
                         ];
                         $results[] = array(
                             "id" => $foundPlot->id,
@@ -663,6 +712,12 @@ class EquipmentWorldService
                         ];
                     }
                 } else {
+                    $skippedPositions[] = [
+                        'x' => $posX,
+                        'y' => $posY,
+                        'object_id' => $plotData->id ?? null,
+                        'reason' => 'no_matching_world_object',
+                    ];
                     if ($action === ACTION_COMBINE) {
                         $combineHarvestResults[] = null;
                         $combinePlowResults[] = null;
@@ -760,6 +815,9 @@ class EquipmentWorldService
                 count($skippedPositions),
             ),
             [
+                'world_type' => $currentWorldType,
+                'itemName' => $itemName,
+                'persisted' => $worldPersisted,
                 'acceptedPositions' => $acceptedPositions,
                 'skippedPositions' => $skippedPositions,
             ],
@@ -836,6 +894,8 @@ class EquipmentWorldService
         $plotActionXpDelta = 0;
         $resourceUpdateSucceeded = false;
         $masteryItemCounts = [];
+        $masteryItemCodes = [];
+        $masteryGoalCounters = [];
 
         try {
             if ($plowCount > 0) {
@@ -886,7 +946,14 @@ class EquipmentWorldService
                 $itemData = getItemByName($masteryItemName, "db");
                 if ($itemData) {
                     processMastery($uid, $itemData, $count);
+                    if (!empty($itemData['code'])) {
+                        $masteryItemCodes[] = (string) $itemData['code'];
+                    }
                 }
+            }
+
+            if (in_array($action, [ACTION_HARVEST, ACTION_COMBINE], true)) {
+                $masteryGoalCounters = buildMasteryGoalCounters($uid, $masteryItemCodes);
             }
         } catch (\Throwable $e) {
             Logger::error('EquipmentWorldService', 'Resource update failed: ' . $e->getMessage());
@@ -896,6 +963,24 @@ class EquipmentWorldService
             $worldScore = awardPlotActionWorldScore($uid, $currentWorldType, $plotActionXpDelta);
             if ($worldScore !== null) {
                 Logger::debug('EquipmentWorldService', "Awarded Emerald Valley score: uid=$uid delta=$plotActionXpDelta score=$worldScore");
+            }
+        }
+
+        if (!empty($masteryGoalCounters)) {
+            if ($action === ACTION_COMBINE) {
+                foreach ($combineHarvestResults as &$harvestResult) {
+                    if (is_array($harvestResult)) {
+                        $harvestResult['goalCounters'] = $masteryGoalCounters;
+                    }
+                }
+                unset($harvestResult);
+            } elseif ($action === ACTION_HARVEST) {
+                foreach ($results as &$harvestResult) {
+                    if (is_array($harvestResult)) {
+                        $harvestResult['goalCounters'] = $masteryGoalCounters;
+                    }
+                }
+                unset($harvestResult);
             }
         }
 

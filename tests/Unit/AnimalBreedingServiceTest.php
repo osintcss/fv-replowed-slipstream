@@ -28,6 +28,69 @@ it('uses each habitat XML timing table by love-potion count', function (): void 
         ->and(breedingPrivate('breedingDurationSeconds')->invoke(null, $config, 5))->toBe(0);
 });
 
+it('loads Turtle Pen as an asexual fixed-outcome habitat', function (): void {
+    $config = breedingPrivate('breedingConfig')->invoke(null, 'turtlepen_finished');
+
+    expect(breedingPrivate('isBreedingHabitat')->invoke(null, 'turtlepen_finished'))->toBeTrue()
+        ->and($config['asexual'])->toBeTrue()
+        ->and($config['fixedOutcome'])->toBeTrue()
+        ->and($config['defaultBreedItem'])->toBe('turtle_baby')
+        ->and($config['breedTimes'])->toBe([5, 4, 3, 2, 1, 0])
+        ->and(breedingPrivate('breedingDurationSeconds')->invoke(null, $config, 5))->toBe(0);
+});
+
+it('accepts two real same-gender turtles but keeps sheep gender validation', function (): void {
+    $first = [
+        'G' => 'M',
+        'B' => ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => ['T' => ['a'], 'H' => ['20', '20'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+    ];
+    $second = $first;
+    $second['B']['H'] = ['30', '30'];
+    $firstHash = '03g:'.breedingPrivate('mutableStateHash')->invoke(null, $first);
+    $secondHash = '03i:'.breedingPrivate('mutableStateHash')->invoke(null, $second);
+    $components = (object) ['storageMetadata' => (object) [
+        $firstHash => [json_encode($first)],
+        $secondHash => [json_encode($second)],
+    ]];
+
+    expect(breedingPrivate('validatedParents')->invoke(null, [$firstHash, $secondHash], $components, true))
+        ->toBe([$first, $second])
+        ->and(breedingPrivate('validatedParents')->invoke(null, [$firstHash, $secondHash], $components))
+        ->toBeNull();
+
+    $contents = [(object) ['itemCode' => '03g', 'numItem' => 2]];
+    $pair = [(object) ['hash' => $firstHash], (object) ['hash' => $firstHash]];
+    expect(breedingPrivate('validatedBreedHashes')->invoke(null, $contents, $pair, $components, true))
+        ->toBeNull();
+    $components->storageMetadata->{$firstHash}[] = json_encode($first);
+    expect(breedingPrivate('validatedBreedHashes')->invoke(null, $contents, $pair, $components, true))
+        ->toBe([$firstHash, $firstHash]);
+});
+
+it('creates a turtle baby using only combinations of its parents traits', function (): void {
+    $config = breedingPrivate('breedingConfig')->invoke(null, 'turtlepen_finished');
+    $first = [
+        'G' => 'M',
+        'B' => ['H' => ['10', '10'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+        'P' => ['T' => ['a'], 'H' => ['20', '20'], 'S' => ['8', '8'], 'V' => ['8', '8']],
+    ];
+    $second = [
+        'G' => 'M',
+        'B' => ['H' => ['30', '30'], 'S' => ['9', '9'], 'V' => ['9', '9']],
+        'P' => ['T' => ['b'], 'H' => ['40', '40'], 'S' => ['9', '9'], 'V' => ['9', '9']],
+    ];
+    $session = (object) ['parentDna' => [$first, $second], 'patternGuarantee' => false];
+    $child = breedingPrivate('animalOffspring')->invoke(null, '12345', new stdClass(), $session, new stdClass(), $config);
+    $dna = json_decode($child['mutableState'], true);
+
+    expect($child['itemName'])->toBe('turtle_baby')
+        ->and($dna['U'])->toBe('12345')
+        ->and($dna['B'])->toBeIn([$first['B'], $second['B']])
+        ->and($dna['P']['H'])->toBeIn([$first['P']['H'], $second['P']['H']])
+        ->and($dna['P']['T'][0])->toBeIn(['a', 'b']);
+});
+
 it('rejects unsupported potion counts and applies their configured success bonus', function (): void {
     $config = breedingPrivate('breedingConfig')->invoke(null, 'xuk_sheep_pen_finished');
 

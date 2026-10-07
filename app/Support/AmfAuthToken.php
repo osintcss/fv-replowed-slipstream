@@ -13,7 +13,11 @@ final class AmfAuthToken
 
     private const MAX_TOKEN_LENGTH = 2048;
 
-    public static function issue(string $uid, ?int $issuedAt = null): string
+    public static function issue(
+        string $uid,
+        ?int $issuedAt = null,
+        ?string $worldType = null,
+    ): string
     {
         self::assertUid($uid);
 
@@ -26,6 +30,11 @@ final class AmfAuthToken
             'jti' => bin2hex(random_bytes(16)),
         ];
 
+        if ($worldType !== null) {
+            self::assertWorldType($worldType);
+            $payload['world_type'] = $worldType;
+        }
+
         $encodedPayload = self::base64UrlEncode(json_encode($payload, JSON_THROW_ON_ERROR));
         $signature = hash_hmac('sha256', $encodedPayload, self::key(), true);
 
@@ -33,6 +42,18 @@ final class AmfAuthToken
     }
 
     public static function verify(string $token, ?int $now = null): string
+    {
+        return self::verifyClaims($token, $now)['uid'];
+    }
+
+    /**
+     * Verify a token and return its claims, including the optional world
+     * context used to keep simultaneous game windows isolated.
+     *
+     * Tokens issued before world context support remain valid. They are
+     * upgraded to a bound token in the AMF response after the first batch.
+     */
+    public static function verifyClaims(string $token, ?int $now = null): array
     {
         $now ??= time();
 
@@ -71,6 +92,14 @@ final class AmfAuthToken
 
         self::assertUid($payload['uid']);
 
+        if (array_key_exists('world_type', $payload)) {
+            if (! is_string($payload['world_type'])) {
+                self::reject();
+            }
+
+            self::assertWorldType($payload['world_type']);
+        }
+
         if (! preg_match('/^[a-f0-9]{32}$/D', $payload['jti'])
             || $payload['iat'] > $now + self::CLOCK_SKEW_SECONDS
             || $payload['exp'] <= $now
@@ -79,18 +108,39 @@ final class AmfAuthToken
             self::reject();
         }
 
-        return $payload['uid'];
+        return $payload;
     }
 
     public static function verifyForClaimedUid(string $token, string $claimedUid, ?int $now = null): string
     {
-        $authenticatedUid = self::verify($token, $now);
+        return self::verifyClaimsForClaimedUid($token, $claimedUid, $now)['uid'];
+    }
+
+    public static function verifyClaimsForClaimedUid(string $token, string $claimedUid, ?int $now = null): array
+    {
+        $claims = self::verifyClaims($token, $now);
+        $authenticatedUid = $claims['uid'];
 
         if ($claimedUid === '' || ! hash_equals($authenticatedUid, $claimedUid)) {
             self::reject();
         }
 
-        return $authenticatedUid;
+        return $claims;
+    }
+
+    /**
+     * Re-issue a token with a new signed world context without extending the
+     * original ten-hour lifetime.
+     */
+    public static function withWorldType(
+        string $token,
+        string $claimedUid,
+        string $worldType,
+        ?int $now = null,
+    ): string {
+        $claims = self::verifyClaimsForClaimedUid($token, $claimedUid, $now);
+
+        return self::issue($claimedUid, $claims['iat'], $worldType);
     }
 
     private static function key(): string
@@ -124,6 +174,13 @@ final class AmfAuthToken
     private static function assertUid(string $uid): void
     {
         if (! preg_match('/^[0-9]{1,32}$/D', $uid)) {
+            self::reject();
+        }
+    }
+
+    private static function assertWorldType(string $worldType): void
+    {
+        if ($worldType === '' || strlen($worldType) > 64 || ! preg_match('/^[a-z][a-z0-9_]*$/D', $worldType)) {
             self::reject();
         }
     }

@@ -246,7 +246,7 @@ class Player {
             return $objectId;
         }
 
-        $worldType = $worldType ?: (get_meta($this->uid, 'currentWorldType') ?: 'farm');
+        $worldType = $worldType ?: getCurrentWorldType($this->uid);
         $positionX = isset($object->position) ? ($object->position->x ?? null) : null;
         $positionY = isset($object->position) ? ($object->position->y ?? null) : null;
 
@@ -425,6 +425,63 @@ class Player {
         return substr(md5($state), 0, 8);
     }
 
+    /** Decode the DNA envelope sent by Flash when a mutable animal enters a pen. */
+    private static function mutableAnimalDnaFromStoreMetadata($metadata): ?object {
+        if (is_object($metadata) && isset($metadata->type) && is_string($metadata->type)) {
+            $metadata = $metadata->type;
+        } elseif (is_array($metadata) && isset($metadata['type']) && is_string($metadata['type'])) {
+            $metadata = $metadata['type'];
+        }
+
+        if (is_string($metadata)) {
+            $metadata = json_decode($metadata, true);
+        } elseif (is_object($metadata)) {
+            $metadata = json_decode(json_encode($metadata), true);
+        }
+
+        if (!is_array($metadata) || !in_array($metadata['G'] ?? null, ['M', 'F'], true)) {
+            return null;
+        }
+
+        foreach (['B', 'P'] as $trait) {
+            foreach (['H', 'S', 'V'] as $channel) {
+                $values = $metadata[$trait][$channel] ?? null;
+                if (!is_array($values) || !array_key_exists(0, $values) || !array_key_exists(1, $values)) {
+                    return null;
+                }
+            }
+        }
+
+        if (!is_array($metadata['P']['T'] ?? null) || !is_string($metadata['P']['T'][0] ?? null)) {
+            return null;
+        }
+
+        $dna = json_decode(json_encode($metadata));
+        return is_object($dna) ? $dna : null;
+    }
+
+    /** A store request carries DNA for older farm animals whose row predates DNA persistence. */
+    private static function hydrateMissingMutableAnimalDnaFromStoreMetadata(WorldObject $animal, $metadata): void {
+        if ($animal->class_name !== 'MutableAnimal') {
+            return;
+        }
+
+        $components = is_object($animal->components) ? $animal->components : new \stdClass();
+        $mutableState = $components->mutableAnimalState ?? null;
+        $dna = is_object($mutableState) ? ($mutableState->dna ?? null) : null;
+        if (is_object($dna) || is_array($dna)) {
+            return;
+        }
+
+        $dna = self::mutableAnimalDnaFromStoreMetadata($metadata);
+        if ($dna === null) {
+            return;
+        }
+
+        $components->mutableAnimalState = (object) ['dna' => $dna];
+        $animal->components = $components;
+    }
+
     /** A finished pig pen may contain only adult, DNA-backed breeding pigs. */
     private static function isValidPigpenBreedingAnimal(WorldObject $animal): bool {
         // The original Pig Pen treats the ordinary market Pig as a sow. It
@@ -538,7 +595,52 @@ class Player {
             $canonicalName = (string) $animal->item_name;
         }
         $item = getItemByName($canonicalName, 'db');
-        return is_array($item) && ($item['code'] ?? null) === $itemCode;
+        if (is_array($item) && ($item['code'] ?? null) === $itemCode) {
+            return true;
+        }
+
+        // A sow purchased directly into the pen keeps its variant code so
+        // FeaturedItems and storageMetadata retain the same identity that
+        // Flash just selected. Farm objects still canonicalize to H!/I!.
+        $variant = getItemByName((string) $animal->item_name, 'db');
+        return is_array($variant)
+            && ($variant['className'] ?? null) === 'MutableAnimal'
+            && ($variant['code'] ?? null) === $itemCode;
+    }
+
+    /** Build a transient animal for a verified direct-to-Pig-Pen store action. */
+    private function mutablePigpenAnimalFromStoreMetadata(
+        string $itemName,
+        string $itemCode,
+        string $storedClassName,
+        $metadata,
+    ): ?WorldObject {
+        if ($storedClassName !== 'MutableAnimal'
+            || !preg_match('/^pigpen_(male|female)(?:_|$)/', $itemName, $match)) {
+            return null;
+        }
+
+        $item = getItemByName($itemName, 'db');
+        if (!is_array($item)
+            || ($item['className'] ?? null) !== 'MutableAnimal'
+            || ($item['code'] ?? null) !== $itemCode) {
+            return null;
+        }
+
+        $dna = self::mutableAnimalDnaFromStoreMetadata($metadata);
+        $expectedGender = $match[1] === 'male' ? 'M' : 'F';
+        if ($dna === null || ($dna->G ?? null) !== $expectedGender) {
+            return null;
+        }
+
+        $animal = new WorldObject();
+        $animal->class_name = 'MutableAnimal';
+        $animal->item_name = $itemName;
+        $animal->components = (object) [
+            'mutableAnimalState' => (object) ['dna' => $dna],
+        ];
+
+        return $animal;
     }
 
     /**
@@ -634,6 +736,33 @@ class Player {
         return $buyXp <= 0 || UserResources::addXp($this->uid, $buyXp * $quantity);
     }
 
+    /** Charge and award catalog XP for a sow bought directly into the Pig Pen. */
+    private function chargeDirectPigpenPurchase(string $itemName, string $itemCode, int $quantity): bool
+    {
+        $item = getItemByName($itemName, 'db');
+        if (!is_array($item)
+            || ($item['className'] ?? null) !== 'MutableAnimal'
+            || ($item['code'] ?? null) !== $itemCode
+            || (string) ($item['market'] ?? '') !== 'cash'
+            || !self::catalogBoolean($item['buyable'] ?? false)
+            || $quantity !== 1) {
+            return false;
+        }
+
+        $cashCost = (int) ($item['cash'] ?? 0);
+        if ($cashCost <= 0 || !UserResources::removeCash($this->uid, $cashCost)) {
+            return false;
+        }
+
+        $buyXp = (int) floor((int) ($item['cost'] ?? 0) * 0.01);
+        $explicitXp = $item['plantXp'] ?? $item['buyXp'] ?? null;
+        if ($explicitXp !== null && $explicitXp !== '') {
+            $buyXp = (int) $explicitXp;
+        }
+
+        return $buyXp <= 0 || UserResources::addXp($this->uid, $buyXp);
+    }
+
     public function getData($requ) {
         $userMeta = UserMeta::where('uid', $this->uid)->first();
 
@@ -643,7 +772,7 @@ class Player {
 
         $row = $userMeta->toArray();
 
-        $currentWorldType = get_meta($this->uid, "currentWorldType") ?: "farm";
+        $currentWorldType = getCurrentWorldType($this->uid);
         $currentWorld = getWorldByType($this->uid, $currentWorldType);
         $masteryClientData = getMasteryForClient($this->uid);
         $savedOptionsRaw = get_meta($this->uid, 'player_options');
@@ -851,7 +980,9 @@ class Player {
                     'neighbors' => $this->getCurrentNeighborUids(),
                     'lastSocialPlumbingActionTime' => 0,
                     'adoptedAnimals' => 0,
-                    'superCropsStatus' => null,
+                    // The Flash client calls indexOf() while populating market
+                    // locks, so an absent super-crop list must be an array.
+                    'superCropsStatus' => array(),
                     'lotteryTickets' => 0,
                     'lonelyAnimalCode' => "2dvd",
                     'motdSeenFlags' => 0,
@@ -960,7 +1091,7 @@ class Player {
 
     public function setWorld($newObj, $action, $newSizeX = null, $newSizeY = null){
         $this->lastPlacementWasIdempotentRetry = false;
-        $currentWorldType = get_meta($this->uid, "currentWorldType") ?: "farm";
+        $currentWorldType = getCurrentWorldType($this->uid);
 
         if (empty($this->worldData)){
             $currWorld = getWorldByType($this->uid, $currentWorldType);
@@ -979,6 +1110,7 @@ class Player {
         $usedIds = [];
         $operationType = null;
         $newId = 0;
+        $deleteObjectId = null;
 
         $newPosX = isset($newObj->position) ? ($newObj->position->x ?? null) : null;
         $newPosY = isset($newObj->position) ? ($newObj->position->y ?? null) : null;
@@ -1135,6 +1267,29 @@ class Player {
             $operationType = 'UPDATE';
             $existingObj = $currWorld["objectsArray"][$exists];
 
+            if (($existingObj->className ?? null) === 'Pet') {
+                // Generic Flash snapshots omit Pet.loadObject's extra fields.
+                // Keep the authoritative pet state on every move/update; only
+                // the explicit move preference is allowed to change follow.
+                if (($newObj->className ?? null) !== 'Pet'
+                    || ($newObj->itemName ?? null) !== ($existingObj->itemName ?? null)) {
+                    return false;
+                }
+                $components = $existingObj->components ?? new \stdClass();
+                $components = is_object($components) ? clone $components : new \stdClass();
+                $petState = \App\Support\PetState::forFlash(
+                    $components,
+                    $existingObj->itemName ?? null,
+                    (int) ($existingObj->plantTime ?? 0),
+                );
+                if ($action === ACTION_MOVE && property_exists($newObj, 'petFollowPreference')) {
+                    $petState->allowFollow = (bool) $newObj->petFollowPreference;
+                }
+                $components->petState = $petState;
+                $newObj->components = $components;
+                $newObj->plantTime = $existingObj->plantTime ?? $newObj->plantTime ?? 0;
+            }
+
             // Construction sites arrive back from Flash as an ordinary world
             // update when their final part is supplied. Do not trust that
             // optimistic terminal object: verify the saved parts and perform
@@ -1239,6 +1394,7 @@ class Player {
 
         }else if (in_array($action, $delActions)){
             $operationType = 'DELETE';
+            $deleteObjectId = (int) ($currWorld["objectsArray"][$exists]->id ?? 0);
             unset($currWorld["objectsArray"][$exists]);
             $currWorld["objectsArray"] = array_values($currWorld["objectsArray"]);
 
@@ -1315,11 +1471,13 @@ class Player {
         $dbResult = true;
         switch ($operationType) {
             case 'DELETE':
-                $dbResult = WorldPersistence::deleteAtPosition(
+                // The object above was matched by its stable ID. Moving pets
+                // can report a newer client position than the one persisted;
+                // deleting at that position can miss (or hit another object).
+                $dbResult = WorldPersistence::deleteObject(
                     $this->uid,
                     $currentWorldType,
-                    (int) $newPosX,
-                    (int) $newPosY,
+                    $deleteObjectId,
                 );
                 break;
             case 'UPDATE':
@@ -1660,7 +1818,7 @@ class Player {
     }
 
     public function storeItem($buildingObj, $storeParams, bool $isGiftboxStore = false, ?string $idempotencyKey = null){
-        $currentWorldType = get_meta($this->uid, "currentWorldType") ?: "farm";
+        $currentWorldType = getCurrentWorldType($this->uid);
 
         if (empty($this->worldData)){
             $currWorld = getWorldByType($this->uid, $currentWorldType);
@@ -1741,7 +1899,12 @@ class Player {
                 && $resourceId <= 0
                 && $sourceBuildingId <= 0
                 && !$isGiftboxStore;
-            if (($isGiftboxStore || $directGaragePurchase) && $idempotencyKey !== null) {
+            $isDirectPigpenStorage = $storedBuilding->class_name === 'FeatureBuilding'
+                && $storedBuilding->item_name === 'pigpenv2_finished'
+                && $resourceId <= 0
+                && $sourceBuildingId <= 0;
+            $directPigpenPurchase = $isDirectPigpenStorage && !$isGiftboxStore;
+            if (($isGiftboxStore || $directGaragePurchase || $directPigpenPurchase) && $idempotencyKey !== null) {
                 $receipt = WorldActionReceipt::query()
                     ->where('uid', (string) $this->uid)
                     ->where('action', 'store')
@@ -1776,6 +1939,10 @@ class Player {
 
                 if ($resource === null) {
                     throw new \RuntimeException("Stored resource {$resourceId} no longer exists");
+                }
+
+                if (in_array($storedBuilding->item_name, ['pigpenv2_finished', 'xuk_sheep_pen_finished'], true)) {
+                    self::hydrateMissingMutableAnimalDnaFromStoreMetadata($resource, $storedMetadata);
                 }
 
                 $canonicalItemName = self::canonicalMutableAnimalItemName($resource);
@@ -1860,6 +2027,18 @@ class Player {
                 $resource = new WorldObject();
                 $resource->class_name = 'Animal';
                 $resource->item_name = 'pig';
+            } elseif ($isDirectPigpenStorage) {
+                $resource = is_string($storedItemName) && is_string($itemCode)
+                    ? self::mutablePigpenAnimalFromStoreMetadata(
+                        $storedItemName,
+                        $itemCode,
+                        $storedClassName,
+                        $storedMetadata,
+                    )
+                    : null;
+                if ($resource === null) {
+                    throw new \RuntimeException('invalid_feature_storage_animal');
+                }
             }
 
             if ($storedBuilding->class_name === 'GarageBuilding') {
@@ -1892,6 +2071,15 @@ class Player {
                 throw new \RuntimeException('invalid_feature_storage_animal');
             }
 
+            if ($directPigpenPurchase
+                && !$this->chargeDirectPigpenPurchase(
+                    (string) $storedItemName,
+                    (string) $itemCode,
+                    max(1, $numToStore),
+                )) {
+                throw new \RuntimeException('pigpen_purchase_failed');
+            }
+
             if ($isGiftboxStore) {
                 $catalogItem = $storedItemName !== null
                     ? getItemByName((string) $storedItemName, 'db')
@@ -1911,10 +2099,9 @@ class Player {
             }
             $isBasePigpenSow = $storedBuilding->item_name === 'pigpenv2_finished'
                 && $resource !== null && self::isBasePigpenSow($resource);
-            // The breeding-pen validator above has canonicalized mutable
-            // animals to the catalog code implied by DNA. Ordinary feature
-            // storage still preserves the client code for its legacy removal
-            // contract.
+            // Farm animals canonicalize to the catalog code implied by DNA.
+            // Direct pen purchases keep their variant code so Flash's storage
+            // contents and featured-item hashes retain that exact identity.
             $storageItemCode = (string) $itemCode;
 
             $contents = is_array($storedBuilding->contents) ? $storedBuilding->contents : [];
@@ -2111,7 +2298,7 @@ class Player {
                 ],
             ];
 
-            if (($isGiftboxStore || $directGaragePurchase) && $idempotencyKey !== null) {
+            if (($isGiftboxStore || $directGaragePurchase || $directPigpenPurchase) && $idempotencyKey !== null) {
                 $receiptResponse = [
                     'success' => true,
                     'id' => $resourceId,
@@ -2231,7 +2418,7 @@ class Player {
             return false;
         }
 
-        $currentWorldType = get_meta($this->uid, 'currentWorldType') ?: 'farm';
+        $currentWorldType = getCurrentWorldType($this->uid);
         $currWorld = empty($this->worldData)
             ? getWorldByType($this->uid, $currentWorldType)
             : $this->worldData;
@@ -2305,7 +2492,7 @@ class Player {
      * @return array{metadata: string|null}|false
      */
     public function withdrawMutableAnimal($buildingId, $itemCode){
-        $currentWorldType = get_meta($this->uid, 'currentWorldType') ?: 'farm';
+        $currentWorldType = getCurrentWorldType($this->uid);
         return WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $itemCode) {
             $building = WorldObject::query()->where('world_id', $worldId)
                 ->where('object_id', (int) $buildingId)->where('deleted', false)
@@ -2362,7 +2549,7 @@ class Player {
     /** Restore a mutable-animal withdrawal, retaining its exact DNA hash key. */
     public function restoreMutableAnimal($buildingId, $itemCode, $metadata): bool {
         if (!is_string($metadata) || $metadata === '') return false;
-        $currentWorldType = get_meta($this->uid, 'currentWorldType') ?: 'farm';
+        $currentWorldType = getCurrentWorldType($this->uid);
         $restored = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $itemCode, $metadata) {
             $building = WorldObject::query()->where('world_id', $worldId)
                 ->where('object_id', (int) $buildingId)->where('deleted', false)
@@ -2405,7 +2592,7 @@ class Player {
      * @return array{metadata: string|null}|false
      */
     public function withdrawMutableAnimalCrate($buildingId, $itemCode){
-        $currentWorldType = get_meta($this->uid, 'currentWorldType') ?: 'farm';
+        $currentWorldType = getCurrentWorldType($this->uid);
         $result = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $itemCode) {
             $building = WorldObject::query()
                 ->where('world_id', $worldId)
@@ -2483,7 +2670,7 @@ class Player {
             return false;
         }
 
-        $currentWorldType = get_meta($this->uid, 'currentWorldType') ?: 'farm';
+        $currentWorldType = getCurrentWorldType($this->uid);
         $restored = WorldPersistence::transaction($this->uid, $currentWorldType, function (int $worldId) use ($buildingId, $itemCode, $metadata) {
             $building = WorldObject::query()
                 ->where('world_id', $worldId)
@@ -2539,7 +2726,7 @@ class Player {
     }
 
     private function adjustStoredItemCount($buildingId, $itemCode, $delta){
-        $currentWorldType = get_meta($this->uid, 'currentWorldType') ?: 'farm';
+        $currentWorldType = getCurrentWorldType($this->uid);
         $currWorld = empty($this->worldData)
             ? getWorldByType($this->uid, $currentWorldType)
             : $this->worldData;
@@ -2621,7 +2808,7 @@ class Player {
     }
 
     public function expandWorld($newSizeX, $newSizeY){
-        $currentWorldType = get_meta($this->uid, "currentWorldType") ?: "farm";
+        $currentWorldType = getCurrentWorldType($this->uid);
 
         if (empty($this->worldData)){
             $currWorld = getWorldByType($this->uid, $currentWorldType);
@@ -2629,8 +2816,25 @@ class Player {
             $currWorld = $this->worldData;
         }
 
+        $newSizeX = (int) $newSizeX;
+        $newSizeY = (int) $newSizeY;
         $currWorld["sizeX"] = $newSizeX;
         $currWorld["sizeY"] = $newSizeY;
+
+        // Terrain is derived from the world dimensions and is returned in
+        // the expansion response.  Reusing the old world snapshot here
+        // leaves the previous terrain array attached to the new size (for
+        // example, 1,089 cells from 66x66 alongside a 74x74 size that needs
+        // 1,369 cells).  FarmGameWorld validates that contract immediately
+        // and rejects the transaction callback when the lengths differ.
+        $terrain = getApproximateWorldTerrain($currentWorldType, $newSizeX, $newSizeY);
+        if (!empty($terrain)) {
+            $currWorld['terrain'] = $terrain;
+        } else {
+            // Ordinary Farm worlds use YIMF terrain and must not carry a
+            // stale invisible-terrain array forward after an expansion.
+            unset($currWorld['terrain']);
+        }
 
         $this->worldData = $currWorld;
 

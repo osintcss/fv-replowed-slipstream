@@ -115,7 +115,22 @@ class FlashService {
         }
 
         $token = (string) self::readValue($userData, 'token', '');
-        $uid = \App\Support\AmfAuthToken::verifyForClaimedUid($token, $claimedUid);
+        $tokenClaims = \App\Support\AmfAuthToken::verifyClaimsForClaimedUid($token, $claimedUid);
+        $uid = $tokenClaims['uid'];
+
+        // The old implementation read currentWorldType from one account-wide
+        // metadata row. That value is inherently racy when two game windows
+        // travel to different farms. Prefer the signed token context and bind
+        // the entire AMF batch to it before constructing Player/Market objects.
+        \App\Support\AmfWorldContext::begin($uid, $tokenClaims['world_type'] ?? null);
+        $boundWorldType = getCurrentWorldType($uid);
+        \App\Support\AmfWorldContext::set($uid, $boundWorldType);
+
+        // Existing Canada sessions must reload into Home before sending any
+        // more actions. Never reinterpret their in-flight writes as Home.
+        if ($boundWorldType === 'canada') {
+            throw new \RuntimeException('Maple Frontier is temporarily unavailable. Reload the game.');
+        }
 
         if (!is_array($reqData)) {
             throw new \UnexpectedValueException('AMF batch requests must be an array.');
@@ -144,6 +159,7 @@ class FlashService {
 
         Logger::trace($uid, 'batch.received', [
             'request_count' => count($reqData),
+            'world_type' => $boundWorldType,
             'requests' => $requestSummaries,
         ]);
 
@@ -262,13 +278,19 @@ class FlashService {
             'request_count' => count($reqData),
             'response_count' => count($data),
             'response_error_count' => $responseErrorCount,
+            'world_type' => \App\Support\AmfWorldContext::current($uid) ?? $boundWorldType,
             'input_sequences' => $inputSequences,
             'response_sequences' => $responseSequences,
             'response_shape_ok' => count($reqData) === count($data) && $inputSequences === $responseSequences,
             'duration_ms' => round((microtime(true) - $batchStart) * 1000, 1),
         ]);
 
-        return array(
+        $responseWorldType = \App\Support\AmfWorldContext::current($uid) ?? $boundWorldType;
+        $responseToken = ($tokenClaims['world_type'] ?? null) === $responseWorldType
+            ? $token
+            : \App\Support\AmfAuthToken::withWorldType($token, $uid, $responseWorldType);
+
+        $response = array(
             "errorType" => 0,
             "errorData" => null,
             "serverTime" => time(),
@@ -277,13 +299,20 @@ class FlashService {
                 "zy_ts" => time(),
                 "zy_session" => "thetestofthetime",
                 // The legacy client replaces all signed parameters with
-                // zySig after every successful batch. Return the same token
-                // so later batches remain authenticated without extending
-                // its original expiration time.
-                "token" => $token
+                // zySig after every successful batch. Return the current
+                // signed world-bound token so later batches remain
+                // authenticated and isolated without extending its original
+                // expiration time.
+                "token" => $responseToken,
             ),
             "data" => $data
         );
+
+        // Do not leave request state behind if this gateway is ever run under
+        // a long-lived PHP worker rather than ordinary PHP-FPM.
+        \App\Support\AmfWorldContext::clear();
+
+        return $response;
 
     }
 }

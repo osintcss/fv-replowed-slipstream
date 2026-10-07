@@ -303,6 +303,25 @@ it('provides a positive Fuel Refill selector limit in InitUser', function (): vo
         ->toBe(20.0);
 });
 
+it('provides an empty super-crop status array in InitUser', function (): void {
+    [$uid] = consumablePersistencePlayer();
+    UserWorld::query()->create([
+        'uid' => $uid,
+        'type' => 'farm',
+        'sizeX' => 12,
+        'sizeY' => 12,
+        'objects' => '[]',
+        'messageManager' => serialize(['messages' => [], 'allowSendEmails' => true]),
+    ]);
+    PlayerMeta::setValue($uid, 'currentWorldType', 'farm');
+
+    $initUser = (new Player($uid))->getData((object) ['sequence' => 1]);
+
+    expect($initUser['superCropsStatus'])
+        ->toBeArray()
+        ->toBeEmpty();
+});
+
 it('persists generic Giftbox consumable use', function (): void {
     [$uid, $player] = consumablePersistencePlayer();
     seedConsumableItem('consume_test', 'ZZ', [

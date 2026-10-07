@@ -275,6 +275,9 @@ class MarketTransactions {
             return [
                 'success' => $success,
                 'masteryLevelUp' => $masteryLevelUp,
+                'goalCounters' => buildMasteryGoalCounters($this->uid, [
+                    (string) ($res['code'] ?? ''),
+                ]),
                 'harvestReward' => $harvestReward
             ];
         }
@@ -387,6 +390,7 @@ class MarketTransactions {
         $totalCoins = 0;
         $itemCounts = [];
         $masteryLevelUps = [];
+        $masteryItemCodes = [];
 
         foreach ($itemNames as $itemName) {
             $res = getItemByName($itemName, "db");
@@ -408,6 +412,9 @@ class MarketTransactions {
         foreach ($itemCounts as $itemName => $count) {
             $itemData = getItemByName($itemName, "db");
             if ($itemData) {
+                if (!empty($itemData['code'])) {
+                    $masteryItemCodes[] = (string) $itemData['code'];
+                }
                 $levelUp = processMastery($this->uid, $itemData, $count);
                 if ($levelUp) {
                     $masteryLevelUps[] = $levelUp;
@@ -415,7 +422,11 @@ class MarketTransactions {
             }
         }
 
-        return ['success' => true, 'masteryLevelUps' => $masteryLevelUps];
+        return [
+            'success' => true,
+            'masteryLevelUps' => $masteryLevelUps,
+            'goalCounters' => buildMasteryGoalCounters($this->uid, $masteryItemCodes),
+        ];
     }
 
     

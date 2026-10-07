@@ -19,6 +19,35 @@ test('an AMF token authenticates its UID for ten hours', function () {
         ->toBe('4097859426');
 });
 
+test('an AMF token can bind a session to a world without changing its UID', function () {
+    $issuedAt = 1_700_000_000;
+    $token = AmfAuthToken::issue('4097859426', $issuedAt, 'winternord');
+
+    expect(AmfAuthToken::verifyClaimsForClaimedUid($token, '4097859426', $issuedAt + 35999))
+        ->toMatchArray([
+            'uid' => '4097859426',
+            'iat' => $issuedAt,
+            'exp' => $issuedAt + 36000,
+            'world_type' => 'winternord',
+        ]);
+});
+
+test('changing an AMF world context preserves the original token lifetime', function () {
+    $issuedAt = 1_700_000_000;
+    $token = AmfAuthToken::issue('4097859426', $issuedAt, 'farm');
+    $updated = AmfAuthToken::withWorldType($token, '4097859426', 'fforest', $issuedAt + 100);
+
+    expect(AmfAuthToken::verifyClaims($updated, $issuedAt + 35999))
+        ->toMatchArray([
+            'uid' => '4097859426',
+            'iat' => $issuedAt,
+            'exp' => $issuedAt + 36000,
+            'world_type' => 'fforest',
+        ]);
+
+    AmfAuthToken::verify($updated, $issuedAt + 36000);
+})->throws(RuntimeException::class, 'Unauthorized AMF request.');
+
 test('an AMF token expires after ten hours', function () {
     $issuedAt = 1_700_000_000;
     $token = AmfAuthToken::issue('4097859426', $issuedAt);

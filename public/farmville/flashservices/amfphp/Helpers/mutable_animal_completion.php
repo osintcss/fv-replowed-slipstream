@@ -30,6 +30,8 @@ final class MutableAnimalCompletion
         $adultName = match ((string) $building->item_name) {
             'sheeppen_lamb' => (($dna->G ?? 'F') === 'M' ? 'sheeppen_ram' : 'sheeppen_ewe'),
             'pigpen_baby' => (($dna->G ?? 'F') === 'M' ? 'pigpen_male' : 'pigpen_female'),
+            // Turtle Pen maps both DNA genders to the same adult item.
+            'turtle_baby' => 'turtle_male',
             default => null,
         };
         if ($adultName === null) {

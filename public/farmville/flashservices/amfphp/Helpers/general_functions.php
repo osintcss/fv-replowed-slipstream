@@ -68,6 +68,11 @@
 
     
     function getCurrentWorldType($uid) {
+        $requestWorldType = \App\Support\AmfWorldContext::current((string) $uid);
+        if ($requestWorldType !== null) {
+            return $requestWorldType;
+        }
+
         return get_meta($uid, "currentWorldType") ?: "farm";
     }
 
@@ -1481,8 +1486,26 @@
             $setRange($y, $x, $x + 1, 'T');
         }
 
-        // Curved terrace/ridge previously traced.
-        $terraceRanges = [
+        /*
+         * ============================================================
+         * SOUTHEAST JADE FALLS CLIFF / TERRACE SYSTEM
+         * ============================================================
+         *
+         * L = ordinary lower-level grass
+         * S = exposed brown/gray cliff face (non-plot transition)
+         * T = elevated green grass above the cliff
+         *
+         * There are two visible cliff steps in this part of Jade Falls.
+         */
+
+        /*
+         * ------------------------------------------------------------
+         * FIRST / LOWER CLIFF FACE
+         * ------------------------------------------------------------
+         *
+         * This follows the left-hand brown ridge.
+         */
+        $lowerCliffRanges = [
              -3 => [20, 20],
              -4 => [20, 21],
              -5 => [20, 21],
@@ -1525,16 +1548,18 @@
             -42 => [6, 15],
         ];
 
-        foreach ($terraceRanges as $y => [$x1, $x2]) {
-            $setRange($y, $x1, $x2, 'T');
+        foreach ($lowerCliffRanges as $y => [$x1, $x2]) {
+            $setRange($y, $x1, $x2, 'S');
         }
 
         /*
-         * ============================================================
-         * EAST / INNER TERRACE RIDGE
-         * ============================================================
+         * ------------------------------------------------------------
+         * SECOND / UPPER CLIFF FACE
+         * ------------------------------------------------------------
+         *
+         * The second brown ridge running roughly parallel to the first.
          */
-        $innerEastTerraceRanges = [
+        $upperCliffRanges = [
             -22 => [19, 21],
             -23 => [19, 21],
             -24 => [19, 21],
@@ -1558,35 +1583,56 @@
             -42 => [12, 14],
         ];
 
-        foreach ($innerEastTerraceRanges as $y => [$x1, $x2]) {
-            $setRange($y, $x1, $x2, 'T');
+        foreach ($upperCliffRanges as $y => [$x1, $x2]) {
+            $setRange($y, $x1, $x2, 'S');
         }
 
         /*
-         * ============================================================
-         * UPPER / OUTER TERRACE RIDGE
-         * ============================================================
+         * ------------------------------------------------------------
+         * ELEVATED GREEN TERRACES
+         * ------------------------------------------------------------
+         *
+         * Any green terrain immediately above a cliff is T. The green
+         * shelf between two cliff faces and the ground above the second
+         * cliff are both elevated terraces.
          */
-        $outerEastTerraceRanges = [
-            -22 => [22, 24],
-            -23 => [22, 24],
-            -24 => [22, 24],
-            -25 => [22, 24],
-            -26 => [22, 24],
-            -27 => [23, 24],
-            -28 => [23, 24],
-            -29 => [23, 24],
-            -30 => [23, 24],
-            -31 => [23, 24],
-            -32 => [23, 24],
-            -33 => [23, 24],
-            -34 => [23, 24],
-            -35 => [23, 24],
-            -36 => [23, 24],
-        ];
+        foreach ($lowerCliffRanges as $y => [$x1, $x2]) {
+            if ($y >= -21) {
+                $setRange($y, $x2 + 1, 24, 'T');
+            }
+        }
 
-        foreach ($outerEastTerraceRanges as $y => [$x1, $x2]) {
-            $setRange($y, $x1, $x2, 'T');
+        for ($y = -22; $y >= -39; $y--) {
+            if (!isset($lowerCliffRanges[$y], $upperCliffRanges[$y])) {
+                continue;
+            }
+
+            [$lowerX1, $lowerX2] = $lowerCliffRanges[$y];
+            [$upperX1, $upperX2] = $upperCliffRanges[$y];
+
+            // Elevated green shelf between the two brown ridges.
+            if ($lowerX2 + 1 <= $upperX1 - 1) {
+                $setRange($y, $lowerX2 + 1, $upperX1 - 1, 'T');
+            }
+
+            // Elevated green ground above the second ridge.
+            if ($upperX2 + 1 <= 24) {
+                $setRange($y, $upperX2 + 1, 24, 'T');
+            }
+        }
+
+        // At the curved bottom, the cliff faces merge into a broad brown end.
+        $setRange(-40, 18, 24, 'T');
+        $setRange(-41, 17, 24, 'T');
+        $setRange(-42, 16, 24, 'T');
+
+        // Re-apply cliff faces last so terrace fill cannot overwrite them.
+        foreach ($lowerCliffRanges as $y => [$x1, $x2]) {
+            $setRange($y, $x1, $x2, 'S');
+        }
+
+        foreach ($upperCliffRanges as $y => [$x1, $x2]) {
+            $setRange($y, $x1, $x2, 'S');
         }
 
         // Lower-right coast.
@@ -1693,13 +1739,188 @@
 
         return $terrain;
     }
+
+    /**
+     * Return the traced Enchanted Glen terrain outside its original base.
+     *
+     * Untraced cells remain land. For the traced east/southeast boundary,
+     * each row has one shoreline cell followed by water through x=24.
+     */
+    function getEnchantedGlenExpansionTerrain(): array {
+        $cells = [];
+
+        $set = static function (int $x, int $y, string $type) use (&$cells): void {
+            $cells["$x,$y"] = $type;
+        };
+
+        $setRange = static function (
+            int $y,
+            int $x1,
+            int $x2,
+            string $type
+        ) use (&$set): void {
+            for ($x = $x1; $x <= $x2; $x++) {
+                $set($x, $y, $type);
+            }
+        };
+
+        $waterStartByY = [
+            -1 => 20,
+            -2 => 19,
+            -3 => 19,
+            -4 => 19,
+            -5 => 19,
+            -6 => 19,
+            -7 => 19,
+            -8 => 19,
+            -9 => 18,
+            -10 => 18,
+            -11 => 18,
+            -12 => 18,
+            -13 => 17,
+            -14 => 17,
+            -15 => 17,
+            -16 => 17,
+            -17 => 17,
+            -18 => 17,
+            -19 => 17,
+            -20 => 17,
+            -21 => 16,
+            -22 => 15,
+            -23 => 15,
+            -24 => 15,
+            -25 => 14,
+            -26 => 14,
+            -27 => 14,
+            -28 => 14,
+            -29 => 15,
+            -30 => 15,
+            -31 => 14,
+            -32 => 13,
+            -33 => 12,
+            -34 => 12,
+            -35 => 12,
+            -36 => 12,
+            -37 => 12,
+            -38 => 12,
+            -39 => 12,
+            -40 => 12,
+            -41 => 12,
+            -42 => 12,
+            -43 => 11,
+            -44 => 11,
+            -45 => 10,
+            -46 => 10,
+            -47 => 10,
+            -48 => 10,
+            -49 => 10,
+            -50 => 10,
+            -51 => 9,
+            -52 => 9,
+            -53 => 8,
+            -54 => 8,
+            -55 => 7,
+            -56 => 7,
+        ];
+
+        foreach ($waterStartByY as $y => $waterStart) {
+            $set($waterStart - 1, $y, 'S');
+            $setRange($y, $waterStart, 24, 'W');
+        }
+
+        return $cells;
+    }
+
+    /**
+     * Return the initial authored Enchanted Glen terrain mask.
+     *
+     * The recovered original Glen scene is a 25x25 base mask. Keep the same
+     * stable upper/right scene anchoring used by Jade Falls as the world
+     * expands; cells outside the recovered scene remain land unless they are
+     * present in the traced expansion overlay above.
+     */
+    function getAuthoredEnchantedGlenTerrain(int $sizeX, int $sizeY): array {
+        $width = intdiv(max(0, $sizeX), 2);
+        $height = intdiv(max(0, $sizeY), 2);
+
+        if ($width === 0 || $height === 0) {
+            return [];
+        }
+
+        $baseRows = [
+            'LLLLLLLLLLLLLLLLLLLSWWWWW', // y = 0
+            'LLLLLLLLLLLLLLLLLLLSWWWWW', // y = 1
+            'LLLLLLLLLLLLLLLLLLLLSWWWW', // y = 2
+            'LLLLLLLLLLLLLLLLLLLLSWWWW', // y = 3
+            'LLLLLLLLLLLLLLLLLLLLLSWWW', // y = 4
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 5
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 6
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 7
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 8
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 9
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 10
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 11
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 12
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 13
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 14
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 15
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 16
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 17
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 18
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 19
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 20
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 21
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 22
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 23
+            'LLLLLLLLLLLLLLLLLLLLLLSWW', // y = 24
+        ];
+        $codes = [
+            'L' => 1,
+            'W' => 2,
+            'S' => 3,
+            'T' => 4,
+        ];
+        $baseWidth = 25;
+        $baseHeight = 25;
+        $baseOffsetX = max(0, $width - $baseWidth);
+        $baseOffsetY = max(0, $height - $baseHeight);
+        $expansionTerrain = getEnchantedGlenExpansionTerrain();
+        $terrain = [];
+
+        for ($y = 0; $y < $height; $y++) {
+            $sceneY = $y - $baseOffsetY;
+
+            for ($x = 0; $x < $width; $x++) {
+                $sceneX = $x - $baseOffsetX;
+
+                if ($sceneX >= 0 && $sceneX < $baseWidth
+                    && $sceneY >= 0 && $sceneY < $baseHeight) {
+                    $cell = $baseRows[$sceneY][$sceneX];
+                } else {
+                    $cell = $expansionTerrain["$sceneX,$sceneY"] ?? 'L';
+                }
+
+                if (!isset($codes[$cell])) {
+                    throw new RuntimeException("Enchanted Glen terrain mask contains an unknown cell code");
+                }
+
+                $terrain[] = $codes[$cell];
+            }
+        }
+
+        return $terrain;
+    }
+
     /**
      * Return a deterministic approximation of the expansion-world terrain
-     * mapping expected by FarmGameWorld.  Hawaii remains formula-based for
-     * now; Jade Falls uses the readable authored mask above.
+     * mapping expected by FarmGameWorld.
+     *
+     * Glen and Atlantis use invisible terrain masks so the client does not
+     * fall back to the visible grass YIMF layer while their full authored
+     * water/shoreline/terrace maps are recovered.
      */
     function getApproximateWorldTerrain(string $type, int $sizeX, int $sizeY): array {
-        if (!in_array($type, ['asia', 'hawaii'], true)) {
+        if (!in_array($type, ['asia', 'hawaii', 'glen', 'atlantis', 'canada'], true)) {
             return [];
         }
 
@@ -1707,6 +1928,22 @@
         $height = intdiv(max(0, $sizeY), 2);
         if ($width === 0 || $height === 0) {
             return [];
+        }
+
+        if ($type === 'glen') {
+            return getAuthoredEnchantedGlenTerrain($sizeX, $sizeY);
+        }
+
+        if ($type === 'atlantis') {
+            // Atlantis remains an invisible, pathable land mask until its
+            // authored water/shoreline/terrace map is recovered.
+            return array_fill(0, $width * $height, 1);
+        }
+
+        if ($type === 'canada') {
+            // Maple Frontier needs a complete mapping even before its
+            // authored terrain is recovered. Use pathable land throughout.
+            return array_fill(0, $width * $height, 1);
         }
 
         if ($type === 'asia') {
@@ -2202,6 +2439,8 @@
             // internal world IDs directly (see yimf.xml).
             "asia"              => "asia",
             "hawaii"            => "hawaii",
+            // Maple Frontier's original expansion settings use this theme.
+            "canada"            => "canada_theme",
             // The client patch completes winternord_theme with the snow
             // terrain fields while retaining its authentic xwx background.
             "winternord"        => "winternord_theme",
@@ -2487,11 +2726,12 @@
         $currentLevel = isset($mastery[$itemCode]) ? (int)$mastery[$itemCode] : -1;
         $currentCount = $counters[$itemCode] ?? 0;
 
-        // Mastery calculates its normal yield first, then adds one multiplier
-        // for each distinct applicable permanent buff.  The Flash client caps
-        // the final yield at five; apply the same ceiling server-side.
+        // Flash caps the yield of each harvested object, not the whole
+        // equipment batch. Apply that cap before multiplying by the number
+        // harvested so a large vehicle sweep earns the same as manual use.
         $permanentBuffMultiplier = getPermanentMasteryBuffMultiplier($uid, $itemData);
-        $masteryYield = max(0, min(5, (int) $harvestCount * (1 + $permanentBuffMultiplier)));
+        $yieldPerHarvest = max(0, min(5, 1 + $permanentBuffMultiplier));
+        $masteryYield = max(0, (int) $harvestCount) * $yieldPerHarvest;
         $newCount = $currentCount + $masteryYield;
         $counters[$itemCode] = $newCount;
 
@@ -2541,6 +2781,36 @@
             'mastery' => $mastery,
             'masteryCounters' => $counters
         ];
+    }
+
+    /**
+     * Build the absolute mastery counters understood by the Flash client.
+     *
+     * The client keeps mastery counters in memory and already knows how to
+     * apply `goalCounters` from an action response.  Returning absolute
+     * values (rather than deltas) keeps batched/retried actions idempotent.
+     */
+    function buildMasteryGoalCounters($uid, array $itemCodes): array {
+        if (empty($itemCodes)) {
+            return [];
+        }
+
+        $counters = getMasteryData($uid)['masteryCounters'] ?? [];
+        $goalCounters = [];
+
+        foreach (array_values(array_unique($itemCodes)) as $itemCode) {
+            if (!is_string($itemCode) || trim($itemCode) === '') {
+                continue;
+            }
+
+            $goalCounters[] = [
+                'type' => 'Mastery',
+                'code' => $itemCode,
+                'count' => (int) ($counters[$itemCode] ?? 0),
+            ];
+        }
+
+        return $goalCounters;
     }
 
     function getWorldObjectsFromDb($worldId, $uid = null) {

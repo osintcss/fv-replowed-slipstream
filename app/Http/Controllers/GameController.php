@@ -14,7 +14,7 @@ class GameController extends Controller
         $neighborsData = $neighborController->getNeighborsData();
 
         $user = Auth::user()->load('userMeta');
-        $amfToken = AmfAuthToken::issue((string) $user->uid);
+        $amfToken = AmfAuthToken::issue((string) $user->uid, null, $this->currentWorldType((string) $user->uid));
 
         return view('game', [
             'neighbors' => $neighborsData['neighbors'],
@@ -35,7 +35,7 @@ class GameController extends Controller
         $neighborsData = $neighborController->getNeighborsData();
 
         $user = Auth::user()->load('userMeta');
-        $amfToken = AmfAuthToken::issue((string) $user->uid);
+        $amfToken = AmfAuthToken::issue((string) $user->uid, null, $this->currentWorldType((string) $user->uid));
 
         return view('game', [
             'neighbors' => $neighborsData['neighbors'],
@@ -57,7 +57,7 @@ class GameController extends Controller
             ->where('meta_key', 'currentWorldType')
             ->value('meta_value');
 
-        return is_string($worldType) && preg_match('/^[a-z]+$/', $worldType)
+        return is_string($worldType) && $worldType !== 'canada' && preg_match('/^[a-z]+$/', $worldType)
             ? $worldType
             : 'farm';
     }

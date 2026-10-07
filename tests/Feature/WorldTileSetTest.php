@@ -31,6 +31,81 @@ it('supplies scaled terrain maps for the early expansion worlds', function (): v
         ->and(in_array(4, $asia, true))->toBeTrue();
 });
 
+it('supplies a complete land terrain map for Maple Frontier at every farm size', function (): void {
+    foreach ([50, 74] as $size) {
+        $terrain = getApproximateWorldTerrain('canada', $size, $size);
+
+        expect(count($terrain))->toBe(intdiv($size, 2) ** 2)
+            ->and(array_unique($terrain))->toBe([1]);
+    }
+});
+
+it('uses the authored Glen land, shoreline, and water base mask', function (): void {
+    $terrain = getApproximateWorldTerrain('glen', 74, 74);
+    $width = 37;
+    $baseOffset = $width - 25;
+    $baseRow = $baseOffset * $width;
+
+    expect(count($terrain))->toBe($width * $width)
+        ->and(array_diff(array_unique($terrain), [1, 2, 3]))->toBe([])
+        ->and($terrain[$baseRow + $baseOffset + 18])->toBe(1)
+        ->and($terrain[$baseRow + $baseOffset + 19])->toBe(3)
+        ->and($terrain[$baseRow + $baseOffset + 20])->toBe(2)
+        ->and($terrain[$baseRow + $baseOffset + 24])->toBe(2)
+        ->and($terrain[0])->toBe(1);
+});
+
+it('applies the traced Glen expansion shoreline through negative y coordinates', function (): void {
+    $terrain = getApproximateWorldTerrain('glen', 170, 170);
+    $width = 85;
+    $offset = $width - 25;
+
+    $cell = static function (int $x, int $y) use ($terrain, $width, $offset): int {
+        return $terrain[($y + $offset) * $width + $x + $offset];
+    };
+
+    expect($cell(19, -1))->toBe(3)
+        ->and($cell(20, -1))->toBe(2)
+        ->and($cell(18, -2))->toBe(3)
+        ->and($cell(19, -2))->toBe(2)
+        ->and($cell(17, -13))->toBe(3)
+        ->and($cell(18, -13))->toBe(2)
+        ->and($cell(15, -21))->toBe(3)
+        ->and($cell(16, -21))->toBe(2)
+        ->and($cell(14, -22))->toBe(3)
+        ->and($cell(15, -22))->toBe(2)
+        ->and($cell(13, -25))->toBe(3)
+        ->and($cell(14, -25))->toBe(2)
+        ->and($cell(14, -29))->toBe(3)
+        ->and($cell(15, -29))->toBe(2)
+        ->and($cell(13, -31))->toBe(3)
+        ->and($cell(14, -31))->toBe(2)
+        ->and($cell(12, -32))->toBe(3)
+        ->and($cell(13, -32))->toBe(2)
+        ->and($cell(11, -33))->toBe(3)
+        ->and($cell(12, -33))->toBe(2)
+        ->and($cell(11, -40))->toBe(3)
+        ->and($cell(12, -40))->toBe(2)
+        ->and($cell(10, -43))->toBe(3)
+        ->and($cell(11, -43))->toBe(2)
+        ->and($cell(9, -45))->toBe(3)
+        ->and($cell(10, -45))->toBe(2)
+        ->and($cell(8, -51))->toBe(3)
+        ->and($cell(9, -51))->toBe(2)
+        ->and($cell(7, -53))->toBe(3)
+        ->and($cell(8, -53))->toBe(2)
+        ->and($cell(6, -55))->toBe(3)
+        ->and($cell(7, -55))->toBe(2)
+        ->and($cell(15, -1))->toBe(1);
+});
+
+it('uses an invisible land mask for Atlantis until its map is recovered', function (): void {
+    $terrain = getApproximateWorldTerrain('atlantis', 74, 74);
+
+    expect(count($terrain))->toBe(37 * 37)
+        ->and(array_unique($terrain))->toBe([1]);
+});
+
 it('keeps the Jade Falls authored mask rectangular and row-major', function (): void {
     $terrain = getAuthoredJadeFallsTerrain(50, 50);
 

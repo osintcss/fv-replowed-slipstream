@@ -8,6 +8,7 @@ use App\Models\CraftingQueue;
 use App\Models\CraftingSkill;
 use App\Support\CraftingCottages;
 use App\Support\GarageEquipmentCatalog;
+use App\Support\PetState;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\Log;
@@ -158,7 +159,6 @@ class WorldObject extends Model
             $state,
         );
         $state = self::normalizeLegacyOrchardState(
-            $itemName,
             $className,
             $state,
         );
@@ -167,6 +167,12 @@ class WorldObject extends Model
         $obj->tempId = $this->temp_id;
         $obj->instanceDataStoreKey = $this->instance_data_store_key;
         $obj->components = $this->components ?? (object)[];
+
+        if ($className === 'Pet') {
+            foreach (get_object_vars(PetState::forFlash($obj->components, $itemName, (int) $this->plant_time)) as $field => $value) {
+                $obj->{$field} = $value;
+            }
+        }
 
         // UGCDecoration.loadObject() expects the UUID at the top level. Keep
         // the durable copy inside the generic components envelope so this
@@ -923,7 +929,6 @@ class WorldObject extends Model
             'state' => self::normalizeLegacyTreeState(
                 $className,
                 self::normalizeLegacyOrchardState(
-                    $itemName,
                     $className,
                     self::normalizeLegacyAnimalBreedingState(
                         $itemName,
@@ -990,10 +995,15 @@ class WorldObject extends Model
     }
 
     /**
-     * Older saves can represent completed Animal Breeding buildings as a
-     * crop-style "grown" object. The preserved FeatureBuilding client has no
-     * matching grown visual state, even when featured items are populated,
-     * and renders only its ground shadow. Modern placements use "bare".
+     * Completed animal-breeding buildings use the FeatureBuilding storage
+     * contract. The preserved Flash client has no usable click path for a
+     * persisted `busy` state: it falls through to Building::onClick(), which
+     * treats the object as not built and silently ignores the click. `busy`
+     * is a transient client state used while an operation is in flight, not a
+     * durable reload state. Older saves can also contain the crop-style
+     * `grown` state, which has no matching FeatureBuilding visual state.
+     * Normalize both forms to `bare`; Flash will promote a ready pen to
+     * `ripe` during its normal state calculation.
      */
     private static function normalizeLegacyAnimalBreedingState(
         ?string $itemName,
@@ -1004,7 +1014,7 @@ class WorldObject extends Model
             ! is_string($itemName)
             || ! self::isLegacyCompletedAnimalBreedingBuilding($itemName)
             || $className !== 'FeatureBuilding'
-            || $state !== 'grown'
+            || ! in_array($state, ['grown', 'busy'], true)
         ) {
             return $state;
         }
@@ -1024,6 +1034,7 @@ class WorldObject extends Model
                 'flower_garden_finished',
                 'xhworchard_featurebuilding_finished',
                 'xuk_sheep_pen_finished',
+                'turtlepen_finished',
             ], true);
     }
 
@@ -1052,21 +1063,18 @@ class WorldObject extends Model
     }
 
     /**
-     * Ordinary completed orchards use OrchardFeatureBuilding's `bare`/
-     * `ripe` lifecycle. Older world snapshots could write the crop-style
+     * Completed orchards, including world-prefixed variants such as
+     * `xukorchard_featurebuilding_finished`, use OrchardFeatureBuilding's
+     * `bare`/`ripe` lifecycle. Older snapshots could write the crop-style
      * `grown` state, which has no OrchardFeatureBuilding renderer and leaves
-     * only the placement shadow visible after reload.
+     * only the placement shadow visible after reload. Key off the renderer
+     * class rather than the item name so themed orchards get the same repair.
      */
     private static function normalizeLegacyOrchardState(
-        ?string $itemName,
         ?string $className,
         ?string $state,
     ): ?string {
-        if (
-            $itemName !== 'orchard_featurebuilding_finished'
-            || $className !== 'OrchardFeatureBuilding'
-            || $state !== 'grown'
-        ) {
+        if ($className !== 'OrchardFeatureBuilding' || $state !== 'grown') {
             return $state;
         }
 
