@@ -1668,12 +1668,12 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "flashRevision": "855037.855026",
                             "phpRevision": "855038",
                             "configRevision": "",
-                            "xml_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v8/",
+                            "xml_url": "<?= $baseUrl ?>/farmville/xml/gz/v855038-canada1/",
                             "items_opt_amf": "<?= $baseUrl ?>/farmville/xml/gz/v855038-locale-v7/items_opt.amf",
                             "master_assethash_url": "<?= $baseUrl ?>/farmville/assethash/v9/",
                             "masterysigns_amf_url": "<?= $baseUrl ?>/farmville/masterysigns/v1/",
                             "ITEMS_AMF_BUILD_TIME_REDUCTION": false,
-                            "swfLocation": "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FarmGame-10-terraincoordinates2.swf?restore_original=1",
+                            "swfLocation": "<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FarmGame-10-turbogrowth1.swf?restore_original=1",
                             "parts_count": 3,
                             "NO_FUEL_DAY_START_TIME": "1606723200",
                             "NO_FUEL_DAY_END_TIME": "1607328000",
@@ -1818,8 +1818,38 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                             "neighbors": "{{ $neighborsBase64 ?? '' }}"
                         };
 
-                        var swfCallback = function(e) {
+                        var flashWindowMinimized = document.visibilityState === "hidden";
+                        var flashVisibilityTimer = null;
 
+                        function notifyFlashWindowMinimized() {
+                            var flash = document.getElementById("flashapp");
+                            var delivered = false;
+                            try {
+                                if (flash && typeof flash.setWindowMinimized === "function") {
+                                    flash.setWindowMinimized(flashWindowMinimized);
+                                    delivered = true;
+                                }
+                            } catch (error) {
+                                console.debug("[FV] Could not update Flash window audio state", error);
+                            }
+
+                            if (delivered) {
+                                if (flashVisibilityTimer !== null) {
+                                    window.clearInterval(flashVisibilityTimer);
+                                    flashVisibilityTimer = null;
+                                }
+                            } else if (flashVisibilityTimer === null) {
+                                flashVisibilityTimer = window.setInterval(notifyFlashWindowMinimized, 250);
+                            }
+                        }
+
+                        document.addEventListener("visibilitychange", function() {
+                            flashWindowMinimized = document.visibilityState === "hidden";
+                            notifyFlashWindowMinimized();
+                        });
+
+                        var swfCallback = function(e) {
+                            notifyFlashWindowMinimized();
                         }
                         var params = {
                             allowScriptAccess: "always",
@@ -1833,6 +1863,7 @@ $baseUrl = rtrim((string) config('app.url'), '/');
                         swfobject.embedSWF("<?= $baseUrl ?>/farmville/embeds/Flash/v855037.855026/FV_Preloader.swf?restore_original=1", "flashContent",
                             "100%", "100%", "10.0.0", "playerProductInstall.swf",
                             flashVars, params, attrs, swfCallback);
+                        notifyFlashWindowMinimized();
 
                         document.addEventListener('keydown', function(e) {
                             if (e.shiftKey && e.key === 'M') {

@@ -1,5 +1,176 @@
 # Flash client patches
 
+## Turbo crop growth selection
+
+`FarmGame-10-turbogrowth1.swf` is built from the deployed turtle-breeding
+revision with changes to `Classes.Plot` and `GameMode.GMMultiPlotAction`.
+Before equipment modes select plots, they refresh growth for the whole farm.
+The normal game loop ticks only visible objects, which previously let turbo
+skip mature offscreen crops whose cached state was still `planted`.
+
+`EquipmentWorldService` also accepts legacy saved plot IDs in the temporary
+range when the exact ID and coordinates match the current world. This fixes
+repeatedly skipped older crops without changing new-ID allocation.
+See `operational-notes/TURBO_CROP_DIAMOND_INCIDENT.md` for production evidence,
+rollout status, and remaining player validation.
+
+## Turtle Pen breeding
+
+The Turtle Pen now uses the server breeding transaction: it validates two
+stored adult turtles and their DNA, accepts the pen's asexual parent pairing,
+charges love potions once, persists the session, and awards a DNA-backed baby
+on completion. The baby can mature into `turtle_male`. The fixed-outcome
+offspring inherits combinations of its parents' traits. Invalid or replayed
+requests do not consume potions or award another baby.
+Breeding sessions are keyed by their `suiteSlot` when read, including older
+sparse JSON objects, and written as dense lists. This keeps slot 1 or 2
+finishable after slot 0 is completed and prevents a missing slot from being
+reported to Flash as a failed breeding outcome.
+
+The client previously deducted potions before receiving the begin response.
+`AnimalBreedingManager` and `TAnimalBeginBreeding` now update the local count
+only after server success and display an error on rejection. The maintained
+FFDec inputs are under `fv-decompiled-swf/patches/import-scripts/`, and the
+rebuilt client is `FarmGame-10-turtlebreeding1.swf`. The artifact hash is in
+`fv-decompiled-swf/metadata/FarmGame-10-turtlebreeding1.sha256`. These changes
+are local until deployed.
+
+## Server-authoritative plow fuel discovery
+
+The classic `TPlow` constructor previously showed `effect_fuel_burst.swf`
+when its local 2% roll succeeded, even though `WorldService.performAction`
+never awarded fuel. The animation could therefore appear over a plowed plot
+while the fuel gauge remained at zero.
+
+`PlowFuelDiscovery` now runs the matching MD5/1000 roll after a successfully
+paid manual plow. It enforces the archived level-12 minimum and six-hour
+cooldown, and atomically grants the two fuel tanks configured as `fuelLoot2`
+(`2 * energyMax` plots). The cooldown and fuel balance commit together; a
+replayed plow is rejected before this grant path. No client-reported
+discovery is trusted.
+
+`Transactions.TPlow` no longer plays the effect in its constructor. On a
+server-confirmed `fuelDiscovery` response it updates the local gauge and then
+plays the effect. The source is maintained at
+`fv-decompiled-swf/patches/import-scripts/Transactions/TPlow.as`. The revised
+client was imported from `FarmGame-10-fuelmessage1.swf` with FFDec 26.2.1 and
+re-exported to verify the response handler. It is served locally as
+`FarmGame-10-plowfueldiscovery1.swf`; production needs a separate deployment.
+
+## Out-of-fuel equipment warning
+
+When a vehicle exhausts fuel, the Flash client calls
+`UI.displayImpulseBuyPopup(ImpulseBuy.TYPE_FUEL, ...)`. With the unsupported
+cash-purchase popup disabled, that function previously displayed the generic
+`FC_POPUP_MESSAGE` ("You do not have enough Farm Cash for that item.") even
+though the failed resource check was for fuel, not the owned vehicle.
+
+`Display.UI` now shows "You are out of fuel. Refill your fuel to keep using
+your equipment." for `TYPE_FUEL` only. Actual Farm Cash purchase attempts
+retain `FC_POPUP_MESSAGE`. The maintained import source is
+`fv-decompiled-swf/patches/import-scripts/Display/UI.as`. FFDec 26.2.1
+rebuilt the client from `FarmGame-10-petlifecycle1.swf`; re-export of
+`Display.UI` confirmed both message branches. The local game view selects
+the cache-busted `FarmGame-10-fuelmessage1.swf` artifact. Production requires
+a separate deployment.
+
+## Pet feeding persistence
+
+`CPetsKibble` now includes its target pet ID in the existing `use` AMF
+transaction. The client applies the feed only after server acceptance and
+restores its optimistically removed local food item on rejection. The
+server checks that the pet belongs to the authenticated
+farmer's active world, that it is due for feeding, and that one kibble/treat
+is available; the food decrement and pet-state update commit together.
+The patch is built from the previous `FarmGame-10-masteryrefresh1.swf` and
+served as `FarmGame-10-petfood1.swf`. The maintained ActionScript input and
+artifact hash are in `fv-decompiled-swf/patches` and `metadata`.
+
+Pet placement, follow preference, daily feeding, and the client adulthood
+notification are the first restoration milestone. Runaway/rescue and trick rewards still need separate work before
+the original pet lifecycle is complete.
+
+## Audio pause while the game window is minimized
+
+The host page now watches `document.visibilityState` and calls the Flash
+client's `setWindowMinimized()` callback. The client routes that state through
+the existing `FarmGameWorld.pauseSoundForcefully()` and
+`resetForcedSoundPause()` methods, pausing both music and sound effects while
+the window is minimized without changing saved player audio preferences. A
+window merely covered by another window remains audible when the browser
+keeps the document visible.
+
+The cache-busted client artifact is
+`fv-decompiled-swf/artifacts/FarmGame-10-windowaudio1.swf`.
+
+## Live market mastery counter refresh
+
+The server returns absolute `goalCounters` after ordinary and equipment crop
+harvests, and the Flash transaction handler updates `Global.player` correctly.
+However, open market cards render their mastery text only during `populate()`,
+so the visible `0/120` counter remained stale until the page was reloaded.
+
+`Transactions.TFarmTransaction` now refreshes the open market window after a
+mastery counter is applied. The refresh is guarded to mastery responses only,
+and `UI.updateMarketWindowItems()` is a no-op when the market is closed.
+
+The cache-busted client artifact is
+`fv-decompiled-swf/artifacts/FarmGame-10-masteryrefresh1.swf`.
+
+## Market loading with missing super-crop state
+
+The market slot renderer evaluates `SuperCropRequirement` for seed cards. The
+legacy player bootstrap was returning `superCropsStatus` as `null`, so the
+client's `Player.isSuperCropUnlocked()` called `indexOf()` on a null value and
+raised Error #1009 before the seed cards could render.
+
+The server now sends an empty array for a player with no unlocked super crops.
+The companion client guard is maintained in
+`fv-decompiled-swf/patches/import-scripts/Classes/Player.as` and is built as
+`FarmGame-10-marketloadguard1.swf`, so older or partially populated payloads
+remain safe without changing unlock behavior.
+
+## Home Inventory placement reconciliation
+
+Home Inventory placement is optimistic in the Flash client. The server now
+returns an `inventoryDelta` containing the exact storage key and authoritative
+remaining quantity after a placement succeeds or is rejected. The shared
+`Transactions.TWorldState` completion path applies that delta for every item,
+so a stale client count cannot leave a placeable item appearing available.
+
+`Display.InventoryWithdrawal` also preserves the exact inventory key when it
+builds a market item selection. This matters for catalog aliases and
+per-instance inventory keys; the server validates the key against the
+requested item family before consuming it. The Bloom Garden finished/source
+pair is covered by regression tests, but the behavior is intentionally
+generic.
+
+The maintained ActionScript import sources are:
+
+- `fv-decompiled-swf/patches/import-scripts/Transactions/TWorldState.as`
+- `fv-decompiled-swf/patches/import-scripts/Display/InventoryWithdrawal.as`
+
+The rebuilt artifact is `FarmGame-10-inventorysync1.swf`, produced from
+`fv-decompiled-swf/artifacts/FarmGame-10-marketcosmic2.swf` with FFDec/JPEXS
+26.2.1. Its SHA-256 is recorded in the decompiled-SWF metadata. The game view
+selects the new filename locally; it still requires a separate production
+asset rollout.
+
+## Cosmic world-level market prerequisite tooltip
+
+The market prerequisite builder can request
+`Dialogs:MarketCard_PrereqLocked_Rollover_world_level_min_cosmic`, but the
+recovered `en_US.swf` locale catalog does not contain that entry. In debug
+mode, the missing lookup appeared directly to players as `key not found`.
+
+`Init.ZLocalizationInit` now injects the missing `Dialogs` entry immediately
+after the external locale SWF loads, using the same wording pattern as the
+nearby world-level entries: `Cosmic Level {quantity} needed`. The market
+tooltip continues through the normal `ZLocUtils` lookup and replacement path.
+
+The rebuilt client is served as `FarmGame-10-marketcosmic2.swf` so the legacy
+Flash preloader cannot reuse the previous immutable SWF cache.
+
 ## Lonely Animal progress callback guard
 
 `LonelyAnimal.onTransactionComplete()` could dereference incomplete feature XML,
@@ -428,3 +599,84 @@ to the tracked SWF in `public/.htaccess` and selected by
 
 The SWF was exported and re-imported with JPEXS Free Flash Decompiler 26.2.1,
 then re-exported to confirm the FlashVar and context-menu changes.
+
+## Turtle Back Moats III and IV full-base rotation
+
+`RotateableDecoration` selects an asset export named `horizontal` or `vertical`;
+it does not rotate the display object itself. The recovered alternate exports
+for Turtle Back Moats III and IV changed only the turtle, leaving the asymmetric
+moat base in its horizontal orientation. The other Turtle Back Moats (I, II, V,
+and VI) establish the expected contract: the alternate art mirrors the complete
+asset, including its base.
+
+The corrected assets live in the tracked patch directory:
+
+- `public/farmville/patches/decorations/moat_turtleback3_rotationfix1.swf`
+- `public/farmville/patches/decorations/moat_turtleback4_rotationfix1.swf`
+
+Each preserves the original ActionScript exports and changes only the vertical
+bitmap (`moat_turtleback3_vertical` or `moat_turtleback4_vertical`) to a
+horizontal mirror of its matching horizontal bitmap. The catalog archive itself
+remains unchanged. During image build, `scripts/patch-moat-asset-hash.php`
+creates a revisioned AMF asset-hash delta that maps the two logical SWF names to
+the corrected content hashes. `public/.htaccess` maps those public hashed URLs
+to the tracked patch SWFs and maps `v855038-moatrotation1` back to the original
+XML catalog for every other resource. The revisioned `xml_url` makes Flash fetch
+the new delta instead of reusing a cached prior asset-hash response.
+
+Verification: FFDec re-exported both modified bitmaps with zero differing
+pixels from the expected full-image mirrors, and `-dumpAS3` confirmed the
+original horizontal/vertical class pairs remain exported. The AMF patch script
+also decodes the production asset-hash archive, applies both mappings,
+re-encodes it, then decodes the generated file again and asserts the hashes.
+
+## Turbo Combine crop-priority selection
+
+`GameMode.GMCombineAll` previously called the shared seed-limited selector when
+the farm contained more plot objects than available seed packages. That helper
+walked the world's object array and stopped at the seed count, so a large farm
+could omit grown crops from the combine selection based on object order. The
+omitted crops appeared as an unselected square or partial block even though
+the server accepted every plot the client submitted.
+
+The patched selector partitions eligible plots into harvestable crops and
+replantable plots. It includes every harvestable crop first, then uses the
+remaining seed capacity for replantable plots. The existing resource check
+still handles the explicit out-of-seeds flow when the grown-crop count itself
+exceeds the available seed packages.
+
+The maintained FFDec import source is
+`fv-decompiled-swf/patches/import-scripts/GameMode/GMCombineAll.as`. The SWF
+was imported from `FarmGame-10-inventorysync1.swf` with JPEXS/FFDec 26.2.1,
+re-exported for verification, and released as
+`FarmGame-10-combineallcroppriority1.swf` with SHA-256
+`F1F10B520CBDADA2A07294308C0381A6B82406699A53BC4A6713DD56AFE65877`.
+
+## Pet runaway, rescue, and level-five tricks
+
+`WorldService.performAction` now handles `runaway`, `rescuePet`, and
+`performTrick` against the saved pet in the active world. A coin puppy can
+run away only after the client-equivalent missed-day threshold. Rescue uses
+the catalog's `pet_rescue` price (2 Farm Cash), charges once, and atomically
+updates the persisted pet; a rejected rescue returns no `lastFedTime`.
+
+The level-five fetch trick gives one `consume_kibble` in the Giftbox at most
+once per pet per 24 hours. This is a conservative restoration reward: the
+archived client specifies the fetch response but does not include the original
+server's reward pool. The harvest trick acknowledges valid animal targets
+and enforces the same cooldown; its actual coin/XP yields remain on each
+animal's existing harvest transaction, so the trick reply never grants a
+second yield.
+
+The archived pet settings refer to four `consume_harvest_*` definitions that
+are absent from this catalog. `PetTrickHarvest` now uses the existing Farm
+Hands `CHarvestAnimals` consumable with the pet's configured filter. That
+class now reports IDs for type-specific harvests as well as the first-20
+variant. `Pet.onRescue` clears its in-session runaway flag, and
+`TRescuePet` restores the client's optimistic cash and runaway state on a
+rejected response. The four FFDec import sources are under
+`fv-decompiled-swf/patches/import-scripts/`; the new client is
+`FarmGame-10-petlifecycle1.swf`, built from `FarmGame-10-petfood1.swf` and
+re-exported with FFDec 26.2.1. Existing game windows must reload to receive
+the filename-revisioned client. The full Laravel suite and a player-driven
+pet lifecycle test remain outstanding.
