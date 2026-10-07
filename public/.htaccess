@@ -94,6 +94,23 @@
     RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-worldscorecoalesce1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
     RewriteRule ^farmville/embeds/Flash/v855037\.855026/FarmGame-10-emeraldscore1\.swf$ farmville/embeds/Flash/v855037.855026/FarmGame-10.swf [L]
 
+    # Turtle Back Moats III and IV use corrected vertical artwork. The public
+    # filenames are the MD5s recorded in the revisioned external asset-hash
+    # delta; keep the recovered hashed asset tree unchanged.
+    RewriteRule ^farmville/assets/hashed/assets/decorations/374b733e9b8d38413a6e5222bbe181e8\.swf$ farmville/patches/decorations/moat_turtleback3_rotationfix1.swf [L]
+    RewriteRule ^farmville/assets/hashed/assets/decorations/455d1e237b9be3e7cfc3def2bc8ff529\.swf$ farmville/patches/decorations/moat_turtleback4_rotationfix1.swf [L]
+
+    # Flash caches external asset-hash deltas by path. Serve a fresh delta for
+    # the moat art while delegating every other XML request to the preserved
+    # v855038 catalog.
+    RewriteRule ^farmville/xml/gz/v855038-moatrotation1/assethash\.min\.amf\.gz$ farmville/xml/gz/v855038/assethash.moatrotation1.amf.gz [L]
+    RewriteRule ^farmville/xml/gz/v855038-moatrotation1/(.*)$ farmville/xml/gz/v855038/$1 [L]
+
+    # Reload the completed Maple Frontier Yimf config while retaining the
+    # existing moat asset-hash delta for all other client assets.
+    RewriteRule ^farmville/xml/gz/v855038-canada1/assethash\.min\.amf\.gz$ farmville/xml/gz/v855038/assethash.moatrotation1.amf.gz [L]
+    RewriteRule ^farmville/xml/gz/v855038-canada1/(.*)$ farmville/xml/gz/v855038/$1 [L]
+
     RewriteRule ^farmville/xml/gz/v855038-locale-v3/en_US\.swf$ farmville/locale-contract.php [L]
 
     # The recovered optimized asset is the same content-hashed Cove

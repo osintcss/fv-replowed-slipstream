@@ -73,6 +73,10 @@ RUN php scripts/patch-yimf-winternord.php
 # to construct the embedded grass bitmap classes.
 RUN php scripts/patch-yimf-asia-hawaii.php
 
+# Maple Frontier's archived Yimf entry likewise needs base grass tile fields.
+# Keep its original xcd horizon and use the recovered full-size background.
+RUN php scripts/patch-yimf-canada.php
+
 # The archived quest settings let Flash predict crop/harvest progress. Our
 # server already persists these actions, so make the client consume the
 # authoritative QuestComponent returned with each AMF response instead.
@@ -91,6 +95,11 @@ RUN php -d memory_limit=512M scripts/patch-ugc-item-catalog.php
 # Historical items are still valid in this restoration. Extend every expired
 # limitedEnd gate in both the XML fallback catalogs and optimized AMF catalog.
 RUN php -d memory_limit=512M scripts/patch-expired-item-dates.php
+
+# The recovered Turtle Back Moat III/IV art leaves the moat base unchanged in
+# its alternate orientation. Build a revisioned external asset-hash delta that
+# routes those logical assets to their full-base rotation fixes.
+RUN php scripts/patch-moat-asset-hash.php
 
 # Some client experiment assignments request the reduced locale filename even
 # when the complete locale is the only archive asset available. Both contain
