@@ -38,6 +38,10 @@ class WorldShopController extends Controller
         $claims = $this->getLevelUnlockClaims($uid);
         $status = $this->getClaimStatus($playerLevel, $claims, $allUnlocked);
 
+        $currentWorldType = PlayerMeta::where('uid', $uid)
+            ->where('meta_key', self::CURRENT_WORLD_META_KEY)
+            ->value('meta_value');
+
         return response()->json([
             'cash' => $cash,
             'playerLevel' => $playerLevel,
@@ -47,9 +51,8 @@ class WorldShopController extends Controller
             'unlockedWorlds' => $allUnlocked,
             'freeWorlds' => self::FREE_WORLDS,
             'purchasedWorlds' => $purchasedWorlds,
-            'currentWorldType' => PlayerMeta::where('uid', $uid)
-                ->where('meta_key', self::CURRENT_WORLD_META_KEY)
-                ->value('meta_value') ?: 'farm',
+            'currentWorldType' => in_array($currentWorldType, $allUnlocked, true)
+                ? $currentWorldType : 'farm',
         ]);
     }
 
@@ -128,18 +131,17 @@ class WorldShopController extends Controller
             // cannot mint another 6,000 units.
             WorldCurrencyService::initializeForWorld($uid, $worldId);
 
-            // Jade Falls also starts its Zen score at one. Store the canonical
-            // world-type key used by the AMF score loader, preserving any
-            // score that may already exist from an older client.
-            if ($worldId === 'asia') {
+            // The original expansion config starts these worlds' scores at one.
+            // Preserve any progress already recorded under the canonical key.
+            if (in_array($worldId, ['asia', 'canada'], true)) {
                 $scoreMeta = PlayerMeta::where('uid', $uid)
-                    ->where('meta_key', 'world_score_asia')
+                    ->where('meta_key', 'world_score_'.$worldId)
                     ->lockForUpdate()
                     ->first();
                 if ($scoreMeta === null) {
                     PlayerMeta::create([
                         'uid' => $uid,
-                        'meta_key' => 'world_score_asia',
+                        'meta_key' => 'world_score_'.$worldId,
                         'meta_value' => '1',
                     ]);
                 } elseif ((int) $scoreMeta->meta_value < 1) {

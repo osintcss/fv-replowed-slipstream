@@ -2,8 +2,10 @@
 
 namespace App\Support;
 
+use App\Models\UserMeta;
 use App\Models\WorldCurrency;
 use App\Models\WorldCurrencyAudit;
+use App\Support\ResourceAudit;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -154,6 +156,53 @@ final class WorldCurrencyService
             $row->total = (int) $row->total - $amount;
             $row->save();
             self::audit($uid, $unit, -$amount, $source, (int) $row->total, $metadata);
+            return true;
+        });
+    }
+
+    /**
+     * Atomically exchange premium cash for an expansion currency.
+     *
+     * Purchased currency is tracked separately from earned currency so the
+     * client can reload the same durable balance without treating a cash
+     * purchase as gameplay earnings.
+     */
+    public static function purchase(
+        int|string $uid,
+        string $unit,
+        int $amount,
+        int $cashCost,
+        string $source = 'currency.purchase',
+        array $metadata = [],
+    ): bool {
+        $unit = trim($unit);
+        if (!self::isSupportedUnit($unit) || $amount <= 0 || $cashCost <= 0) {
+            return false;
+        }
+
+        return DB::transaction(function () use ($uid, $unit, $amount, $cashCost, $source, $metadata): bool {
+            // Keep the world-currency-first lock order used by equipment
+            // batches, then lock the cash row before changing either balance.
+            $row = self::lockRow($uid, $unit);
+            $userMeta = UserMeta::query()
+                ->where('uid', $uid)
+                ->lockForUpdate()
+                ->first();
+
+            if ($userMeta === null || (int) $userMeta->cash < $cashCost) {
+                return false;
+            }
+
+            $userMeta->cash = (int) $userMeta->cash - $cashCost;
+            $userMeta->save();
+
+            $row->total = min(PHP_INT_MAX, (int) $row->total + $amount);
+            $row->purchased = min(PHP_INT_MAX, (int) $row->purchased + $amount);
+            $row->save();
+
+            self::audit($uid, $unit, $amount, $source, (int) $row->total, $metadata);
+            ResourceAudit::record($uid, $source, 0, 0, -$cashCost, $metadata);
+
             return true;
         });
     }

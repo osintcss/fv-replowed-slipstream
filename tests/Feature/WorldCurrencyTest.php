@@ -53,6 +53,107 @@ it('returns both expansion balances in the Flash payload shapes', function (): v
     ]);
 });
 
+it('persists cash purchases of the active world currency', function (): void {
+    if (! defined('AMFPHP_ROOTPATH')) {
+        define('AMFPHP_ROOTPATH', dirname(__DIR__, 2).'/public/farmville/flashservices/amfphp/');
+    }
+
+    require_once AMFPHP_ROOTPATH.'Helpers/logger.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/general_functions.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/user_resources.php';
+    require_once AMFPHP_ROOTPATH.'Functions/UserService.php';
+
+    $uid = '960005';
+    makeWorldCurrencyPlayer($uid);
+    UserMeta::query()->where('uid', $uid)->update(['cash' => 20]);
+    PlayerMeta::setValue($uid, 'currentWorldType', 'hawaii');
+    WorldCurrencyService::grant($uid, 'coconuts', 6000, 'test.unlock');
+    Item::query()->create([
+        'name' => 'test_coconut_cash_bundle',
+        'code' => 'TCCB',
+        'data' => serialize([
+            'name' => 'test_coconut_cash_bundle',
+            'code' => 'TCCB',
+            'type' => 'currency_exchange',
+            'subtype' => 'coconuts',
+            'count' => '5000',
+            'cash' => '5',
+            'market' => 'cash',
+            'buyable' => 'true',
+        ]),
+    ]);
+
+    $response = UserService::buyCurrency(
+        new Player($uid),
+        (object) ['params' => ['test_coconut_cash_bundle', 'impulse_buy']],
+    );
+
+    expect($response['data']['success'])->toBeTrue()
+        ->and(UserMeta::query()->where('uid', $uid)->value('cash'))->toEqual(15)
+        ->and(WorldCurrency::query()
+            ->where('uid', $uid)
+            ->where('currency_unit', 'coconuts')
+            ->value('total'))->toEqual(11000)
+        ->and(WorldCurrency::query()
+            ->where('uid', $uid)
+            ->where('currency_unit', 'coconuts')
+            ->value('earned'))->toEqual(6000)
+        ->and(WorldCurrency::query()
+            ->where('uid', $uid)
+            ->where('currency_unit', 'coconuts')
+            ->value('purchased'))->toEqual(5000)
+        ->and(WorldCurrencyAudit::query()
+            ->where('uid', $uid)
+            ->where('source', 'currency.purchase')
+            ->value('delta'))->toEqual(5000);
+});
+
+it('does not charge cash when a currency purchase cannot be afforded', function (): void {
+    if (! defined('AMFPHP_ROOTPATH')) {
+        define('AMFPHP_ROOTPATH', dirname(__DIR__, 2).'/public/farmville/flashservices/amfphp/');
+    }
+
+    require_once AMFPHP_ROOTPATH.'Helpers/logger.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/general_functions.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/user_resources.php';
+    require_once AMFPHP_ROOTPATH.'Functions/UserService.php';
+
+    $uid = '960006';
+    makeWorldCurrencyPlayer($uid);
+    PlayerMeta::setValue($uid, 'currentWorldType', 'hawaii');
+    WorldCurrencyService::grant($uid, 'coconuts', 6000, 'test.unlock');
+    Item::query()->create([
+        'name' => 'test_unaffordable_coconut_cash_bundle',
+        'code' => 'TCCU',
+        'data' => serialize([
+            'name' => 'test_unaffordable_coconut_cash_bundle',
+            'code' => 'TCCU',
+            'type' => 'currency_exchange',
+            'subtype' => 'coconuts',
+            'count' => '5000',
+            'cash' => '5',
+            'market' => 'cash',
+            'buyable' => 'true',
+        ]),
+    ]);
+
+    $response = UserService::buyCurrency(
+        new Player($uid),
+        (object) ['params' => ['test_unaffordable_coconut_cash_bundle', 'impulse_buy']],
+    );
+
+    expect($response['data']['success'])->toBeFalse()
+        ->and(UserMeta::query()->where('uid', $uid)->value('cash'))->toEqual(0)
+        ->and(WorldCurrency::query()
+            ->where('uid', $uid)
+            ->where('currency_unit', 'coconuts')
+            ->value('total'))->toEqual(6000)
+        ->and(WorldCurrencyAudit::query()
+            ->where('uid', $uid)
+            ->where('source', 'currency.purchase')
+            ->count())->toBe(0);
+});
+
 it('charges legacy coin-priced seeds to coins while in Hawaiian Paradise', function (): void {
     if (! defined('AMFPHP_ROOTPATH')) {
         define('AMFPHP_ROOTPATH', dirname(__DIR__, 2).'/public/farmville/flashservices/amfphp/');

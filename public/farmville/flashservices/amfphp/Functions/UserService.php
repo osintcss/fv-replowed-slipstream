@@ -179,6 +179,83 @@ class UserService{
         return $data;
     }
 
+    /**
+     * Persist a premium-cash purchase of an expansion currency bundle.
+     *
+     * TBuyCurrency sends only the catalog item name. Resolve every price and
+     * reward from the server catalog so the client cannot choose its own
+     * currency, quantity, or cash cost.
+     */
+    public static function buyCurrency($playerObj, $request, $market = null){
+        $uid = $playerObj->getUid();
+        $itemName = $request->params[0] ?? null;
+        $source = $request->params[1] ?? 'market';
+
+        if (!is_string($itemName) || trim($itemName) === '') {
+            return ["data" => ["success" => false, "error" => "Invalid currency item"]];
+        }
+
+        $item = getItemByName($itemName, 'db');
+        $itemType = is_array($item) ? trim((string) ($item['type'] ?? '')) : '';
+        $unit = is_array($item)
+            ? trim((string) ($item['subtype'] ?? $item['subType'] ?? ''))
+            : '';
+        $amount = is_array($item)
+            ? filter_var($item['count'] ?? null, FILTER_VALIDATE_INT, [
+                'options' => ['min_range' => 1],
+            ])
+            : false;
+        $cashCost = is_array($item)
+            ? filter_var($item['cash'] ?? null, FILTER_VALIDATE_INT, [
+                'options' => ['min_range' => 1],
+            ])
+            : false;
+        $marketType = is_array($item) ? trim((string) ($item['market'] ?? '')) : '';
+        $buyable = is_array($item) ? ($item['buyable'] ?? true) : false;
+        $isBuyable = filter_var($buyable, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+
+        if ($itemType !== 'currency_exchange'
+            || !WorldCurrencyService::isSupportedUnit($unit)
+            || $amount === false
+            || $cashCost === false
+            || $marketType !== 'cash'
+            || $isBuyable !== true
+            || WorldCurrencyService::currencyForWorld(getCurrentWorldType($uid)) !== $unit) {
+            Logger::warning('WorldCurrencyPurchase', 'Rejected currency purchase', [
+                'uid' => (string) $uid,
+                'itemName' => substr($itemName, 0, 100),
+                'unit' => $unit,
+            ]);
+
+            return ["data" => ["success" => false, "error" => "Invalid currency purchase"]];
+        }
+
+        $source = is_scalar($source) ? substr((string) $source, 0, 80) : 'market';
+        $success = WorldCurrencyService::purchase(
+            $uid,
+            $unit,
+            (int) $amount,
+            (int) $cashCost,
+            'currency.purchase',
+            [
+                'itemName' => $itemName,
+                'source' => $source,
+            ],
+        );
+
+        if (!$success) {
+            Logger::warning('WorldCurrencyPurchase', 'Currency purchase failed', [
+                'uid' => (string) $uid,
+                'itemName' => substr($itemName, 0, 100),
+                'unit' => $unit,
+                'amount' => (int) $amount,
+                'cashCost' => (int) $cashCost,
+            ]);
+        }
+
+        return ["data" => ["success" => $success]];
+    }
+
     public static function getMOTD(){
         // PAOK is the retired Project Unicorn / Gagaville onboarding MOTD.
         // TGetMOTD forwards motdData to ItemMembershipManager.onGetMOTD(),

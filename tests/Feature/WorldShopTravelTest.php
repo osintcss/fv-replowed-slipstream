@@ -185,6 +185,60 @@ it('allows Jade Falls and Hawaiian Paradise to be claimed and traveled to', func
     ]);
 })->with(['asia', 'hawaii']);
 
+it('disables Maple Frontier even for players who previously unlocked it', function (): void {
+    if (! defined('AMFPHP_ROOTPATH')) {
+        define('AMFPHP_ROOTPATH', dirname(__DIR__, 2).'/public/farmville/flashservices/amfphp/');
+    }
+
+    require_once AMFPHP_ROOTPATH.'Helpers/logger.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/general_functions.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/user_resources.php';
+    require_once AMFPHP_ROOTPATH.'Functions/WorldService.php';
+    require_once AMFPHP_ROOTPATH.'Helpers/player.php';
+
+    $user = createWorldShopUser(250);
+    $uid = $user->uid;
+    PlayerMeta::create([
+        'uid' => $uid,
+        'meta_key' => 'unlocked_worlds',
+        'meta_value' => serialize(['canada']),
+    ]);
+    PlayerMeta::create([
+        'uid' => $uid,
+        'meta_key' => 'currentWorldType',
+        'meta_value' => 'canada',
+    ]);
+
+    $this->actingAs($user)
+        ->getJson('/api/world-shop/status')
+        ->assertOk()
+        ->assertJson([
+            'unlockedWorlds' => ['farm'],
+            'purchasedWorlds' => [],
+            'currentWorldType' => 'farm',
+        ]);
+
+    $this->actingAs($user)
+        ->postJson('/api/world-shop/claim', ['worldId' => 'canada'])
+        ->assertBadRequest();
+
+    $this->actingAs($user)
+        ->postJson('/api/world-shop/travel', ['worldId' => 'canada'])
+        ->assertBadRequest();
+
+    expect(getUnlockedWorlds($uid))->toBe(['farm']);
+
+    $request = (object) ['params' => ['canada']];
+    expect(fn () => WorldService::loadOwnWorld(new Player($uid), $request))
+        ->toThrow(RuntimeException::class, 'World is not unlocked: canada');
+
+    $this->assertDatabaseHas('playermeta', [
+        'uid' => $uid,
+        'meta_key' => 'unlocked_worlds',
+        'meta_value' => serialize(['canada']),
+    ]);
+});
+
 it('rejects travel to a locked world', function (): void {
     $user = User::factory()->create();
 
