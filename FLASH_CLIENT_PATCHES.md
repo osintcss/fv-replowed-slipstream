@@ -32,8 +32,8 @@ The client previously deducted potions before receiving the begin response.
 only after server success and display an error on rejection. The maintained
 FFDec inputs are under `fv-decompiled-swf/patches/import-scripts/`, and the
 rebuilt client is `FarmGame-10-turtlebreeding1.swf`. The artifact hash is in
-`fv-decompiled-swf/metadata/FarmGame-10-turtlebreeding1.sha256`. These changes
-are local until deployed.
+`fv-decompiled-swf/metadata/FarmGame-10-turtlebreeding1.sha256`. This is an
+intermediate build; the active client revision is listed above.
 
 ## Server-authoritative plow fuel discovery
 
@@ -54,8 +54,8 @@ server-confirmed `fuelDiscovery` response it updates the local gauge and then
 plays the effect. The source is maintained at
 `fv-decompiled-swf/patches/import-scripts/Transactions/TPlow.as`. The revised
 client was imported from `FarmGame-10-fuelmessage1.swf` with FFDec 26.2.1 and
-re-exported to verify the response handler. It is served locally as
-`FarmGame-10-plowfueldiscovery1.swf`; production needs a separate deployment.
+re-exported to verify the response handler. The intermediate artifact is
+`FarmGame-10-plowfueldiscovery1.swf`; the active client revision is listed above.
 
 ## Out-of-fuel equipment warning
 
@@ -70,9 +70,8 @@ your equipment." for `TYPE_FUEL` only. Actual Farm Cash purchase attempts
 retain `FC_POPUP_MESSAGE`. The maintained import source is
 `fv-decompiled-swf/patches/import-scripts/Display/UI.as`. FFDec 26.2.1
 rebuilt the client from `FarmGame-10-petlifecycle1.swf`; re-export of
-`Display.UI` confirmed both message branches. The local game view selects
-the cache-busted `FarmGame-10-fuelmessage1.swf` artifact. Production requires
-a separate deployment.
+`Display.UI` confirmed both message branches. The intermediate artifact is
+`FarmGame-10-fuelmessage1.swf`; the active client revision is listed above.
 
 ## Pet feeding persistence
 
@@ -152,9 +151,8 @@ The maintained ActionScript import sources are:
 
 The rebuilt artifact is `FarmGame-10-inventorysync1.swf`, produced from
 `fv-decompiled-swf/artifacts/FarmGame-10-marketcosmic2.swf` with FFDec/JPEXS
-26.2.1. Its SHA-256 is recorded in the decompiled-SWF metadata. The game view
-selects the new filename locally; it still requires a separate production
-asset rollout.
+26.2.1. Its SHA-256 is recorded in the decompiled-SWF metadata. This is an
+intermediate build; the active client revision is listed above.
 
 ## Cosmic world-level market prerequisite tooltip
 
@@ -248,11 +246,9 @@ Both search paths now call `farmItem.meetsWorldRestrictions()` (or
 matching world, while items with no world restriction are searchable on every
 farm.
 
-The patched SWF was rebuilt with JPEXS Free Flash Decompiler 26.2.1 and
-deployed as the cache-busted revision
-`FarmGame-10-marketsearchworld1.swf`. The revision is routed through
-`public/.htaccess`, and `resources/views/game.blade.php` selects it for new
-sessions.
+The patched SWF was rebuilt with JPEXS Free Flash Decompiler 26.2.1 as the
+historical cache-busted revision `FarmGame-10-marketsearchworld1.swf`.
+The active client revision is listed above.
 
 ### Verification
 
@@ -430,9 +426,8 @@ revisioned filename:
 ```
 
 For the next client change, use a new descriptive revision name in both places
-(for example, `FarmGame-10-nextfix1.swf`). Copy the changed SWF, the view, and
-`.htaccess` into the running container, then run `php artisan view:clear`.
-Apache reads `.htaccess` per request, so no container restart is required.
+(for example, `FarmGame-10-nextfix1.swf`). Follow the private operational
+handoff for deployment and verification.
 
 This delivery path was validated with the plow patch: after the filename
 revision was introduced, the normal walking-avatar plow sent its AMF action
