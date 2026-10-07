@@ -42,6 +42,11 @@ final class CraftingCottages
         ['functionalItem' => 'craftingdye', 'craftType' => 'dye'],
         ['functionalItem' => 'craftingink', 'craftType' => 'ink'],
         ['functionalItem' => 'craftingflower', 'craftType' => 'flower'],
+        // England's pub uses a world-prefixed item name, but its crafting.xml
+        // skill key is simply `pub`. Include it so legacy placed pubs receive
+        // their level-one crafting state during InitUser, just like other
+        // cottages imported before a crafting_skills row existed.
+        ['functionalItem' => 'xukcraftingpub', 'craftType' => 'pub'],
         // Craftshop is an older feature building. Its completed "grown"
         // state is the only visual contract available in this client bundle;
         // keep that representation until its separate crafting click route
