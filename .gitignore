@@ -23,6 +23,16 @@
 .cache/
 /public/farmville/embeds/Flash/v855037.855026/FarmGame-*debug.swf
 /public/farmville/embeds/Flash/v855037.855026/FarmGame-compat.swf
+# Superseded local FFDec exports; the active turbogrowth1 build is tracked.
+/public/farmville/embeds/Flash/v855037.855026/FarmGame-10-combineallcroppriority1.swf
+/public/farmville/embeds/Flash/v855037.855026/FarmGame-10-fuelmessage1.swf
+/public/farmville/embeds/Flash/v855037.855026/FarmGame-10-inventorysync1.swf
+/public/farmville/embeds/Flash/v855037.855026/FarmGame-10-marketcosmic2.swf
+/public/farmville/embeds/Flash/v855037.855026/FarmGame-10-masteryrefresh1.swf
+/public/farmville/embeds/Flash/v855037.855026/FarmGame-10-petfood1.swf
+/public/farmville/embeds/Flash/v855037.855026/FarmGame-10-petlifecycle1.swf
+/public/farmville/embeds/Flash/v855037.855026/FarmGame-10-plowfueldiscovery1.swf
+/public/farmville/embeds/Flash/v855037.855026/FarmGame-10-turtlebreeding1.swf
 Homestead.json
 Homestead.yaml
 Thumbs.db
