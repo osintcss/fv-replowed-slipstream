@@ -37,14 +37,6 @@ Route::middleware('guest')->group(function () {
         ->name('discord.redirect')
         ->middleware('maintenance');
 
-    Route::get('auth/discord/launcher', [DiscordAuthenticatedSessionController::class, 'launcherRedirect'])
-        ->name('discord.launcher.redirect')
-        ->middleware(['maintenance', 'throttle:10,1']);
-
-    Route::get('auth/discord/callback', [DiscordAuthenticatedSessionController::class, 'callback'])
-        ->name('discord.callback')
-        ->middleware('maintenance');
-
     Route::get('auth/discord/launcher/consume', [DiscordAuthenticatedSessionController::class, 'launcherConsume'])
         ->name('discord.launcher.consume')
         ->middleware('maintenance');
@@ -61,6 +53,17 @@ Route::middleware('guest')->group(function () {
     Route::post('reset-password', [NewPasswordController::class, 'store'])
         ->name('password.store');
 });
+
+// The OAuth browser can already have a web session. The launcher handoff still
+// needs to run in that case; its state and loopback callback are validated by
+// the controller. The consume endpoint stays guest-only in the launcher.
+Route::get('auth/discord/launcher', [DiscordAuthenticatedSessionController::class, 'launcherRedirect'])
+    ->name('discord.launcher.redirect')
+    ->middleware(['maintenance', 'throttle:10,1']);
+
+Route::get('auth/discord/callback', [DiscordAuthenticatedSessionController::class, 'callback'])
+    ->name('discord.callback')
+    ->middleware('maintenance');
 
 Route::middleware(['auth', 'discord.member'])->group(function () {
     Route::get('verify-email', EmailVerificationPromptController::class)

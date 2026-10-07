@@ -161,6 +161,57 @@ test('launcher discord sign-in returns a one-time handoff token', function () {
         ->assertSessionHasErrors(['discord']);
 });
 
+test('launcher discord sign-in works while the external browser is already signed in', function () {
+    config([
+        'services.discord.client_id' => '123456789012345678',
+        'services.discord.client_secret' => 'test-secret',
+        'services.discord.redirect' => 'https://example.test/auth/discord/callback',
+        'services.discord.required_guild_id' => null,
+    ]);
+
+    $browserUser = User::factory()->create();
+    $discordUser = User::factory()->create();
+    DiscordIdentity::create([
+        'user_id' => $discordUser->id,
+        'discord_id' => '123456789012345678',
+        'linked_at' => now(),
+    ]);
+
+    $state = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+    $callback = 'http://127.0.0.1:43127/callback';
+
+    $authorize = $this->actingAs($browserUser)->get(route('discord.launcher.redirect', [
+        'state' => $state,
+        'callback' => $callback,
+    ]));
+    $authorize->assertRedirect();
+    expect($authorize->headers->get('Location'))->toStartWith('https://discord.com/oauth2/authorize?');
+    expect(Cache::get('discord-launcher-state:'.$state))->toBe([
+        'callback' => $callback,
+        'intent' => 'login',
+    ]);
+
+    Http::fake([
+        'https://discord.com/api/oauth2/token' => Http::response(['access_token' => 'user-token']),
+        'https://discord.com/api/users/@me' => Http::response([
+            'id' => '123456789012345678',
+            'avatar' => null,
+        ]),
+    ]);
+
+    $response = $this->get(route('discord.callback', ['code' => 'test-code', 'state' => $state]));
+    $response->assertRedirect();
+    $location = (string) $response->headers->get('Location');
+    expect($location)->toStartWith($callback.'?');
+    parse_str((string) parse_url($location, PHP_URL_QUERY), $query);
+    expect($query['state'] ?? null)->toBe($state)
+        ->and($query['token'] ?? null)->toBeString()->not->toBeEmpty();
+
+    $handoff = Cache::get('discord-launcher-handoff:'.hash('sha256', $query['token']));
+    expect($handoff['user_id'] ?? null)->toBe($discordUser->id);
+    $this->assertAuthenticatedAs($browserUser);
+});
+
 test('launcher discord sign-in starts registration for an unlinked account', function () {
     config([
         'services.discord.client_id' => '123456789012345678',
