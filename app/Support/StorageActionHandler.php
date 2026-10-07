@@ -50,7 +50,14 @@ final class StorageActionHandler
         $isDirectGaragePurchase = !$isGiftboxStore
             && $hasNoStandaloneSource
             && $authoritativeBuildingClassName === 'GarageBuilding';
-        $storeIdempotencyKey = ($isGiftboxStore || $isDirectGaragePurchase)
+        $isDirectPigpenPurchase = !$isGiftboxStore
+            && $hasNoStandaloneSource
+            && $authoritativeBuildingClassName === 'FeatureBuilding'
+            && $buildingItemName === 'pigpenv2_finished'
+            && ($extraParams->storedClassName ?? null) === 'MutableAnimal'
+            && is_string($storedItemName)
+            && preg_match('/^pigpen_(male|female)(?:_|$)/', $storedItemName) === 1;
+        $storeIdempotencyKey = ($isGiftboxStore || $isDirectGaragePurchase || $isDirectPigpenPurchase)
             ? self::actionIdempotencyKey($request, \ACTION_STORE)
             : null;
 
