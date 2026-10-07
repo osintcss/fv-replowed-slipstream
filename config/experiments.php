@@ -1457,7 +1457,7 @@ return [
 "fv_dream_deer" => 2,
 "fv_dream_deer_motd_finished" => 0,
 "fv_dream_deer_feed" => 2,
-"fv_market_search_caching" => 0,
+"fv_market_search_caching" => 2,
 "fv_xal_global_marine_observatory_unlock" => 1,
 "fv_marketplace3_sales_tab" => 2,
 "fv_vip_buy_items" => 1,
