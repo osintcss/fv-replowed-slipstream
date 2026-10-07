@@ -162,3 +162,59 @@ it('uses the saved market-stall expansion when enforcing capacity', function ():
         ->and(addToInventory($uid, 'CAP5', 25, 'silo'))->toBeTrue()
         ->and(addToInventory($uid, 'CAP5', 1, 'silo'))->toBeFalse();
 });
+
+it('keeps the bushel action-drop response compatible before the first drop', function (): void {
+    $uid = User::factory()->create()->uid;
+    seedCapacityTestItem('compat_seed', 'CROP1', [
+        'name' => 'compat_seed',
+        'code' => 'CROP1',
+        'type' => 'seed',
+        'bushelItemCode' => 'BUS1',
+    ]);
+    seedCapacityTestItem('compat_bushel', 'BUS1', [
+        'name' => 'compat_bushel',
+        'code' => 'BUS1',
+        'type' => 'bushel',
+        'className' => 'CBushel',
+    ]);
+
+    $actionDrops = recordHarvestBushelDrops($uid, ['compat_seed' => 1]);
+    $report = $actionDrops['bushelReport']['dropTypeFuncResult'];
+
+    expect($report)->toBeInstanceOf(stdClass::class)
+        ->and($report->length)->toBe(0)
+        ->and($report->newHarvestQuantities)->toBe([
+            ['itemCode' => 'CROP1', 'quantity' => 1],
+        ]);
+});
+
+it('keeps indexed bushel drops and progress in the same compatible envelope', function (): void {
+    $uid = User::factory()->create()->uid;
+    seedCapacityTestItem('compat_seed_award', 'CROP2', [
+        'name' => 'compat_seed_award',
+        'code' => 'CROP2',
+        'type' => 'seed',
+        'bushelItemCode' => 'BUS2',
+    ]);
+    seedCapacityTestItem('compat_bushel_award', 'BUS2', [
+        'name' => 'compat_bushel_award',
+        'code' => 'BUS2',
+        'type' => 'bushel',
+        'className' => 'CBushel',
+    ]);
+    set_meta($uid, 'bushel_harvest_counts', json_encode(['CROP2' => 49]));
+
+    $actionDrops = recordHarvestBushelDrops($uid, ['compat_seed_award' => 1]);
+    $report = $actionDrops['bushelReport']['dropTypeFuncResult'];
+
+    expect($report)->toBeInstanceOf(stdClass::class)
+        ->and($report->length)->toBe(1)
+        ->and($report->{'0'}['foundBushel'])->toMatchArray([
+            'bushelCode' => 'BUS2',
+            'bushelsAddedToInventory' => 1,
+        ])
+        ->and($report->newHarvestQuantities)->toBe([
+            ['itemCode' => 'CROP2', 'quantity' => 0],
+        ])
+        ->and(CraftingInventory::where('uid', $uid)->where('item_code', 'BUS2')->sum('quantity'))->toBe(1);
+});

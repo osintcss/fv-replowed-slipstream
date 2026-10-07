@@ -815,7 +815,14 @@ function recordHarvestBushelDrops($uid, array $harvestedItemCounts): array {
     }
 
     $counts = getBushelHarvestCounts($uid);
-    $report = [];
+    // The Flash handler treats dropTypeFuncResult as an Object with an
+    // indexed report, a length property, and newHarvestQuantities.  A PHP
+    // array containing only the named property is encoded by AMF3 as an
+    // anonymous object without `length`, which makes the callback fail on
+    // ordinary sub-threshold harvests.  Keep the envelope an object for both
+    // the zero-drop and actual-bushel cases.
+    $report = new \stdClass();
+    $report->length = 0;
     $newHarvestQuantities = [];
     $threshold = 50;
 
@@ -857,7 +864,7 @@ function recordHarvestBushelDrops($uid, array $harvestedItemCounts): array {
 
         // CraftingManager.recordBushelFound() reads these fields and updates
         // the appropriate local (market-stall or silo) bucket immediately.
-        $report[] = [
+        $report->{$report->length} = [
             'foundBushel' => [
                 'bushelCode' => $bushelItemCode,
                 'bushelsAddedToInventory' => $bushelsAwarded,
@@ -865,6 +872,7 @@ function recordHarvestBushelDrops($uid, array $harvestedItemCounts): array {
                 'bushelAddedToStall' => false,
             ],
         ];
+        $report->length++;
     }
 
     if (empty($newHarvestQuantities)) {
@@ -872,8 +880,7 @@ function recordHarvestBushelDrops($uid, array $harvestedItemCounts): array {
     }
 
     set_meta($uid, 'bushel_harvest_counts', json_encode($counts));
-    // The AS3 handler treats this as an array with a named property.
-    $report['newHarvestQuantities'] = $newHarvestQuantities;
+    $report->newHarvestQuantities = $newHarvestQuantities;
 
     return [
         'bushelReport' => [
