@@ -282,6 +282,7 @@ it('loads a neighbor current world rather than defaulting to the farm world', fu
 
     $neighborUid = '900000002';
     PlayerMeta::setValue($neighborUid, 'currentWorldType', 'winternord');
+    PlayerMeta::setValue($neighborUid, 'unlocked_worlds', serialize(['winternord']));
     UserWorld::query()->create([
         'uid' => $neighborUid,
         'type' => 'farm',

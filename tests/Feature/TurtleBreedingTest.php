@@ -148,8 +148,8 @@ it('keeps a second breeding slot after finishing the first one', function (): vo
     [$pen, $firstHashes] = turtleTestPen($uid);
     $secondHashes = ['03g:third123', '03i:fourth45'];
     $contents = $pen->contents;
-    $contents[0]->numItem = 2;
-    $contents[1]->numItem = 2;
+    $contents[0]['numItem'] = 2;
+    $contents[1]['numItem'] = 2;
     $pen->contents = $contents;
     $components = $pen->components;
     $components->storageMetadata->{$secondHashes[0]} = [json_encode(turtleTestParent('50'))];
@@ -222,7 +222,7 @@ it('rejects a non-turtle stored in a turtle pen without spending potions', funct
     $uid = (string) $user->uid;
     [$pen, $hashes] = turtleTestPen($uid);
     $contents = $pen->contents;
-    $contents[1]->itemCode = 'Sh';
+    $contents[1]['itemCode'] = 'Sh';
     $pen->contents = $contents;
     $components = $pen->components;
     $components->storageMetadata->{'Sh:def67890'} = $components->storageMetadata->{$hashes[1]};

@@ -317,7 +317,7 @@ it('provides an empty super-crop status array in InitUser', function (): void {
 
     $initUser = (new Player($uid))->getData((object) ['sequence' => 1]);
 
-    expect($initUser['superCropsStatus'])
+    expect($initUser['userInfo']['player']['superCropsStatus'])
         ->toBeArray()
         ->toBeEmpty();
 });

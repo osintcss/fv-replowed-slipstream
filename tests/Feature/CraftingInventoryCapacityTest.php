@@ -216,5 +216,5 @@ it('keeps indexed bushel drops and progress in the same compatible envelope', fu
         ->and($report->newHarvestQuantities)->toBe([
             ['itemCode' => 'CROP2', 'quantity' => 0],
         ])
-        ->and(CraftingInventory::where('uid', $uid)->where('item_code', 'BUS2')->sum('quantity'))->toBe(1);
+        ->and((int) CraftingInventory::where('uid', $uid)->where('item_code', 'BUS2')->sum('quantity'))->toBe(1);
 });
